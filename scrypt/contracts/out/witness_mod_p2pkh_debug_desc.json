@@ -1,0 +1,62 @@
+{
+    "version": 9,
+    "compilerVersion": "1.19.0+commit.72eaeba",
+    "contract": "ModP2PKH",
+    "md5": "195e5b19e6cd734f250b8c71a2bec6c1",
+    "structs": [
+        {
+            "name": "SortedItem",
+            "params": [
+                {
+                    "name": "item",
+                    "type": "T"
+                },
+                {
+                    "name": "idx",
+                    "type": "int"
+                }
+            ],
+            "genericTypes": [
+                "T"
+            ]
+        }
+    ],
+    "library": [],
+    "alias": [
+        {
+            "name": "PubKeyHash",
+            "type": "Ripemd160"
+        }
+    ],
+    "abi": [
+        {
+            "type": "function",
+            "name": "unlock",
+            "index": 0,
+            "params": [
+                {
+                    "name": "pubKey",
+                    "type": "PubKey"
+                },
+                {
+                    "name": "sig",
+                    "type": "Sig"
+                }
+            ]
+        },
+        {
+            "type": "constructor",
+            "params": [
+                {
+                    "name": "pubKeyHash",
+                    "type": "Ripemd160"
+                }
+            ]
+        }
+    ],
+    "stateProps": [],
+    "buildType": "debug",
+    "file": "file:///Users/stephanfeb/IdeaProjects/tstokenlib/scrypt/contracts/witness_mod_p2pkh.scrypt",
+    "hex": "00<pubKeyHash>610079527a75517a75615279a95179876951795379ac777777",
+    "sourceMapFile": ""
+}

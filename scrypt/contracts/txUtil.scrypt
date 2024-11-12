@@ -1,0 +1,149 @@
+// folked from https://sensiblecontract.org
+
+struct Output {
+  int satoshis;
+  bytes script;
+}
+
+library TxUtil {
+
+
+  static function readOutput(bytes tx, int outputIndex): Output {
+    // first 4 bytes version
+    // 1 byte input num, only support max 3
+    int pos = 4;
+    int ninputs = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+    pos = pos + 1;
+    bytes res = b'';
+    int satoshis = 0;
+    // max support 3 input
+    // input
+    require(ninputs <= 3);
+    loop(3): i {
+      if (i < ninputs) {
+        // output point 36 bytes
+        pos = pos + 36;
+        // 1 byte var
+        // script code + 4 bytes sequence
+        int varLen = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+        if (varLen < 253) {
+          int scriptLen = varLen;
+          pos = pos + 1 + scriptLen + 4;
+        } else if (varLen == 253) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 3]);
+          pos = pos + 3 + scriptLen + 4;
+        } else if (varLen == 254) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 5]);
+          pos = pos + 5 + scriptLen + 4;
+        } else {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 9]);
+          pos = pos + 9 + scriptLen + 4;
+        }
+      }
+    }
+
+    int noutputs = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+    pos = pos + 1;
+    require(noutputs <= 4);
+    loop(4): i {
+      if (i < noutputs) {
+        // 8 bytes value
+        int sats = Utils.fromLEUnsigned(tx[pos : pos + 8]);
+        pos = pos + 8;
+        // script code
+        int varLen = Utils.fromLEUnsigned(tx[pos: pos + 1] + b'00');
+        int scriptLen = 0;
+        if (varLen < 253) {
+          scriptLen = varLen;
+          pos = pos + 1 + scriptLen;
+        } else if (varLen == 253) {
+          scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 3]);
+          pos = pos + 3 + scriptLen;
+        } else if (varLen == 254) {
+          scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 5]);
+          pos = pos + 5 + scriptLen;
+        } else {
+          scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 9]);
+          pos = pos + 9 + scriptLen;
+        }
+        if (i == outputIndex) {
+          res = tx[pos - scriptLen: pos];
+          satoshis = sats;
+        }
+      }
+    }
+
+    // 4 bytes locktime
+    return { satoshis, res };
+  }
+
+  static function getScriptCodeFromOutput(bytes output): bytes {
+    return Utils.readVarint(output[8:]);
+  }
+
+  static function getVarOpLen(int length): int {
+      int res = 0;
+      if (length <= 75) {
+          res = 1;
+      } else if (length <= 255) {
+          res = 2;
+      } else if (length <= 65535) {
+          res = 3;
+      } else {
+          res = 5;
+      }
+      return res;
+  }
+
+  static function getVarOpLenOpt(int length): int {
+      int res = 0;
+      if (length <= 75) {
+          res = 1;
+      } else {
+          res = 2;
+      } 
+      return res;
+  }
+
+  static function genBsvOutput(int satoshis, Ripemd160 address): bytes {
+    bytes output = b'';
+    if (satoshis > 0) {
+      bytes outputScript = Utils.buildPublicKeyHashScript(address);
+      output = Utils.buildOutput(outputScript, satoshis);
+    }
+    return output;
+  }
+
+  // get i-th outpoint's txid
+  static function getPrevoutTxid(bytes prevouts, int i): bytes {
+    int offset = i * Constants.OutpointLen;
+    return prevouts[offset : offset + Constants.TxIdLen];
+  }
+
+  // get i-th outpoint's output index
+  static function getPrevoutOutputIdx(bytes prevouts, int i): int {
+    int offset = i * Constants.OutpointLen;
+    return Utils.fromLEUnsigned(prevouts[offset + Constants.TxIdLen : offset + Constants.OutpointLen]);
+  }
+
+  // verify a contract, called in another input, by its hash
+  static function verifyContractByHash(bytes prevouts,
+                                       int inputIdx, 
+                                       bytes prevTx,
+                                       Ripemd160 contractScriptHash,
+                                       SigHashPreimage preimage) : bool {
+    require(hash256(prevouts) == SigHash.hashPrevouts(preimage));
+    
+    // validate the tx containing the called contract
+    bytes prevTxId = TxUtil.getPrevoutTxid(prevouts, inputIdx);
+    require(hash256(prevTx) == prevTxId);
+
+    // validate the called contract, i.e., its locking script 
+    int outputIndex = TxUtil.getPrevoutOutputIdx(prevouts, inputIdx);
+    bytes contractScript = TxUtil.readOutput(prevTx, outputIndex).script;
+    require(hash160(contractScript) == contractScriptHash);
+
+    return true;
+  }
+
+}
