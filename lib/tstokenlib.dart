@@ -1,4 +1,4 @@
-library;
+library tstokenlib;
 
 export 'src/builder/partial_witness_lock_builder.dart';
 export 'src/builder/partial_witness_unlock_builder.dart';

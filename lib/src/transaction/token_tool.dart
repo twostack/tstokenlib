@@ -92,10 +92,10 @@ class TokenTool {
         .build(false);
 
     //updated padding bytes
-    paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
-    print("Padding bytes: ${hex.encode(paddingBytes)}");
-    print("TokenTx LHS : " + hex.encode(tokenTxLHS));
-    print("PP2 Output Bytes : ${hex.encode(pp2Output)}");
+    // paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
+    // print("Padding bytes: ${hex.encode(paddingBytes)}");
+    // print("TokenTx LHS : " + hex.encode(tokenTxLHS));
+    // print("PP2 Output Bytes : ${hex.encode(pp2Output)}");
 
     pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash);
 
