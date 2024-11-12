@@ -8,7 +8,7 @@ The TSL1 Token Protocol allows for the creation of P2P tokens on Bitcoin (BSV) t
 - No transaction bloating with successive token transfers
 - Double-spend protection with the same level of security as the native token units (satoshis)
 
-(Download a copy of the whitepaper for a full technical explanation)[https://github.com/twostack/tsl1]
+[Download a copy of the whitepaper for a full technical explanation](https://github.com/twostack/tsl1)
 
 ### NOTE: 
 This library is meant as a technology demonstrator. It is not at present time meant for production use.
