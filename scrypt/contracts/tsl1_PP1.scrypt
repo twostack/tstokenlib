@@ -109,7 +109,7 @@ public function transferToken(
 
     //assert P2PKH unlock conditions are met
     require(hash160(recipientPubKey) == this.ownerPKH);
-    // require(checkSig(recipientSig, recipientPubKey));
+    require(checkSig(recipientSig, recipientPubKey));
 
     //now rebuild the current Tx
     // - obtain RHS template from the parentRawTx
