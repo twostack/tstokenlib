@@ -21,6 +21,7 @@ import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/transaction/partial_sha256.dart';
 
 class TransactionUtils {
+  var LOCKTIME_SIZE = 4;
 
   int getInOutSize(Transaction tx) {
     return tx.inputs[2].serialize().length + 1 + tx.outputs[0].serialize().length;
@@ -36,20 +37,28 @@ class TransactionUtils {
 
     //pad things so that the start of the last input falls on a 64 byte boundary
     //the sha256 padding will take us the rest of the way
-    var lastInputStart = originalSize - inOutSize;
+
+    var lastInputStart = originalSize - (inOutSize + LOCKTIME_SIZE);
+
+    // lastInputStart = lastInputStart  + 72 +  72; //add in room for two sigs along with pushdata bytes
 
     //we don't want this falling on exact boundary, so fudge by -2 bytes
     if (lastInputStart % 64 == 0){
         lastInputStart -= 2;
     }
 
+    var paddingSize = originalSize % 64;
+
     //place the start of the last input on a 64 byte boundary
     //expect (originalSize + lastBlockPadding - inOutSize ) % 64 == 0
+    // lastBlockPadding == inOutSize - originalSize
     var lastBlockPadding = 64 - (lastInputStart % 64);
 
     var paddingScriptSize = ScriptBuilder().addData(Uint8List(lastBlockPadding)).build().buffer.length;
 
-    return Uint8List(lastBlockPadding +1 +4);
+    // we subtract 1 to accommodate the pushdata byte in script.
+    // +2 for placeholder padding prior to running this algo
+    return Uint8List(lastBlockPadding - 1 + 2);
   }
 
   /*

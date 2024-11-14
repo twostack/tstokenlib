@@ -20,4 +20,11 @@ void main(){
     var builder2 = P2PKHLockBuilder.fromAddress(bobAddress);
     print(builder2.getScriptPubkey().toString(type: 'hex'));
   });
+
+  //  <pubkey> <sig> OP_0 20 0x650c4adb156f19e36a755c820d892cda108299c4 OP_NIP OP_2 OP_PICK OP_HASH160 OP_OVER OP_EQUALVERIFY OP_OVER OP_3 OP_PICK OP_CHECKSIG OP_NIP OP_NIP OP_NIP
+
+  // <pubkey> <sig> OP_SWAP OP_DUP OP_HASH160 20 0x650c4adb156f19e36a755c820d892cda108299c4 OP_EQUALVERIFY OP_CHECKSIG
+
+  //<sig> <pubkey> OP_DUP OP_HASH160 20 0x650c4adb156f19e36a755c820d892cda108299c4 OP_EQUALVERIFY OP_CHECKSIG
+
 }

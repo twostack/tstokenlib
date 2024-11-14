@@ -7,7 +7,9 @@ environment:
   sdk: ^3.0.7
 
 dependencies:
-  dartsv: ^2.1.0
+#  dartsv: ^2.1.0
+  dartsv:
+    path: /Users/stephanfeb/IdeaProjects/dartsv
   crypto: ^3.0.6
   convert: ^3.1.2
   collection: 1.18.0

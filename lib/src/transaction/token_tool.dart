@@ -20,6 +20,7 @@ import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
+import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 
 import '../builder/partial_witness_lock_builder.dart';
 import '../builder/partial_witness_unlock_builder.dart';
@@ -54,8 +55,8 @@ class TokenTool {
       ){
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, NetworkType.TEST);
-    var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash); //PP2 unlocker only needs token's txid
-    var witnessLocker = P2PKHLockBuilder.fromAddress(ownerAddress);  //witness is locked to current token holder
+    var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash); //PP2 unlocker only needs token transaction's txid
+    var witnessLocker = ModP2PKHLockBuilder.fromAddress(ownerAddress);  //witness is locked to current token holder
     var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var preImageTxnForPP1 = TransactionBuilder()
@@ -70,9 +71,9 @@ class TokenTool {
     var preImagePP1 = Sighash().createSighashPreImage(preImageTxnForPP1, sigHashAll, 1, subscript1 , BigInt.one);
 
 
-    // print("==============");
-    // print("PP1 PreImage");
-    // printPreImage(preImagePP1!);
+    print("==============");
+    print("PP1 PreImage");
+    TransactionUtils.printPreImage(preImagePP1!);
 
 
     var tsl1 = TransactionUtils();
@@ -92,10 +93,12 @@ class TokenTool {
         .build(false);
 
     //updated padding bytes
-    // paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
-    // print("Padding bytes: ${hex.encode(paddingBytes)}");
-    // print("TokenTx LHS : " + hex.encode(tokenTxLHS));
-    // print("PP2 Output Bytes : ${hex.encode(pp2Output)}");
+    paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
+    print("Unpadded Witness Hex: ${witnessTx.serialize()}");
+    print( witnessTx.inputs[1].scriptBuilder?.getScriptSig().toString());
+    print("Padding bytes: ${hex.encode(paddingBytes)}");
+    print("TokenTx LHS : " + hex.encode(tokenTxLHS));
+    print("PP2 Output Bytes : ${hex.encode(pp2Output)}");
 
     pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash);
 
@@ -108,23 +111,23 @@ class TokenTool {
 
 
     ///JUST FOR DEBUG >>>
-    // var pp2PreImageTxn = TransactionBuilder()
-    //     .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-    //     .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
-    //     .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-    //     .spendToLockBuilder(witnessLocker, BigInt.one)
-    //     .withFee(BigInt.from(100))
-    //     .build(false);
-    //
-    // var subscript2 = tokenTx.outputs[2].script;
-    // var preImagePP2 = Sighash().createSighashPreImage(pp2PreImageTxn, sigHashAll, 2, subscript2 , BigInt.one);
-    //
-    // // print("=========================");
-    // // print("PreImage PP2 Hex: ${hex.encode(preImagePP2!)}");
-    // // // print("PreImage PP2 Hash: ${hex.encode(Sha256(preImagePP2))}")
-    // // print("Printing PreImage for PP2");
-    // // TransactionUtils.printPreImage(preImagePP2);
-    // // << DEBUG ////
+    var pp2PreImageTxn = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
+        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
+        .spendToLockBuilder(witnessLocker, BigInt.one)
+        .withFee(BigInt.from(100))
+        .build(false);
+
+    var subscript2 = tokenTx.outputs[2].script;
+    var preImagePP2 = Sighash().createSighashPreImage(pp2PreImageTxn, sigHashAll, 2, subscript2 , BigInt.one);
+
+    print("=========================");
+    print("PreImage PP2 Hex: ${hex.encode(preImagePP2!)}");
+    // print("PreImage PP2 Hash: ${hex.encode(Sha256(preImagePP2))}")
+    print("Printing PreImage for PP2");
+    TransactionUtils.printPreImage(preImagePP2);
+    // << DEBUG ////
 
     return witnessTx;
 
@@ -146,7 +149,7 @@ class TokenTool {
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       Address recipientAddress,      //
-      List<int> witnessTxId
+      List<int> witnessFundingTxId
       ){
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -162,7 +165,7 @@ class TokenTool {
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
     var outputWriter = ByteDataWriter();
-    outputWriter.write(witnessTxId); //32 byte txid in txFormat
+    outputWriter.write(witnessFundingTxId); //32 byte txid in txFormat
     outputWriter.writeUint32(1, Endian.little);
     var fundingOutpoint = outputWriter.toBytes();
     // print("Witness Funding Outpoint : ${hex.encode(fundingOutpoint)}");
@@ -204,12 +207,13 @@ class TokenTool {
     // var recipientAddress = Address.fromPublicKey(recipientPubKey, NetworkType.TEST);
     var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId);
 
-    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId.reversed.toList()), hex.decode(recipientAddress.pubkeyHash160), 1);
+    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1);
     var shaLocker = PartialWitnessLockBuilder();
 
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var prevWitnessUnlocker = P2PKHUnlockBuilder(currentOwnerPubkey);
+    // var prevWitnessUnlocker = P2PKHUnlockBuilder(currentOwnerPubkey);
+    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
     // var newWitnessLocker = P2PKHLockBuilder.fromPublicKey(currentOwnerPubKey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var childPreImageTxn = TransactionBuilder()
@@ -231,9 +235,9 @@ class TokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage)  = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
-    // print("Child Token SigPreImage: ${hex.encode(sigPreImageChildTx!)}");
-    // print("Partial Hash : ${hex.encode(partialHash)}");
-    // print("Partial PreImage: ${hex.encode(witnessPartialPreImage)}");
+    print("Child Token SigPreImage: ${hex.encode(sigPreImageChildTx!)}");
+    print("Partial Hash : ${hex.encode(partialHash)}");
+    print("Partial PreImage: ${hex.encode(witnessPartialPreImage)}");
 
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,

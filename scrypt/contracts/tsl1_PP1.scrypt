@@ -46,7 +46,7 @@ constructor(Ripemd160 recipientPKH, bytes tokenId){
   FIXME: During issuance, we must validate a "signature anchor" for this
          token. Signature must be ECDSA(sha256(LHS.input[1] + PP1), issuerPubkey)
 */
-public function issueToken( SigHashPreimage preImage, bytes fundingTxId, bytes padding ){   
+public function issueToken( SigHashPreimage preImage, bytes fundingTxId, /*Sig recipientSig , PubKey recipientPubKey, */ bytes padding ){   
   //assert preimage
   require(Tx.checkPreimage(preImage));
 
@@ -73,6 +73,9 @@ public function issueToken( SigHashPreimage preImage, bytes fundingTxId, bytes p
 
   //TODO: Possible additional issuance assertions like signed hashes of Txn outputs
 
+    //assert P2PKH unlock conditions are met
+    // require(hash160(recipientPubKey) == this.ownerPKH);
+    // require(checkSig(recipientSig, recipientPubKey));
 }
 
 /*
@@ -119,7 +122,7 @@ public function transferToken(
     
     bytes scriptPubKey = Util.scriptCode(preImage);
     bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
-    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount); //FIXME: Supply change output amount 
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount); 
     bytes pp1Output = Util.buildOutput(scriptPubKey, 1); //take pp1 output from sighashPreImage
     bytes pp3Output = Util.buildOutput(parentPP3Output.script, 1); //take pp3 output from parent-to-tokenTx
     bytes fullTx = scriptLHS 

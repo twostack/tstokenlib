@@ -48,8 +48,6 @@ class ModP2PKHLockBuilder extends LockingScriptBuilder {
   List<int>? pubkeyHash;
   NetworkType? networkType;
 
-  String scriptTemplate = "00<pubKeyHash>775279a97888785379ac777777";
-
   ModP2PKHLockBuilder.fromAddress(Address address){
     this.address = address;
     this.networkType = address.networkType;
@@ -70,17 +68,15 @@ class ModP2PKHLockBuilder extends LockingScriptBuilder {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,"Missing pubkey hash value");
     }
 
-    // var builder = ScriptBuilder()
-    //     .opCode(OpCodes.OP_DUP)
-    //     .opCode(OpCodes.OP_HASH160)
-    //     .addData(Uint8List.fromList(pubkeyHash!))
-    //     .opCode(OpCodes.OP_EQUALVERIFY)
-    //     .opCode(OpCodes.OP_CHECKSIG);
-    // return builder.build();
+    var builder = ScriptBuilder()
+        .opCode(OpCodes.OP_SWAP)
+        .opCode(OpCodes.OP_DUP)
+        .opCode(OpCodes.OP_HASH160)
+        .addData(Uint8List.fromList(pubkeyHash!))
+        .opCode(OpCodes.OP_EQUALVERIFY)
+        .opCode(OpCodes.OP_CHECKSIG);
 
-    var scriptHex = scriptTemplate
-        .replaceFirst("<pubKeyHash>", ScriptBuilder().addData(Uint8List.fromList(pubkeyHash!)).build().toHex());
-    return SVScript.fromHex(scriptHex);
+    return builder.build();
 
   }
 
@@ -89,22 +85,23 @@ class ModP2PKHLockBuilder extends LockingScriptBuilder {
     if (script != null && script.buffer != null) {
       var chunkList = script.chunks;
 
-      if (chunkList.length != 5) {
+      if (chunkList.length != 6) {
         throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for P2PKH ScriptPubkey");
       }
 
-      if (chunkList[2].len != 20) {
+      if (chunkList[3].len != 20) {
         throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Signature and Public Key values are malformed");
       }
 
-      if (!(chunkList[0].opcodenum == OpCodes.OP_DUP &&
-          chunkList[1].opcodenum == OpCodes.OP_HASH160 &&
-          chunkList[3].opcodenum == OpCodes.OP_EQUALVERIFY &&
-          chunkList[4].opcodenum == OpCodes.OP_CHECKSIG)) {
+      if (!(chunkList[0].opcodenum == OpCodes.OP_SWAP &&
+          chunkList[1].opcodenum == OpCodes.OP_DUP &&
+          chunkList[2].opcodenum == OpCodes.OP_HASH160 &&
+          chunkList[4].opcodenum == OpCodes.OP_EQUALVERIFY &&
+          chunkList[5].opcodenum == OpCodes.OP_CHECKSIG)) {
         throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Malformed P2PKH ScriptPubkey script. Mismatched OP_CODES.");
       }
 
-      pubkeyHash = chunkList[2].buf;
+      pubkeyHash = chunkList[3].buf;
       address = Address.fromPubkeyHash(hex.encode(pubkeyHash ?? []), networkType ?? NetworkType.MAIN);
     }
   }

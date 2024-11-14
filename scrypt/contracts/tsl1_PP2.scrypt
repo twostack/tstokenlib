@@ -52,18 +52,18 @@ public function unlock(bytes tokenTxId) {
     bytes prevHashOut = sha256(sha256(prevHashPreImage));
 
     //DEBUG Build
-    // bytes fullSubscript = b'0079011879ac7777777777777777777777777777777777777777777777777777777777777777'; //deleted from PreImage using OP_CODE_SEP
+    bytes fullSubscript = b'0079011879ac777777777777777777777777777777777777777777777777777777777777777777';
 
     //RELEASE Build
-    bytes fullSubscript = b'76011879ac7777777777777777777777777777777777777777777777777777777777777777'; //deleted from PreImage using OP_CODE_SEP
-    
+    //  bytes fullSubscript = b'76011879ac777777777777777777777777777777777777777777777777777777777777777777';//deleted from PreImage using OP_CODE_SEP
 
     bytes sequenceNumber = Util.toLEUnsigned(4294967295, 4);
     bytes sequenceHash = sha256(sha256(sequenceNumber + sequenceNumber + sequenceNumber));
     int nLockTime = 0;
     bytes sigHashType = SigHash.ALL | SigHash.FORKID;
 
-    bytes changeOutputScript = Util.buildPublicKeyHashScript(this.witnessChangePKH); 
+    // bytes changeOutputScript = Util.buildPublicKeyHashScript(this.witnessChangePKH); 
+    bytes changeOutputScript = Util.buildModPKHScript(this.witnessChangePKH); 
     bytes changeOutput = num2bin(this.changeAmount, 8)  + Utils.writeVarint(changeOutputScript);
 
     //cast sighashType into 4-byte LE
