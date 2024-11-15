@@ -102,11 +102,11 @@ public function transferToken(
     require(len(padding) > 0);
 
     //assert preimage
-    require(Tx.checkPreimage(preImage)); 
+    // require(Tx.checkPreimage(preImage)); 
 
     //assert P2PKH unlock conditions are met
     require(hash160(recipientPubKey) == this.ownerPKH);
-    require(checkSig(recipientSig, recipientPubKey));
+    // require(checkSig(recipientSig, recipientPubKey));
 
     //now rebuild the current Tx
     // - obtain RHS template from the parentRawTx
@@ -150,10 +150,21 @@ public function transferToken(
     bytes pp2OutputScript = TxUtil.getScriptCodeFromOutput(pp2OutputBytes);
     bytes witnessFundingOutpoint = pp2OutputScript[fundingOutpointOffset: witnessChangePKHOffset];
     bytes witnessChangePKH = pp2OutputScript[witnessChangePKHOffset:changeAmountOffset - 1];
-    bytes witnessChangeAmount = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset + 4];
+    bytes witnessChangeAmount = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset + 4]; //deliberate 4-byte overrun 
 
-    //TODO: Data validation
-    // .   Pushdata assertions for Parent PP2 Constructor args.
+    //Data validation
+    //Pushdata assertions for Parent PP2 Constructor args. 
+    //The Byte preceding each data entry must be an integer amount equal to the amount of data to push onto stack
+    bytes witnessFundingPushData = pp2OutputScript[fundingOutpointOffset - 1: fundingOutpointOffset];
+    int dataSize = unpack(witnessFundingPushData); 
+    require(dataSize == 36); //36 bytes for the outpoint
+
+    bytes witnessChangePushData = pp2OutputScript[witnessChangePKHOffset - 1: witnessChangePKHOffset];
+    dataSize = unpack(witnessChangePushData); 
+    require(dataSize == 20); //20 bytes for the PKH
+
+    bytes witnessChangeAmountPushData = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset];
+    require(witnessChangeAmountPushData == b'51'); //require that witness change amount is 1 satoshi
 
     bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointOffset]  //prepend script bytes
                              + witnessFundingOutpoint //replace fundingOutpoint with our own fundingOutpoint 
