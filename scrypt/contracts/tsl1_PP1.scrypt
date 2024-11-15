@@ -52,9 +52,6 @@ public function issueToken( SigHashPreimage preImage, bytes fundingTxId, /*Sig r
 
   require(len(padding) > 0);
 
-  //set the tokenId for this issuance to the Witness-Funding Transaction's TxId
-  // require(fundingTxId == this.tokenId);
-
   //assert that the stated tokenId is same us current transactionId
   bytes currentTxId = Util.outpoint(preImage)[:32];
 
@@ -87,7 +84,7 @@ public function issueToken( SigHashPreimage preImage, bytes fundingTxId, /*Sig r
 */
 public function transferToken(
     SigHashPreimage preImage, 
-    bytes           pp2Output, 
+    bytes           pp2OutputBytes, 
     PubKey          recipientPubKey, 
     Ripemd160       changePkh, 
     int             changeAmount, 
@@ -105,7 +102,7 @@ public function transferToken(
     require(len(padding) > 0);
 
     //assert preimage
-    require(Tx.checkPreimage(preImage));
+    require(Tx.checkPreimage(preImage)); 
 
     //assert P2PKH unlock conditions are met
     require(hash160(recipientPubKey) == this.ownerPKH);
@@ -117,17 +114,17 @@ public function transferToken(
     // - Leave tokenId alone, since it is expected to match that of ParentTx
 
     Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
-    // Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
     Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
     
     bytes scriptPubKey = Util.scriptCode(preImage);
     bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
     bytes changeOutput = Util.buildOutput(pkhScript, changeAmount); 
     bytes pp1Output = Util.buildOutput(scriptPubKey, 1); //take pp1 output from sighashPreImage
-    bytes pp3Output = Util.buildOutput(parentPP3Output.script, 1); //take pp3 output from parent-to-tokenTx
+    bytes pp3Output = Util.buildOutput(parentPP3Output.script, 1); //take pp3 (sha256) output from parent-to-tokenTx
     bytes fullTx = scriptLHS 
                    + Util.writeVarintNum(4) 
-                   + changeOutput + pp1Output + pp2Output + pp3Output
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output
                    + Util.toLEUnsigned(Util.nLocktime(preImage), 4); 
 
     bytes currTxId = sha256(sha256(fullTx));
@@ -139,17 +136,34 @@ public function transferToken(
     //grab PP1 scriptPubKey from parentRawTx
 
     bytes parentScriptPubKey = parentPP1Output.script;
-    bytes rebuiltScriptPub = parentScriptPubKey[:114] +  this.ownerPKH + parentScriptPubKey[134:]; //20 bytes for pkh
+    bytes rebuiltPP1Script = parentScriptPubKey[:114] +  this.ownerPKH + parentScriptPubKey[134:]; //20 bytes for pkh
  
-    require(rebuiltScriptPub == scriptPubKey);
+    require(sha256(rebuiltPP1Script) == sha256(scriptPubKey)); //compare smaller data sizes for efficiency
 
-    //2. Rebuild PP2 Token Output and verify same as parent Tx
-    //FIXME: TODO !!!
-    // int fundingOutpointOffset = 0;
-    // int witnessChangePKHOffset = fundingOutpointOffset + 36; //fundingOutpoint is 36 bytes
-    // int changeAmountOffset = witnessChangePKHOffset + 20; //PKH is 20 bytes long
-    // bytes rebuiltPP2 = parentPP2Output[:fundingOutpointOffset] +  this.ownerPKH + parentScriptPubKey[133:]; //20 bytes for pkh
 
+    //2. Rebuild PP2 Output Script and verify that it is the same as parent Tx
+    int fundingOutpointOffset = 117;
+    int witnessChangePKHOffset = fundingOutpointOffset + 37; //fundingOutpoint is 36 bytes
+    int changeAmountOffset = witnessChangePKHOffset + 21; //PKH is 20 bytes long
+    bytes parentPP2Script = parentPP2Output.script;
+
+    bytes pp2OutputScript = TxUtil.getScriptCodeFromOutput(pp2OutputBytes);
+    bytes witnessFundingOutpoint = pp2OutputScript[fundingOutpointOffset: witnessChangePKHOffset];
+    bytes witnessChangePKH = pp2OutputScript[witnessChangePKHOffset:changeAmountOffset - 1];
+    bytes witnessChangeAmount = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset + 4];
+
+    //TODO: Data validation
+    // .   Pushdata assertions for Parent PP2 Constructor args.
+
+    bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointOffset]  //prepend script bytes
+                             + witnessFundingOutpoint //replace fundingOutpoint with our own fundingOutpoint 
+                             + witnessChangePKH //replace witness change PKH with ours
+                             + witnessChangeAmount //replace changeAmount with our own
+                             + parentPP2Script[changeAmountOffset + 4:]; //append reset of script
+
+    //assert that data substitutions within parent PP2 script yields the same 
+    //data as this transaction's PP2 script
+    require(sha256(rebuiltPP2Script) == sha256(pp2OutputScript)); //compare smaller data sizes for efficiency
 
     //check that second TxInput of current Tx spends from parentRawTx
     // bytes outpoint2 = this.readOutpoint2(fullTx); //should be readOutpoint3 !?
