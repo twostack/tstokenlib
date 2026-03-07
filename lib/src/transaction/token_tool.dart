@@ -14,7 +14,6 @@
    limitations under the License.
 */
 
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:buffer/buffer.dart';
@@ -32,17 +31,13 @@ import 'utils.dart';
 
 class TokenTool {
 
-  TokenTool();
+  final NetworkType networkType;
+  final BigInt defaultFee;
+
+  TokenTool({this.networkType = NetworkType.TEST, BigInt? defaultFee})
+      : defaultFee = defaultFee ?? BigInt.from(135);
 
   var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-
-  int readVarIntNum(ByteDataReader reader) {
-    var varint = VarInt.fromStream(reader);
-    return varint.value;
-  }
-
-
-
 
   Transaction createWitnessTxn(
       TransactionSigner fundingSigner, //assumes the same privatekey spends PP1 & Funding UTXO
@@ -54,7 +49,7 @@ class TokenTool {
       TokenAction action,
       ){
 
-    var ownerAddress = Address.fromPublicKey(ownerPubkey, NetworkType.TEST);
+    var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash); //PP2 unlocker only needs token transaction's txid
     var witnessLocker = ModP2PKHLockBuilder.fromAddress(ownerAddress);  //witness is locked to current token holder
     var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
@@ -69,11 +64,6 @@ class TokenTool {
 
     var subscript1 = tokenTx.outputs[1].script;
     var preImagePP1 = Sighash().createSighashPreImage(preImageTxnForPP1, sigHashAll, 1, subscript1 , BigInt.one);
-
-
-    print("==============");
-    print("PP1 PreImage");
-    TransactionUtils.printPreImage(preImagePP1!);
 
 
     var tsl1 = TransactionUtils();
@@ -94,11 +84,6 @@ class TokenTool {
 
     //updated padding bytes
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
-    print("Unpadded Witness Hex: ${witnessTx.serialize()}");
-    print( witnessTx.inputs[1].scriptBuilder?.getScriptSig().toString());
-    print("Padding bytes: ${hex.encode(paddingBytes)}");
-    print("TokenTx LHS : " + hex.encode(tokenTxLHS));
-    print("PP2 Output Bytes : ${hex.encode(pp2Output)}");
 
     pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash);
 
@@ -109,25 +94,6 @@ class TokenTool {
         .spendToLockBuilder(witnessLocker, BigInt.one)
         .build(false);
 
-
-    ///JUST FOR DEBUG >>>
-    var pp2PreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
-        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-        .spendToLockBuilder(witnessLocker, BigInt.one)
-        .withFee(BigInt.from(100))
-        .build(false);
-
-    var subscript2 = tokenTx.outputs[2].script;
-    var preImagePP2 = Sighash().createSighashPreImage(pp2PreImageTxn, sigHashAll, 2, subscript2 , BigInt.one);
-
-    print("=========================");
-    print("PreImage PP2 Hex: ${hex.encode(preImagePP2!)}");
-    // print("PreImage PP2 Hash: ${hex.encode(Sha256(preImagePP2))}")
-    print("Printing PreImage for PP2");
-    TransactionUtils.printPreImage(preImagePP2);
-    // << DEBUG ////
 
     return witnessTx;
 
@@ -168,9 +134,6 @@ class TokenTool {
     outputWriter.write(witnessFundingTxId); //32 byte txid in txFormat
     outputWriter.writeUint32(1, Endian.little);
     var fundingOutpoint = outputWriter.toBytes();
-    // print("Witness Funding Outpoint : ${hex.encode(fundingOutpoint)}");
-
-    // var fundingOutpoint = getOutpoint(witnessTxId);
 
     var pp2Locker = PP2LockBuilder(fundingOutpoint,  hex.decode(recipientAddress.pubkeyHash160), 1);
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
@@ -201,10 +164,8 @@ class TokenTool {
       List<int> tokenId,
       ){
 
-    var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, NetworkType.TEST);
+    var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
 
-    //funding is assumed to be by owner
-    // var recipientAddress = Address.fromPublicKey(recipientPubKey, NetworkType.TEST);
     var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId);
 
     var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1);
@@ -212,9 +173,7 @@ class TokenTool {
 
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    // var prevWitnessUnlocker = P2PKHUnlockBuilder(currentOwnerPubkey);
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
-    // var newWitnessLocker = P2PKHLockBuilder.fromPublicKey(currentOwnerPubKey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var childPreImageTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -224,20 +183,14 @@ class TokenTool {
         .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
         .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
         .sendChangeToPKH(currentOwnerAddress)
-        .withFee(BigInt.from(135)) //FIXME: This fee !
+        .withFee(defaultFee)
         .build(false);
-
-    // childPreImageTxn.serialize();
 
     var pp3Subscript = prevTokenTx.outputs[3].script;
     var sigPreImageChildTx = Sighash().createSighashPreImage(childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
 
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage)  = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
-
-    print("Child Token SigPreImage: ${hex.encode(sigPreImageChildTx!)}");
-    print("Partial Hash : ${hex.encode(partialHash)}");
-    print("Partial PreImage: ${hex.encode(witnessPartialPreImage)}");
 
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
@@ -247,14 +200,14 @@ class TokenTool {
     );
 
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker) //fixme. should be child's funding tx
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker) //one output only in witness
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1
         .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
         .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
         .sendChangeToPKH(currentOwnerAddress)
-        .withFee(BigInt.from(135))
+        .withFee(defaultFee)
         .build(false);
 
     return childTxn;

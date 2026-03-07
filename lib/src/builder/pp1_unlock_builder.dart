@@ -129,20 +129,6 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
   void parse(SVScript script) {
       var chunkList = script.chunks;
 
-      // if (chunkList.length < 1000) { //arbitrary length check
-      //   throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for PP1 ScriptPubkey");
-      // }
-
-      //check length of recipient address
-      // if (chunkList[11].len != 20) {
-      //   throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient Address has invalid length. Maybe not a PP1 script ? ");
-      // }
-      //
-      // //check length of token id
-      // if (chunkList[12].len != 32) {
-      //   throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "TokenId has invalid length. Maybe not a PP1 script ? ");
-      // }
-
       this._preImage = chunkList[0].buf;
       this._pp2Output = chunkList[1].buf;
       this._ownerPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);

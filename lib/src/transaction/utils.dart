@@ -18,10 +18,14 @@ import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
-import 'package:tstokenlib/src/transaction/partial_sha256.dart';
+import 'partial_sha256.dart';
 
 class TransactionUtils {
-  var LOCKTIME_SIZE = 4;
+  // SHA256 processes data in 64-byte (512-bit) blocks
+  static const int SHA256_BLOCK_SIZE = 64;
+
+  // Transaction locktime field is always 4 bytes
+  static const int LOCKTIME_SIZE = 4;
 
   int getInOutSize(Transaction tx) {
     return tx.inputs[2].serialize().length + 1 + tx.outputs[0].serialize().length;
@@ -35,28 +39,19 @@ class TransactionUtils {
     // size(last input) + size(all outputs). assumed to be < 128 bytes
     var inOutSize = getInOutSize(witnessTx);
 
-    //pad things so that the start of the last input falls on a 64 byte boundary
-    //the sha256 padding will take us the rest of the way
-
+    // Pad so that the start of the last input falls on a 64-byte (SHA256 block) boundary.
+    // The SHA256 padding will take us the rest of the way.
     var lastInputStart = originalSize - (inOutSize + LOCKTIME_SIZE);
 
-    // lastInputStart = lastInputStart  + 72 +  72; //add in room for two sigs along with pushdata bytes
-
-    //we don't want this falling on exact boundary, so fudge by -2 bytes
-    if (lastInputStart % 64 == 0){
+    // Avoid landing exactly on a block boundary — fudge by -2 bytes
+    if (lastInputStart % SHA256_BLOCK_SIZE == 0){
         lastInputStart -= 2;
     }
 
-    var paddingSize = originalSize % 64;
+    // Place the start of the last input on a 64-byte boundary
+    var lastBlockPadding = SHA256_BLOCK_SIZE - (lastInputStart % SHA256_BLOCK_SIZE);
 
-    //place the start of the last input on a 64 byte boundary
-    //expect (originalSize + lastBlockPadding - inOutSize ) % 64 == 0
-    // lastBlockPadding == inOutSize - originalSize
-    var lastBlockPadding = 64 - (lastInputStart % 64);
-
-    var paddingScriptSize = ScriptBuilder().addData(Uint8List(lastBlockPadding)).build().buffer.length;
-
-    // we subtract 1 to accommodate the pushdata byte in script.
+    // We subtract 1 to accommodate the pushdata byte in script.
     // +2 for placeholder padding prior to running this algo
     return Uint8List(lastBlockPadding - 1 + 2);
   }
@@ -114,43 +109,5 @@ class TransactionUtils {
     });
 
     return writer.toBytes();
-  }
-
-
-  static void printPreImage(List<int> preImage) {
-
-    var reader = ByteDataReader(endian: Endian.little)..add(preImage);
-
-    var version = reader.readUint32();
-    var outpointsHash = reader.read(32);
-    var hashSequence = reader.read(32);
-    var outpointTxId = reader.read(32);
-    var outpointIndex = reader.readUint32();
-    var scriptLen = readVarIntNum(reader);
-    var scriptPubkeyBytes = reader.read(scriptLen);
-    var scriptCode = SVScript.fromByteArray(scriptPubkeyBytes);
-    var outputAmount = reader.readUint64();
-    var sequenceNum = reader.readUint32();
-    var hashScriptPub = reader.read(32);
-    var nLocktime = reader.readUint32();
-    var sighashType = reader.readUint32();
-
-    print("-------- SigHash PreImage -------");
-    print("HEX: ${hex.encode(preImage)}");
-    print("version: ${version}");
-    print("hashPrevOuts: ${hex.encode(outpointsHash)}");
-    print("hashSequence: ${hex.encode(hashSequence)}");
-    print("outpointTxId: ${hex.encode(outpointTxId)}");
-    print("outpointIndex: ${outpointIndex}");
-    print("outputAmount: ${outputAmount}");
-    print("sequenceNum: ${sequenceNum}");
-    print("nLockTime: ${nLocktime}");
-    print("sighashType: ${sighashType}");
-    print("scriptPubKey: ${hex.encode(scriptPubkeyBytes)}");
-    print("            : ${scriptCode.toString(type: 'asm')}");
-    print("hashOutputs: ${hex.encode(hashScriptPub)}");
-    print("---------------------------------");
-
-
   }
 }

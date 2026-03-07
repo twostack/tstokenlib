@@ -43,7 +43,17 @@ class PP2LockBuilder extends LockingScriptBuilder{
   List<int> _witnessChangePKH;
   int _changeAmount;
 
-  PP2LockBuilder(this._fundingOutpoint, this._witnessChangePKH, this._changeAmount);
+  PP2LockBuilder(this._fundingOutpoint, this._witnessChangePKH, this._changeAmount) {
+    if (_fundingOutpoint.length != 36) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Funding outpoint must be 36 bytes (32-byte txid + 4-byte index)");
+    }
+    if (_witnessChangePKH.length != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Witness change PKH must be 20 bytes");
+    }
+    if (_changeAmount < 0) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Change amount must be non-negative");
+    }
+  }
 
   @override
   SVScript getScriptPubkey() {
