@@ -27,16 +27,14 @@ import "util.scrypt";
 */
 contract Tsl1WitnessCheck{
 
-    //FIXME: Need funding Tx Outpoint (for child txn)
     public function unlock(SigHashPreimage preImage, bytes partialHash, bytes witnessPartialPreImage, bytes fundingTxId) {
 
 
+        //complete the partially applied sha256 calculation of the Witness' PreImage
         bytes witnessHash = PartialSha256.partialSha256(partialHash, witnessPartialPreImage, b'');
 
-        //Witness TxId is sha256d of result
+        //Witness TxId is sha256d 
         bytes witnessTxId = sha256(witnessHash);
-
-        // require(witnessTxId == witnessTxId);
 
         bytes myOutpoint = Util.outpoint(preImage);
         bytes witnessOutpoint = myOutpoint[:32] + Utils.toLEUnsigned(2, 4);
@@ -45,21 +43,22 @@ contract Tsl1WitnessCheck{
         bytes witnessPartialOutpoint = witnessPartialPreImage[:36];
         require(witnessOutpoint == witnessPartialOutpoint);
 
-        bytes hashPrevOuts = Util.hashPrevouts(preImage);
-
-
+        //setup the expected values of the Sighash PreImages' hashPrevOuts
         bytes prevOutpoint1 = fundingTxId + Utils.toLEUnsigned(1, 4);
         bytes prevOutpoint2 = witnessTxId + Utils.toLEUnsigned(0, 4);
 
-        //calculate the sha256d hash of all outpoints in spending txn.
+        //calculate the sha256d hash of all outpoints in spending txn. (hashPrevOuts)
         bytes calcHashPrevOuts = sha256(sha256(prevOutpoint1 + prevOutpoint2 + myOutpoint));
+
+        //get the hashPrevOuts from the supplied Sighash PreImage
+        //we will check this preImage for validity right at the end of this function
+        bytes hashPrevOuts = Util.hashPrevouts(preImage);
         
         //assert that child txn is spending from expected outpoints
         require(hashPrevOuts == calcHashPrevOuts);
 
-        //Checksig after Code Separator at end of script, to remove all sha256 code from pushed preImage
+        //Checksig after Code Separator at end of script, to remove all sha256 code from sighash-pushed preImage
         require(Tx.checkPreimageOCS(preImage)); 
-
 
     }
 

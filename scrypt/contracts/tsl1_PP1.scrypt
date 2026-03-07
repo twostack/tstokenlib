@@ -102,11 +102,11 @@ public function transferToken(
     require(len(padding) > 0);
 
     //assert preimage
-    // require(Tx.checkPreimage(preImage)); 
+    require(Tx.checkPreimage(preImage)); 
 
     //assert P2PKH unlock conditions are met
     require(hash160(recipientPubKey) == this.ownerPKH);
-    // require(checkSig(recipientSig, recipientPubKey));
+    require(checkSig(recipientSig, recipientPubKey));
 
     //now rebuild the current Tx
     // - obtain RHS template from the parentRawTx
@@ -176,8 +176,7 @@ public function transferToken(
     //data as this transaction's PP2 script
     require(sha256(rebuiltPP2Script) == sha256(pp2OutputScript)); //compare smaller data sizes for efficiency
 
-    //check that second TxInput of current Tx spends from parentRawTx
-    // bytes outpoint2 = this.readOutpoint2(fullTx); //should be readOutpoint3 !?
+    //check that second TxInput of current Tx spends from parentRawTx's Sha256 output
     bytes outpoint3 = this.readOutpoint(fullTx, 2);
     bytes parentTxId = sha256(sha256(parentRawTx));
 

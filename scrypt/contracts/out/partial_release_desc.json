@@ -1,0 +1,69 @@
+{
+    "version": 9,
+    "compilerVersion": "1.19.0+commit.72eaeba",
+    "contract": "another",
+    "md5": "62fce8771ab3ba73fcf60b96350ccf27",
+    "structs": [
+        {
+            "name": "SortedItem",
+            "params": [
+                {
+                    "name": "item",
+                    "type": "T"
+                },
+                {
+                    "name": "idx",
+                    "type": "int"
+                }
+            ],
+            "genericTypes": [
+                "T"
+            ]
+        }
+    ],
+    "library": [],
+    "alias": [
+        {
+            "name": "PubKeyHash",
+            "type": "Ripemd160"
+        }
+    ],
+    "abi": [
+        {
+            "type": "function",
+            "name": "dosomething",
+            "index": 0,
+            "params": [
+                {
+                    "name": "a",
+                    "type": "bytes"
+                },
+                {
+                    "name": "b",
+                    "type": "bytes"
+                },
+                {
+                    "name": "c",
+                    "type": "bytes"
+                },
+                {
+                    "name": "d",
+                    "type": "bytes"
+                },
+                {
+                    "name": "e",
+                    "type": "bytes"
+                }
+            ]
+        },
+        {
+            "type": "constructor",
+            "params": []
+        }
+    ],
+    "stateProps": [],
+    "buildType": "debug",
+    "file": "file:///Users/stephanfeb/IdeaProjects/tstokenlib/scrypt/contracts/partial.scrypt",
+    "hex": "547976517f517f517f7c7e7c7e7c7e01007e81776d6d6d51",
+    "sourceMapFile": ""
+}
