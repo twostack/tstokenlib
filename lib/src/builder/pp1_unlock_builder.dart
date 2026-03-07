@@ -58,6 +58,10 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
       );
 
 
+  PP1UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
+      : _ownerPubKey = ownerPubKey,
+        action = TokenAction.BURN;
+
   //Set issuanceWitness to true if this is the witness for the issuance transaction
   PP1UnlockBuilder.fromScript(SVScript script, {TokenAction this.action = TokenAction.TRANSFER}): super.fromScript(script);
 
@@ -98,15 +102,9 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._prevTokenTx!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
 
-    }else {
-      var signature = signatures[0];
-      var sigBuffer = Uint8List.fromList(hex.decode(signature.toTxFormat()));
-      var pkBuffer = Uint8List.fromList(hex.decode(_ownerPubKey!.toHex()));
-
-      return ScriptBuilder()
-          .addData(pkBuffer)
-          .addData(sigBuffer)
-          .build();
+    }else if (action == TokenAction.BURN) {
+      result.addData(Uint8List.fromList(hex.decode(_ownerPubKey!.toHex())));
+      result.addData(Uint8List.fromList(sigBytes));
     }
 
     switch (action!){

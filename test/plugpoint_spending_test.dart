@@ -453,4 +453,62 @@ void main() {
         returnsNormally);
   });
 
+  test("Can burn a newly issued token", timeout: Timeout(Duration(minutes: 2)), () {
+    var service = TokenTool();
+    var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+
+    // 1. Issue token to Bob
+    var bobFundingTx = getBobFundingTx();
+    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var issuanceTx = service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    expect(issuanceTx.outputs.length, 5);
+
+    // 2. Burn the token
+    var burnFundingTx = getBobFundingTx();
+    var burnTx = service.createBurnTokenTxn(
+      issuanceTx,
+      bobFundingSigner,
+      bobPub,
+      burnFundingTx,
+      bobFundingSigner,
+      bobPub,
+    );
+
+    // Burn tx should have only 1 output (change)
+    expect(burnTx.outputs.length, 1);
+
+    var interp = Interpreter();
+    var verifyFlags = Set<VerifyFlag>();
+    verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
+    verifyFlags.add(VerifyFlag.LOW_S);
+    verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+
+    // Verify PP1 burn spending (input[1])
+    var scriptSigPP1 = burnTx.inputs[1].script;
+    var scriptPubKeyPP1 = issuanceTx.outputs[1].script;
+    var outputSatsPP1 = issuanceTx.outputs[1].satoshis;
+    expect(
+        () => interp.correctlySpends(
+            scriptSigPP1!, scriptPubKeyPP1, burnTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1)),
+        returnsNormally);
+
+    // Verify PP2 burn spending (input[2])
+    var scriptSigPP2 = burnTx.inputs[2].script;
+    var scriptPubKeyPP2 = issuanceTx.outputs[2].script;
+    var outputSatsPP2 = issuanceTx.outputs[2].satoshis;
+    expect(
+        () => interp.correctlySpends(
+            scriptSigPP2!, scriptPubKeyPP2, burnTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2)),
+        returnsNormally);
+
+    // Verify PartialWitness burn spending (input[3])
+    var scriptSigPW = burnTx.inputs[3].script;
+    var scriptPubKeyPW = issuanceTx.outputs[3].script;
+    var outputSatsPW = issuanceTx.outputs[3].satoshis;
+    expect(
+        () => interp.correctlySpends(
+            scriptSigPW!, scriptPubKeyPW, burnTx, 3, verifyFlags, Coin.valueOf(outputSatsPW)),
+        returnsNormally);
+  });
+
 }

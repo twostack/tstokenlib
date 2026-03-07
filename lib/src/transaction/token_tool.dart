@@ -225,6 +225,33 @@ class TokenTool {
     return childTxn;
   }
 
+  Transaction createBurnTokenTxn(
+      Transaction tokenTx,
+      TransactionSigner ownerSigner,
+      SVPublicKey ownerPubkey,
+      Transaction fundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey,
+      ){
+
+    var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var pp1BurnUnlocker = PP1UnlockBuilder.forBurn(ownerPubkey);
+    var pp2BurnUnlocker = PP2UnlockBuilder.forBurn(ownerPubkey);
+    var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
+
+    var burnTx = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1BurnUnlocker) //PP1
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker) //PP2
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)  //PartialWitness
+        .sendChangeToPKH(ownerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return burnTx;
+  }
+
   /// Returns the subscript after the Nth OP_CODESEPARATOR opcode (0-indexed).
   /// Walks raw script bytes following Bitcoin script encoding to skip pushdata.
   SVScript _subscriptAfterCodeSep(SVScript script, int occurrenceIndex) {

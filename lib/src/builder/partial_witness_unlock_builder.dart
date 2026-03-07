@@ -16,7 +16,9 @@
 
 import 'dart:typed_data';
 
+import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
+import 'pp1_unlock_builder.dart';
 
 class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
@@ -24,6 +26,8 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _partialHash;
   List<int>? _partialWitnessPreImage;
   List<int>? _fundingTxId;
+  SVPublicKey? _ownerPubKey;
+  TokenAction? _action;
 
   PartialWitnessUnlockBuilder(
     List<int> preImage,
@@ -35,6 +39,10 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
       _partialWitnessPreImage = partialWitnessPreImage,
       _fundingTxId = fundingTxId;
 
+  PartialWitnessUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
+      : _ownerPubKey = ownerPubKey,
+        _action = TokenAction.BURN;
+
   PartialWitnessUnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
   List<int>? get preImage => _preImage;
@@ -44,6 +52,17 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
   @override
   SVScript getScriptSig() {
+    if (_action == TokenAction.BURN) {
+      if (signatures.isEmpty) return SVScript();
+      var sigBytes = hex.decode(signatures.first.toTxFormat());
+      var pkBytes = hex.decode(_ownerPubKey!.toHex());
+      return ScriptBuilder()
+          .addData(Uint8List.fromList(pkBytes))
+          .addData(Uint8List.fromList(sigBytes))
+          .opCode(OpCodes.OP_1) // function selector: burnToken=1
+          .build();
+    }
+
     if (_preImage == null) return SVScript();
 
     var builder = ScriptBuilder()

@@ -16,13 +16,21 @@
 
 import 'dart:typed_data';
 
+import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
+import 'pp1_unlock_builder.dart';
 
 class PP2UnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _outpointTxId;
+  SVPublicKey? _ownerPubKey;
+  TokenAction? _action;
 
   PP2UnlockBuilder(List<int> outpointTxId) : _outpointTxId = outpointTxId;
+
+  PP2UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
+      : _ownerPubKey = ownerPubKey,
+        _action = TokenAction.BURN;
 
   PP2UnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
@@ -30,6 +38,17 @@ class PP2UnlockBuilder extends UnlockingScriptBuilder {
 
   @override
   SVScript getScriptSig() {
+    if (_action == TokenAction.BURN) {
+      if (signatures.isEmpty) return SVScript();
+      var sigBytes = hex.decode(signatures.first.toTxFormat());
+      var pkBytes = hex.decode(_ownerPubKey!.toHex());
+      return ScriptBuilder()
+          .addData(Uint8List.fromList(pkBytes))
+          .addData(Uint8List.fromList(sigBytes))
+          .opCode(OpCodes.OP_1) // function selector: burnToken=1
+          .build();
+    }
+
     if (_outpointTxId == null) return SVScript();
     return ScriptBuilder()
         .addData(Uint8List.fromList(_outpointTxId!))
