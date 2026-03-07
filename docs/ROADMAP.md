@@ -46,7 +46,7 @@ Goal: Implement the missing protocol features required for real-world token usag
 ### 2.1 Token Metadata
 - [ ] Define a `TokenMetadata` data class with fields: name, symbol, description, decimals, total supply, icon URI
 - [ ] Define a serialization format for on-chain metadata storage (consider using B/MAP protocols already partially implemented)
-- [ ] Attach metadata to the issuance transaction (likely as an additional OP_RETURN output)
+- [x] Attach metadata to the issuance transaction as an additional OP_RETURN output (`MetadataLockBuilder`; metadata is carried forward on transfer)
 - [ ] Implement metadata parsing from existing token transactions
 
 ### 2.2 Issuer Identity
@@ -56,12 +56,13 @@ Goal: Implement the missing protocol features required for real-world token usag
 - [ ] Consider supporting Paymail-based identity resolution
 
 ### 2.3 Token Burn
-- [ ] Implement `burnToken()` in `TokenTool` using the existing `TokenAction.BURN` enum value
-- [ ] Wire up the `burnToken()` public function in `tsl1_PP1.scrypt` through the unlock builder
-- [ ] Add validation that only the current token owner can burn
+- [x] Implement `createBurnTokenTxn()` in `TokenTool` using the existing `TokenAction.BURN` enum value
+- [x] Wire up burn unlock through PP1/PP2/PartialWitness unlock builders
+- [x] Add validation that only the current token owner can burn (owner-only via `ownerPKH`)
 
 ### 2.4 Implement `parse()` Methods
-- [ ] `PP2LockBuilder.parse()` — reconstruct builder state from an existing PP2 locking script
+- [x] `PP2LockBuilder.parse()` — reconstruct builder state from an existing PP2 locking script
+- [x] `PP2UnlockBuilder.parse()` — reconstruct builder state from an existing PP2 unlocking script
 - [ ] `PartialWitnessLockBuilder.parse()` — reconstruct from existing partial witness script
 - [ ] `HodlLockBuilder.parse()` — reconstruct from existing HODL script
 - [ ] These are essential for reading token state from on-chain transactions
@@ -73,11 +74,11 @@ Goal: Implement the missing protocol features required for real-world token usag
 Goal: Build confidence that the protocol implementation is correct and handles edge cases.
 
 ### 3.1 Core Protocol Tests
-- [ ] Token issuance — valid issuance produces correct 4-output structure
-- [ ] Token transfer — single transfer with witness validation
+- [x] Token issuance — valid issuance produces correct 5-output structure (Change, PP1, PP2, PartialWitness, Metadata)
+- [x] Token transfer — single transfer with witness validation
 - [ ] Token transfer chain — multiple successive transfers (A -> B -> C)
-- [ ] Token burn — owner can burn, non-owner cannot
-- [ ] Witness transaction — correct partial SHA256 computation across various tx sizes
+- [x] Token burn — owner can burn, non-owner cannot
+- [x] Witness transaction — correct partial SHA256 computation across various tx sizes
 
 ### 3.2 Error & Edge Case Tests
 - [ ] Invalid/missing funding transaction
@@ -88,8 +89,8 @@ Goal: Build confidence that the protocol implementation is correct and handles e
 - [ ] Empty or oversized metadata
 
 ### 3.3 Builder Tests
-- [ ] PP1LockBuilder — lock/parse round-trip
-- [ ] PP2LockBuilder — lock/parse round-trip
+- [x] PP1LockBuilder — lock/parse round-trip
+- [x] PP2LockBuilder — lock/parse round-trip
 - [ ] PartialWitnessLockBuilder — lock/parse round-trip
 - [ ] ModP2PKHLockBuilder — lock/parse round-trip, verify swapped sig/pubkey order
 - [ ] AIPLockBuilder — signing and verification
@@ -116,7 +117,7 @@ Goal: Make the library usable by external developers.
 - [ ] Generate and host API reference docs
 
 ### 4.2 Architecture Guide
-- [ ] Document the 4-output transaction structure (Change, PP1, PP2, PP3)
+- [ ] Document the 5-output transaction structure (Change, PP1, PP2, PartialWitness, Metadata)
 - [ ] Explain the inductive proof mechanism and why no back-to-genesis tracing is needed
 - [ ] Explain the partial SHA256 witness mechanism
 - [ ] Document the relationship between token, witness, and funding transactions
@@ -152,10 +153,11 @@ Goal: Make the library usable by external developers.
 | `lib/src/transaction/partial_sha256.dart` | Single-block SHA256 implementation |
 | `lib/src/builder/pp1_lock_builder.dart` | PP1 inductive proof locking script |
 | `lib/src/builder/pp1_unlock_builder.dart` | PP1 unlocking script (issue/transfer/burn) |
-| `lib/src/builder/pp2_lock_builder.dart` | PP2 witness bridge locking script |
+| `lib/src/builder/pp2_lock_builder.dart` | PP2 witness bridge locking script (includes `ownerPKH` for burn support) |
 | `lib/src/builder/pp2_unlock_builder.dart` | PP2 unlocking script |
 | `lib/src/builder/partial_witness_lock_builder.dart` | PP3 partial SHA256 locking script |
 | `lib/src/builder/partial_witness_unlock_builder.dart` | PP3 unlocking script |
+| `lib/src/builder/metadata_lock_builder.dart` | Metadata OP_RETURN output builder |
 | `scrypt/contracts/tsl1_PP1.scrypt` | sCrypt: inductive proof contract |
 | `scrypt/contracts/tsl1_PP2.scrypt` | sCrypt: witness validation contract |
 | `scrypt/contracts/tsl1_partial_witness.scrypt` | sCrypt: partial SHA256 contract |
