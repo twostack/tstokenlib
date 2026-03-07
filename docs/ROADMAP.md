@@ -50,9 +50,9 @@ Goal: Implement the missing protocol features required for real-world token usag
 - [ ] Implement metadata parsing from existing token transactions
 
 ### 2.2 Issuer Identity
-- [ ] Implement issuer identity anchoring in PP1 (address the TODO at `pp1_lock_builder.dart:83`)
-- [ ] Integrate AIP (Author Identity Protocol) signing into the issuance flow
-- [ ] Add issuer public key verification during token transfer validation
+- [x] Implement issuer identity via separate identity anchor transaction (`IdentityAnchorBuilder` — MAP metadata + AIP ED25519 signature outputs)
+- [x] Integrate AIP signing into the issuance flow (signed identity link embedded in metadata via `MapLockBuilder`)
+- [x] Add issuer identity verification (`IdentityVerification` — verifies issuance-to-anchor link using ED25519 pubkey from anchor tx)
 - [ ] Consider supporting Paymail-based identity resolution
 
 ### 2.3 Token Burn
@@ -63,9 +63,9 @@ Goal: Implement the missing protocol features required for real-world token usag
 ### 2.4 Implement `parse()` Methods
 - [x] `PP2LockBuilder.parse()` — reconstruct builder state from an existing PP2 locking script
 - [x] `PP2UnlockBuilder.parse()` — reconstruct builder state from an existing PP2 unlocking script
-- [ ] `PartialWitnessLockBuilder.parse()` — reconstruct from existing partial witness script
-- [ ] `HodlLockBuilder.parse()` — reconstruct from existing HODL script
-- [ ] These are essential for reading token state from on-chain transactions
+- [x] `PartialWitnessLockBuilder.parse()` — reconstruct from existing partial witness script
+- [x] `HodlLockBuilder.parse()` — reconstruct from existing HODL script
+- [x] These are essential for reading token state from on-chain transactions
 
 ---
 
@@ -79,6 +79,7 @@ Goal: Build confidence that the protocol implementation is correct and handles e
 - [ ] Token transfer chain — multiple successive transfers (A -> B -> C)
 - [x] Token burn — owner can burn, non-owner cannot
 - [x] Witness transaction — correct partial SHA256 computation across various tx sizes
+- [x] Identity anchor — creation, issuance linking, and transfer preservation of identity metadata
 
 ### 3.2 Error & Edge Case Tests
 - [ ] Invalid/missing funding transaction
@@ -158,6 +159,8 @@ Goal: Make the library usable by external developers.
 | `lib/src/builder/partial_witness_lock_builder.dart` | PP3 partial SHA256 locking script |
 | `lib/src/builder/partial_witness_unlock_builder.dart` | PP3 unlocking script |
 | `lib/src/builder/metadata_lock_builder.dart` | Metadata OP_RETURN output builder |
+| `lib/src/builder/identity_anchor_builder.dart` | Identity anchor transaction builder (MAP + AIP) |
+| `lib/src/transaction/identity_verification.dart` | Issuer identity verification utilities |
 | `scrypt/contracts/tsl1_PP1.scrypt` | sCrypt: inductive proof contract |
 | `scrypt/contracts/tsl1_PP2.scrypt` | sCrypt: witness validation contract |
 | `scrypt/contracts/tsl1_partial_witness.scrypt` | sCrypt: partial SHA256 contract |
