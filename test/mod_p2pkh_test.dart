@@ -27,4 +27,14 @@ void main(){
 
   //<sig> <pubkey> OP_DUP OP_HASH160 20 0x650c4adb156f19e36a755c820d892cda108299c4 OP_EQUALVERIFY OP_CHECKSIG
 
+  test('call mod_add_5', (){
+    var template= "547954795479547954795479517f517f517f7c7e7c7e7c7e01007e815479517f517f517f7c7e7c7e7c7e01007e815479517f517f517f7c7e7c7e7c7e01007e815479517f517f517f7c7e7c7e7c7e01007e815479517f517f517f7c7e7c7e7c7e01007e81547954799353799352799378935580547f75517f517f517f7c7e7c7e7c7e777777777777777777776d6d6d51";
+
+    var script = SVScript.fromHex(template);
+    print(script);
+
+    template = '76517f517f517f7c7e7c7e7c7e01007e6d51';
+    script = SVScript.fromHex(template);
+    print(script);
+  });
 }
