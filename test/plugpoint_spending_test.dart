@@ -31,6 +31,12 @@ var alicePubkeyHex = "03afc7c94f8dd7cf7f7ab1e6b2334f26d930f27f01fad77dba260713e1
 
 var alicePubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
 
+var charlieWif = "cTTE1z7xTDxnpzCqC1q3fPafSQsMzgpQYT1ctb6QAj6Wrj6uYhog";
+SVPrivateKey charliePrivateKey = SVPrivateKey.fromWIF(charlieWif);
+SVPublicKey charliePubKey = charliePrivateKey.publicKey;
+var charlieAddress = Address.fromPublicKey(charliePubKey, NetworkType.TEST);
+var charliePubkeyHash = charlieAddress.pubkeyHash160;
+
 var issuerWif = "cQt5q5kwkiuMqQfqbc315eC3rrj3aT4Qe5htpsf9hBPhCvsZeJjA";
 SVPrivateKey issuerPrivateKey = SVPrivateKey.fromWIF(issuerWif);
 var issuerAddress = Address.fromPublicKey(issuerPrivateKey.publicKey, NetworkType.TEST);
@@ -453,6 +459,113 @@ void main() {
                   scriptSigPP2!, scriptPubKeyPP2, witnessTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2))
             },
         returnsNormally);
+  });
+
+  /*
+  Token transfer chain: A→B→C
+  Issue token to Bob, transfer to Alice, then transfer from Alice to Charlie
+   */
+  test("Can transfer token through a chain A→B→C (Bob→Alice→Charlie)", () async {
+    var service = TokenTool();
+    var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+
+    // 1. Issue token to Bob
+    var bobFundingTx = getBobFundingTx();
+    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    expect(issuanceTx.outputs.length, 5);
+
+    // 2. Create witness for the issuance
+    var issuanceWitnessTx = service.createWitnessTxn(
+      bobFundingSigner,
+      bobFundingTx,
+      issuanceTx,
+      List<int>.empty(),
+      bobPub,
+      Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
+      TokenAction.ISSUANCE,
+    );
+
+    // 3. Extract tokenId from issuance PP1
+    var pp1Unlocker = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var tokenId = pp1Unlocker.tokenId ?? [];
+    print("TokenID : ${hex.encode(tokenId)}");
+
+    // 4. Transfer token from Bob to Alice
+    var transferFundingTx = getBobFundingTx();
+    var aliceFundingTx = getAliceFundingTx();
+    var transferTxBobToAlice = service.createTokenTransferTxn(
+      issuanceWitnessTx,
+      issuanceTx,
+      bobPub,
+      aliceAddress,
+      transferFundingTx,
+      bobFundingSigner,
+      bobPub,
+      aliceFundingTx.hash,
+      tokenId,
+    );
+
+    print("Transfer Bob→Alice TxId: ${transferTxBobToAlice.id}");
+
+    // 5. Create witness for Alice's token (transfer witness)
+    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var aliceWitnessTx = service.createWitnessTxn(
+      aliceFundingSigner,
+      aliceFundingTx,
+      transferTxBobToAlice,
+      hex.decode(issuanceTx.serialize()),
+      alicePubKey,
+      bobPubkeyHash,
+      TokenAction.TRANSFER,
+    );
+
+    // 6. Transfer token from Alice to Charlie
+    var aliceTransferFundingTx = getAliceFundingTx();
+    var charlieFundingTx = getAliceFundingTx(); // reuse Alice funding as Charlie's witness funding source
+    var transferTxAliceToCharlie = service.createTokenTransferTxn(
+      aliceWitnessTx,
+      transferTxBobToAlice,
+      alicePubKey,
+      charlieAddress,
+      aliceTransferFundingTx,
+      aliceFundingSigner,
+      alicePubKey,
+      charlieFundingTx.hash,
+      tokenId,
+    );
+
+    print("Transfer Alice→Charlie TxId: ${transferTxAliceToCharlie.id}");
+
+    var interp = Interpreter();
+    var verifyFlags = Set<VerifyFlag>();
+    verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
+    verifyFlags.add(VerifyFlag.LOW_S);
+    verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+
+    // Verify spending from the witness output (ModP2PKH) in Alice→Charlie transfer
+    var scriptSigWitness = transferTxAliceToCharlie.inputs[1].script;
+    var scriptPubKeyWitness = aliceWitnessTx.outputs[0].script;
+    var outputSatsWitness = aliceWitnessTx.outputs[0].satoshis;
+    expect(
+        () => {
+              interp.correctlySpends(
+                  scriptSigWitness!, scriptPubKeyWitness, transferTxAliceToCharlie, 1, verifyFlags, Coin.valueOf(outputSatsWitness))
+            },
+        returnsNormally);
+
+    // Verify spending from PartialWitness output (PP3) of Alice's token tx
+    var scriptSigPP3 = transferTxAliceToCharlie.inputs[2].script;
+    var scriptPubKeyPP3 = transferTxBobToAlice.outputs[3].script;
+    var outputSatsPP3 = transferTxBobToAlice.outputs[3].satoshis;
+    expect(
+        () => {
+              interp.correctlySpends(
+                  scriptSigPP3!, scriptPubKeyPP3, transferTxAliceToCharlie, 2, verifyFlags, Coin.valueOf(outputSatsPP3))
+            },
+        returnsNormally);
+
+    print("Token transfer chain A→B→C completed successfully");
   });
 
   test("Can burn a newly issued token", timeout: Timeout(Duration(minutes: 2)), () async {
