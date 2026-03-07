@@ -9,6 +9,11 @@ import 'package:dartsv/dartsv.dart';
 import 'package:collection/collection.dart';
 
 
+/// Builds an OP_FALSE OP_RETURN script following the Author Identity Protocol (AIP).
+///
+/// AIP provides on-chain identity verification by embedding a cryptographic
+/// signature, the signer's public key, and the signing algorithm in an
+/// OP_RETURN output.
 class AIPLockBuilder extends LockingScriptBuilder {
 
   /*
@@ -29,13 +34,22 @@ class AIPLockBuilder extends LockingScriptBuilder {
 
    */
 
+  /// The AIP protocol prefix address.
   final String PREFIX = "15PciHG22SNLQJXMoSUaWVi7WSqc7hCfva";
+
+  /// The signing algorithm identifier (e.g. "ED25519").
   String? SIGNING_ALGORITHM;
+
+  /// The hex-encoded public key of the signer.
   String? publicKey;
+
+  /// The base64-encoded signature.
   String? signature;
 
+  /// Creates an AIP lock builder with the given [publicKey] and [signature].
   AIPLockBuilder(this.publicKey, this.signature, {this.SIGNING_ALGORITHM = "ED25519"});
 
+  /// Reconstructs an [AIPLockBuilder] by parsing an existing AIP script.
   AIPLockBuilder.fromScript(SVScript svScript) {
     parse(svScript);
   }
@@ -87,6 +101,8 @@ class AIPLockBuilder extends LockingScriptBuilder {
 
   }
 
+  /// Signs the given [locker]'s script and returns an [AIPLockBuilder] containing
+  /// the ED25519 signature and public key, or null if [wand] is null.
   static Future<AIPLockBuilder?> signLockingScript(LockingScriptBuilder locker, SignatureWand? wand) async {
 
     if (wand == null) return null;

@@ -19,12 +19,21 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
 
+/// The type of action being performed on a token.
 enum TokenAction {
+  /// Initial token creation.
   ISSUANCE,
+  /// Transfer of token ownership.
   TRANSFER,
+  /// Permanent destruction of a token.
   BURN
 }
 
+/// Builds the unlocking script (scriptSig) for spending the PP1 inductive proof output.
+///
+/// Supports three token actions: issuance, transfer, and burn. Each action
+/// produces a different scriptSig layout with the appropriate data pushes
+/// and an OP_N function selector.
 class PP1UnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _preImage;
   List<int>? _pp2Output;
@@ -42,8 +51,10 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _sigBytes;
 
 
+  /// The sighash preimage used for in-script signature verification.
   List<int>? get preImage => _preImage;
 
+  /// Creates a PP1 unlock builder for a token transfer.
   PP1UnlockBuilder(
       this._preImage,
       this._pp2Output,
@@ -58,11 +69,15 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
       );
 
 
+  /// Creates a PP1 unlock builder for burning (destroying) a token.
   PP1UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
       : _ownerPubKey = ownerPubKey,
         action = TokenAction.BURN;
 
-  //Set issuanceWitness to true if this is the witness for the issuance transaction
+  /// Reconstructs a [PP1UnlockBuilder] by parsing an existing script.
+  ///
+  /// [action] defaults to [TokenAction.TRANSFER]; set to [TokenAction.ISSUANCE]
+  /// when parsing the witness for the issuance transaction.
   PP1UnlockBuilder.fromScript(SVScript script, {TokenAction this.action = TokenAction.TRANSFER}): super.fromScript(script);
 
   // PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
@@ -139,21 +154,30 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
 
   }
 
+  /// The serialized PP2 output script used during transfer verification.
   List<int>? get pp2Output => _pp2Output;
 
+  /// The public key of the current token owner.
   SVPublicKey? get ownerPubKey => _ownerPubKey;
 
+  /// The satoshi amount sent as change.
   BigInt? get changeAmount => _changeAmount;
 
+  /// The left-hand side of the token transaction used in inductive proof.
   List<int>? get tokenLHS => _tokenLHS;
 
+  /// The serialized previous token transaction.
   List<int>? get prevTokenTx => _prevTokenTx;
 
+  /// Padding bytes for the witness partial SHA256 calculation.
   List<int>? get witnessPadding => _witnessPadding;
 
+  /// The funding transaction ID for the witness transaction.
   List<int>? get witnessFundingTxId => _witnessFundingTxId;
 
+  /// The pubkey hash of the change output recipient.
   String? get changePKH => _changePKH;
 
+  /// The raw signature bytes (populated when parsing an existing script).
   List<int>? get sigBytes => _sigBytes;
 }

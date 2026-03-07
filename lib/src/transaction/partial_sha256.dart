@@ -16,10 +16,16 @@
 
 import 'dart:typed_data';
 
+/// A block-at-a-time SHA256 implementation used for partial hash proofs.
+///
+/// Unlike a standard SHA256 that processes an entire message, this class
+/// exposes [hashOneBlock] to hash individual 512-bit blocks with a caller-supplied
+/// intermediate hash vector, enabling partial/resumable SHA256 computation.
 class PartialSha256 {
 
   static int uint32mask = 0xFFFFFFFF;
 
+  /// The standard SHA256 initial hash vector (H0..H7).
   static Int32List STD_INIT_VECTOR = Int32List.fromList([
     0x6a09e667, -0x4498517b, 0x3c6ef372, -0x5ab00ac6, 0x510e527f, -0x64fa9774, 0x1f83d9ab, 0x5be0cd19
   ]);
@@ -38,6 +44,8 @@ class PartialSha256 {
   static const BLOCK_BITS = 512;
   static const int BLOCK_BYTES = BLOCK_BITS ~/ 8;
 
+  /// Pads [message] according to SHA256 specifications (append 1-bit, zero-pad,
+  /// append 64-bit length) and returns the result as an [Int32List] of big-endian words.
   static Int32List getPaddedPreImage(Uint8List message) {
     // New message length: original + 1-bit and padding + 8-byte length
     int finalBlockLength = message.length % BLOCK_BYTES;
@@ -70,6 +78,12 @@ class PartialSha256 {
     return result;
   }
 
+  /// Hashes a single 512-bit (16-word) SHA256 block using [inputVector] as the
+  /// initial hash state. Returns the resulting 32-byte intermediate hash.
+  ///
+  /// [oneChunk] must contain exactly 16 Int32 words (one SHA256 block).
+  /// [inputVector] is the 8-word hash state from the previous block
+  /// (or [STD_INIT_VECTOR] for the first block).
   static Uint8List hashOneBlock(Int32List oneChunk, Int32List inputVector) {
 
     // working arrays
@@ -125,6 +139,7 @@ class PartialSha256 {
   }
 
 
+  /// Converts an 8-element [Int32List] hash vector to a 32-byte big-endian [Uint8List].
   static Uint8List toByteArray(Int32List vector){
 
     var bytes = ByteData(32);
@@ -173,6 +188,9 @@ class PartialSha256 {
     return (rotateRight(x, 6) ^ rotateRight(x, 11) ^ rotateRight(x, 25));
   }
 
+  /// Converts a [Uint8List] to an [Int32List] by reading big-endian 32-bit words.
+  ///
+  /// Throws [ArgumentError] if the input length is not a multiple of 4.
   static Int32List uint8ListToInt32List(Uint8List uint8List) {
     // Create a ByteData view on the Uint8List
     ByteData byteData = ByteData.sublistView(uint8List);
@@ -192,6 +210,7 @@ class PartialSha256 {
     return int32List;
   }
 
+  /// Converts an [Int32List] to a [Uint8List] by writing big-endian 32-bit words.
   static Uint8List int32ListToUint8List(Int32List int32List) {
     // Allocate a ByteData buffer with the same size as the Int32List in bytes
     final byteData = ByteData(int32List.length * 4); // 4 bytes per int

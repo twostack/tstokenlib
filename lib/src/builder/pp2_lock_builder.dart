@@ -33,6 +33,11 @@ import 'package:dartsv/dartsv.dart';
  *  changeAmount   - The satoshi amount locked by the Witness' output
  *  ownerPKH       - The Pubkey Hash of the current token owner (needed for burn)
  */
+/// Builds the locking script for the PP2 output (index 2) of a token transaction.
+///
+/// PP2 is the witness bridge. It connects the partial SHA256 witness output (index 3)
+/// to the inductive proof in PP1 (index 1) by asserting that all witness outpoints
+/// spend from this transaction via an in-script sighash preimage rebuild.
 class PP2LockBuilder extends LockingScriptBuilder{
 
   //DEBUG
@@ -46,6 +51,7 @@ class PP2LockBuilder extends LockingScriptBuilder{
   int _changeAmount;
   List<int> _ownerPKH;
 
+  /// Reconstructs a [PP2LockBuilder] by parsing an existing script.
   PP2LockBuilder.fromScript(SVScript script) :
       _fundingOutpoint = [],
       _witnessChangePKH = [],
@@ -53,6 +59,12 @@ class PP2LockBuilder extends LockingScriptBuilder{
       _ownerPKH = [],
       super.fromScript(script);
 
+  /// Creates a PP2 locking script builder.
+  ///
+  /// [_fundingOutpoint] - 36-byte outpoint (txid + index) funding the witness transaction.
+  /// [_witnessChangePKH] - 20-byte pubkey hash for the witness change output.
+  /// [_changeAmount] - Satoshi amount locked by the witness change output.
+  /// [_ownerPKH] - 20-byte pubkey hash of the current token owner (needed for burn).
   PP2LockBuilder(this._fundingOutpoint, this._witnessChangePKH, this._changeAmount, this._ownerPKH) {
     if (_fundingOutpoint.length != 36) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Funding outpoint must be 36 bytes (32-byte txid + 4-byte index)");
@@ -80,9 +92,16 @@ class PP2LockBuilder extends LockingScriptBuilder{
         return SVScript.fromHex(scriptHex);
   }
 
+  /// The 36-byte outpoint funding the witness transaction.
   List<int> get fundingOutpoint => _fundingOutpoint;
+
+  /// The 20-byte pubkey hash for the witness change output.
   List<int> get witnessChangePKH => _witnessChangePKH;
+
+  /// The satoshi amount locked by the witness change output.
   int get changeAmount => _changeAmount;
+
+  /// The 20-byte pubkey hash of the current token owner.
   List<int> get ownerPKH => _ownerPKH;
 
   @override

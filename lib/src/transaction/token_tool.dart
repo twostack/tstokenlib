@@ -34,20 +34,42 @@ import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
 import 'utils.dart';
 
+/// High-level API for creating TSToken transactions (issuance, transfer, witness, burn).
+///
+/// Encapsulates the construction of multi-output token transactions that conform
+/// to the TSToken protocol's proof-carrying transaction structure.
 class TokenTool {
 
+  /// The BSV network type (mainnet or testnet) used for address derivation.
   final NetworkType networkType;
+
+  /// Default transaction fee in satoshis, applied to transfer and burn transactions.
   final BigInt defaultFee;
 
+  /// Creates a [TokenTool] instance.
+  ///
+  /// [networkType] defaults to [NetworkType.TEST].
+  /// [defaultFee] defaults to 135 satoshis if not specified.
   TokenTool({this.networkType = NetworkType.TEST, BigInt? defaultFee})
       : defaultFee = defaultFee ?? BigInt.from(135);
 
   var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
+  /// Creates a witness transaction that proves ownership of a token.
+  ///
+  /// Produces a 1-output transaction: Witness (locked to current token holder).
+  /// Spends: FundingUTXO (output[1]), PP1, PP2 from [tokenTx].
+  ///
+  /// [fundingSigner] signs both the funding input and PP1 (assumes same private key).
+  /// [fundingTx] provides the funding UTXO at output[1].
+  /// [tokenTx] is the token transaction to witness.
+  /// [parentTokenTxBytes] is the raw serialized bytes of the parent token transaction.
+  /// [tokenChangePKH] is the pubkey hash for the token's change output.
+  /// [action] specifies the token action (e.g., issue or transfer).
   Transaction createWitnessTxn(
-      TransactionSigner fundingSigner, //assumes the same privatekey spends PP1 & Funding UTXO
-      Transaction fundingTx,  //The transaction containing the funding UTXO for the Witness Txn
-      Transaction tokenTx, //token to be a witness for
+      TransactionSigner fundingSigner,
+      Transaction fundingTx,
+      Transaction tokenTx,
       List<int> parentTokenTxBytes,
       SVPublicKey ownerPubkey,
       String tokenChangePKH,
@@ -104,17 +126,17 @@ class TokenTool {
 
   }
 
-  /*
-   * For the issuance transaction, all PKH are locked to the recipient
-   * Additionally the expected Witness PKH output that is asserted within
-   * PP2 must also be locked to this recipient, even though the Witness Txn
-   * does not yet exist.
-   * In essence, both the TokenTx and it's corresponding WitnessTx are locked
-   * to one PKH (that of the current token holder).
-   *
-   * Additionally, we set the tokenId to the TxId of the Fundingin Transaction
-   * to the first Witness Transaction. I.e. TokenId = TxId(FirstWitnessFundingTxn)
-   */
+  /// Creates a token issuance transaction with a 5-output structure:
+  /// Change, PP1, PP2, PartialWitness, Metadata.
+  ///
+  /// All proof outputs and the expected witness output are locked to [recipientAddress].
+  /// The tokenId is set to the txid of [tokenFundingTx].
+  ///
+  /// [tokenFundingTx] funds the issuance; its txid becomes the initial tokenId.
+  /// [witnessFundingTxId] is the txid of the transaction that will fund the first witness.
+  /// [metadataBytes] optional raw metadata to embed in the OP_RETURN output.
+  /// [identityTxId] optional identity anchor txid for issuer identity linking.
+  /// [issuerWand] optional ED25519 signing wand; required when [identityTxId] is provided.
   Future<Transaction> createTokenIssuanceTxn(
       Transaction tokenFundingTx,
       TransactionSigner fundingTxSigner,
@@ -173,6 +195,7 @@ class TokenTool {
     return tokenTxBuilder.build(false);
   }
 
+  /// Constructs a 36-byte outpoint (txid + output index 1) from a transaction ID.
   List<int> getOutpoint(List<int> txId){
     var outputWriter = ByteDataWriter();
     outputWriter.write(txId); //32 byte txid
@@ -180,6 +203,19 @@ class TokenTool {
     return outputWriter.toBytes();
   }
 
+  /// Creates a token transfer transaction with a 5-output structure:
+  /// Change, PP1, PP2, PartialWitness, Metadata.
+  ///
+  /// Spends: FundingUTXO, previous Witness output, and PartialWitness (output[3])
+  /// from [prevTokenTx]. Metadata is carried forward from the parent token transaction.
+  ///
+  /// [prevWitnessTx] is the previous witness transaction whose output is spent.
+  /// [prevTokenTx] is the parent token transaction being transferred from.
+  /// [currentOwnerPubkey] is the public key of the current token holder.
+  /// [recipientAddress] is the address of the new token recipient.
+  /// [recipientWitnessFundingTxId] txid of the recipient's witness funding transaction
+  ///   (expected to have funding in output[1]).
+  /// [tokenId] is the persistent token identifier carried across transfers.
   Transaction createTokenTransferTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
@@ -188,7 +224,7 @@ class TokenTool {
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
-      List<int> recipientWitnessFundingTxId, //Witness funding txn funded by the recipient. Is expected to have funding in output[1]
+      List<int> recipientWitnessFundingTxId,
       List<int> tokenId,
       ){
 
@@ -246,6 +282,14 @@ class TokenTool {
     return childTxn;
   }
 
+  /// Creates a burn transaction that destroys a token by spending all its proof outputs.
+  ///
+  /// Spends PP1 (output[1]), PP2 (output[2]), and PartialWitness (output[3])
+  /// from [tokenTx] using burn-mode unlockers. Change is sent back to the owner.
+  ///
+  /// [tokenTx] is the token transaction to burn.
+  /// [ownerSigner] signs the token proof inputs (PP1, PP2, PartialWitness).
+  /// [ownerPubkey] is the public key of the current token holder.
   Transaction createBurnTokenTxn(
       Transaction tokenTx,
       TransactionSigner ownerSigner,

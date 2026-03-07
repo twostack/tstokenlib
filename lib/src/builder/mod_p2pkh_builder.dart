@@ -39,26 +39,36 @@ Total : 109 bytes (still short of the 128 byte limit)
 76a914650c4adb156f19e36a755c820d892cda108299c488ac ==> 25 bytes (basic P2PKH template)
  */
 
-/*
-Modified P2PKH Locking script builder.
- */
+/// Modified P2PKH locking script builder.
+///
+/// Uses OP_SWAP OP_DUP OP_HASH160 instead of the standard OP_DUP OP_HASH160,
+/// allowing the signature and pubkey to appear in reversed order on the stack.
+/// This is used as the token value output (index 0) in token transactions.
 class ModP2PKHLockBuilder extends LockingScriptBuilder {
 
+  /// The address derived from the pubkey hash.
   Address? address;
+
+  /// The 20-byte public key hash.
   List<int>? pubkeyHash;
+
+  /// The network type (mainnet or testnet).
   NetworkType? networkType;
 
+  /// Creates a modified P2PKH lock builder from a BSV [Address].
   ModP2PKHLockBuilder.fromAddress(Address address){
     this.address = address;
     this.networkType = address.networkType;
     pubkeyHash = hex.decode(address.pubkeyHash160);
   }
 
+  /// Creates a modified P2PKH lock builder from an [SVPublicKey].
   ModP2PKHLockBuilder.fromPublicKey(SVPublicKey publicKey, {this.networkType = NetworkType.MAIN}){
     this.address = publicKey.toAddress(networkType ?? NetworkType.MAIN);
     pubkeyHash = hex.decode(address!.pubkeyHash160);
   }
 
+  /// Reconstructs a [ModP2PKHLockBuilder] by parsing an existing script.
   ModP2PKHLockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.MAIN}) : super.fromScript(script);
 
   @override
@@ -108,12 +118,19 @@ class ModP2PKHLockBuilder extends LockingScriptBuilder {
 
 }
 
+/// Builds the unlocking script for spending a modified P2PKH output.
+///
+/// Pushes the public key before the signature (reversed from standard P2PKH)
+/// to match the OP_SWAP in the corresponding locking script.
 class ModP2PKHUnlockBuilder extends UnlockingScriptBuilder {
 
+  /// The public key used for signing.
   SVPublicKey? signerPubkey;
 
+  /// Reconstructs a [ModP2PKHUnlockBuilder] by parsing an existing script.
   ModP2PKHUnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
+  /// Creates a modified P2PKH unlock builder with the given [signerPubkey].
   ModP2PKHUnlockBuilder(this.signerPubkey);
 
   @override
@@ -153,5 +170,6 @@ class ModP2PKHUnlockBuilder extends UnlockingScriptBuilder {
     }
   }
 
+  /// Convenience getter that delegates to [getScriptSig].
   SVScript get scriptSig => getScriptSig();
 }

@@ -26,20 +26,29 @@ import 'package:dartsv/dartsv.dart';
  * Constructor Parameters :
  *   ownerPKH - The Pubkey Hash of the current token owner (needed for burn)
  */
+/// Builds the locking script for the partial SHA256 witness output (index 3) of a token transaction.
+///
+/// This output enables partial SHA256 calculation in-script, allowing the witness
+/// transaction to be verified without requiring the full transaction data on-stack.
 class PartialWitnessLockBuilder extends LockingScriptBuilder {
 
   List<int> _ownerPKH;
 
+  /// Creates a partial witness locking script builder.
+  ///
+  /// [_ownerPKH] - 20-byte pubkey hash of the current token owner (needed for burn).
   PartialWitnessLockBuilder(this._ownerPKH) {
     if (_ownerPKH.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Owner PKH must be 20 bytes");
     }
   }
 
+  /// Reconstructs a [PartialWitnessLockBuilder] by parsing an existing script.
   PartialWitnessLockBuilder.fromScript(SVScript script) :
       _ownerPKH = [],
       super.fromScript(script);
 
+  /// The 20-byte pubkey hash of the current token owner.
   List<int> get ownerPKH => _ownerPKH;
 
   //DEBUG

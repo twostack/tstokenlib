@@ -32,6 +32,11 @@ import 'package:dartsv/dartsv.dart';
  * recipientPKH - The Pubkey Hash of the token recipient. The token is locked to this address
  *
  */
+/// Builds the locking script for the PP1 output (index 1) of a token transaction.
+///
+/// PP1 is the inductive proof output. It proves by induction that the history
+/// of token transfers has been performed correctly, providing double-spend
+/// protection to the token.
 class PP1LockBuilder extends LockingScriptBuilder{
 
   // Compiled sCrypt debug template for PP1 locking script
@@ -45,8 +50,13 @@ class PP1LockBuilder extends LockingScriptBuilder{
 
   NetworkType? networkType;
 
+  /// Reconstructs a [PP1LockBuilder] by parsing an existing script.
   PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
 
+  /// Creates a PP1 locking script builder.
+  ///
+  /// [_recipientPKH] - Address (pubkey hash) the token is locked to.
+  /// [_tokenId] - 32-byte unique token ID (the TxID of the initial issuance funding input).
   PP1LockBuilder(this._recipientPKH, this._tokenId) {
     if (_recipientPKH == null) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient address is required for PP1 locking script");
@@ -97,8 +107,10 @@ class PP1LockBuilder extends LockingScriptBuilder{
     }
   }
 
+ /// The 32-byte unique token identifier.
  List<int>? get tokenId => _tokenId;
 
+ /// The address (pubkey hash) the token is locked to.
  Address? get recipientAddress => _recipientPKH; //release_template
 
 }

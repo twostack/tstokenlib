@@ -4,8 +4,12 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:dartsv/dartsv.dart';
 
+/// Builds an OP_FALSE OP_RETURN script following the Magic Attribute Protocol (MAP).
+///
+/// MAP stores key-value metadata on-chain using SET or DELETE operations.
 class MapLockBuilder extends LockingScriptBuilder {
 
+  /// The MAP protocol prefix address.
   final String PREFIX = "1PuQa7K62MiKCtssSLKy1kh56WWU7MtUR5";
 
   Function eq = const ListEquality().equals;
@@ -16,10 +20,13 @@ class MapLockBuilder extends LockingScriptBuilder {
   <key>
   <value>
    */
+  /// The key-value pairs to store on-chain.
   Map<String, dynamic> map = {};
 
+  /// Creates a MAP lock builder from an existing key-value [map].
   MapLockBuilder.fromMap(this.map);
 
+  /// Reconstructs a [MapLockBuilder] by parsing an existing MAP script.
   MapLockBuilder.fromScript(SVScript script){
    parse(script);
   }
@@ -85,6 +92,7 @@ class MapLockBuilder extends LockingScriptBuilder {
   }
 
 
+  /// Appends another [LockingScriptBuilder]'s output as a new pipe-delimited section.
   SVScript appendLocker(LockingScriptBuilder lockingScript){
 
     var mapScript = getScriptPubkey();

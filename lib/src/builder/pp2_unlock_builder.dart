@@ -20,20 +20,30 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'pp1_unlock_builder.dart';
 
+/// Builds the unlocking script (scriptSig) for spending the PP2 witness bridge output.
+///
+/// Supports two modes: normal unlock (pushes the outpoint TxID with OP_0 selector)
+/// and burn (pushes owner pubkey + signature with OP_1 selector).
 class PP2UnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _outpointTxId;
   SVPublicKey? _ownerPubKey;
   TokenAction? _action;
 
+  /// Creates a PP2 unlock builder for a normal token transfer.
+  ///
+  /// [outpointTxId] - The transaction ID of the outpoint being spent.
   PP2UnlockBuilder(List<int> outpointTxId) : _outpointTxId = outpointTxId;
 
+  /// Creates a PP2 unlock builder for burning (destroying) a token.
   PP2UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
       : _ownerPubKey = ownerPubKey,
         _action = TokenAction.BURN;
 
+  /// Reconstructs a [PP2UnlockBuilder] by parsing an existing script.
   PP2UnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
+  /// The transaction ID of the outpoint being spent.
   List<int>? get outpointTxId => _outpointTxId;
 
   @override

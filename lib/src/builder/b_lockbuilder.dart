@@ -4,8 +4,13 @@ import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import 'package:collection/collection.dart';
 
+/// Builds an OP_FALSE OP_RETURN script following the B:// (Bitcoin Data) protocol.
+///
+/// B:// is used for on-chain data storage with fields for data, media type,
+/// encoding, and an optional filename.
 class BLockBuilder extends LockingScriptBuilder {
 
+  /// The B:// protocol prefix address.
   String PREFIX = "19HxigV4QyBv3tHpQVcUEQyq1pzZVdoAut";
 
   /* https://github.com/unwriter/B
@@ -17,13 +22,22 @@ class BLockBuilder extends LockingScriptBuilder {
   [Filename]
    */
 
+  /// The raw data bytes to store on-chain.
   List<int>? data;
+
+  /// The MIME type of the data (e.g. "text/plain", "image/png").
   String? mediaType;
+
+  /// The character encoding (e.g. "utf-8").
   String? encoding;
+
+  /// An optional filename for the data.
   String? filename;
 
+  /// Creates a B:// lock builder with the given data and metadata fields.
   BLockBuilder(this.data, this.mediaType, this.encoding, {this.filename});
 
+  /// Reconstructs a [BLockBuilder] by parsing an existing B:// script.
   BLockBuilder.fromScript(SVScript script){
     parse(script);
   }

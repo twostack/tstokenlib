@@ -20,6 +20,11 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'pp1_unlock_builder.dart';
 
+/// Builds the unlocking script for spending the partial SHA256 witness output (index 3).
+///
+/// Supports normal unlock (pushes preimage, partial hash, witness preimage, and
+/// funding TxID with OP_0 selector) and burn (pushes owner pubkey + signature
+/// with OP_1 selector).
 class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _preImage;
@@ -29,6 +34,12 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   SVPublicKey? _ownerPubKey;
   TokenAction? _action;
 
+  /// Creates a partial witness unlock builder for a normal token transfer.
+  ///
+  /// [preImage] - The sighash preimage of this transaction.
+  /// [partialHash] - The intermediate SHA256 hash state.
+  /// [partialWitnessPreImage] - The remaining preimage bytes for the witness.
+  /// [fundingTxId] - The transaction ID funding the witness.
   PartialWitnessUnlockBuilder(
     List<int> preImage,
     List<int> partialHash,
@@ -39,15 +50,24 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
       _partialWitnessPreImage = partialWitnessPreImage,
       _fundingTxId = fundingTxId;
 
+  /// Creates a partial witness unlock builder for burning a token.
   PartialWitnessUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
       : _ownerPubKey = ownerPubKey,
         _action = TokenAction.BURN;
 
+  /// Reconstructs a [PartialWitnessUnlockBuilder] by parsing an existing script.
   PartialWitnessUnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
+  /// The sighash preimage of this transaction.
   List<int>? get preImage => _preImage;
+
+  /// The intermediate SHA256 hash state.
   List<int>? get partialHash => _partialHash;
+
+  /// The remaining preimage bytes for the witness partial SHA256.
   List<int>? get partialWitnessPreImage => _partialWitnessPreImage;
+
+  /// The transaction ID funding the witness.
   List<int>? get fundingTxId => _fundingTxId;
 
   @override

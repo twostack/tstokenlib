@@ -8,35 +8,54 @@ import 'aip_lockbuilder.dart';
 import 'b_lockbuilder.dart';
 import 'map_lockbuilder.dart';
 
+/// Identifies which pipe-delimited section of a BMAP script is being parsed.
 enum ChunkSection{
+  /// The B:// data section.
   BCHUNK,
+  /// The MAP metadata section.
   MAPCHUNK,
+  /// The AIP identity/signature section.
   AIPCHUNK
 }
 
+/// Builds a composite OP_RETURN script combining B://, MAP, and optionally AIP protocols.
+///
+/// The BMAP format concatenates B:// data, MAP metadata, and AIP identity sections
+/// separated by pipe (`|`) delimiters within a single OP_RETURN output.
 class BmapLockBuilder extends LockingScriptBuilder {
 
-  //B protocol data
+  /// The raw B:// data bytes.
   List<int>? data;
+
+  /// The MIME type of the B:// data.
   String? mediaType;
+
+  /// The character encoding of the B:// data.
   String? encoding;
+
+  /// An optional filename for the B:// data.
   String? filename;
 
-  //MAP protocol data
+  /// Key-value pairs for the MAP metadata section.
   Map<String, dynamic> map = {};
 
-  //AIP protocol data
+  /// The AIP signature (base64-encoded), or null if no AIP section.
   String? authorSignature;
+
+  /// The AIP public key (hex-encoded), or null if no AIP section.
   String? authorPublicKey;
+
+  /// The AIP signing algorithm (defaults to "ED25519").
   String? authorAlgorithm = "ED25519";
 
   Function eq = const ListEquality().equals;
 
+  /// Reconstructs a [BmapLockBuilder] by parsing an existing BMAP script.
   BmapLockBuilder.fromScript(SVScript script){
     parse(script);
   }
 
-  //Compose from B and MAP formats
+  /// Creates a BMAP lock builder by composing B:// and MAP data.
   BmapLockBuilder(BLockBuilder bLocker, MapLockBuilder mapLocker){
     data = bLocker.data;
     mediaType = bLocker.mediaType;
@@ -164,6 +183,7 @@ class BmapLockBuilder extends LockingScriptBuilder {
 
 
 
+  /// Appends another [LockingScriptBuilder]'s output as a new pipe-delimited section.
   SVScript appendLocker(LockingScriptBuilder lockingScript){
 
     var bmapScript = getScriptPubkey();

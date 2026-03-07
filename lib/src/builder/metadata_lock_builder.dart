@@ -28,10 +28,12 @@ class MetadataLockBuilder extends LockingScriptBuilder {
   /// If no metadata is provided, creates a bare OP_FALSE OP_RETURN script.
   MetadataLockBuilder({List<int>? metadataBytes}) : _metadataBytes = metadataBytes;
 
+  /// Reconstructs a [MetadataLockBuilder] by parsing an existing OP_RETURN script.
   MetadataLockBuilder.fromScript(SVScript script) {
     parse(script);
   }
 
+  /// The raw metadata bytes, or null if this is a bare OP_FALSE OP_RETURN.
   List<int>? get metadataBytes => _metadataBytes;
 
   @override

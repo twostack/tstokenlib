@@ -18,8 +18,10 @@ import 'map_lockbuilder.dart';
 ///               a SHA256 hash of the pre-tx (tx without the AIP output)
 class IdentityAnchorBuilder {
 
+  /// Key-value pairs of issuer identity metadata to store on-chain.
   final Map<String, String> identityMetadata;
 
+  /// Creates an identity anchor builder with the given [identityMetadata].
   IdentityAnchorBuilder(this.identityMetadata);
 
   /// Builds the identity anchor transaction.

@@ -20,6 +20,10 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'partial_sha256.dart';
 
+/// Utility methods for TSToken transaction manipulation.
+///
+/// Provides helpers for SHA256 block-alignment padding, partial hash
+/// computation, and extracting the left-hand side (inputs) of a transaction.
 class TransactionUtils {
   // SHA256 processes data in 64-byte (512-bit) blocks
   static const int SHA256_BLOCK_SIZE = 64;
@@ -27,10 +31,15 @@ class TransactionUtils {
   // Transaction locktime field is always 4 bytes
   static const int LOCKTIME_SIZE = 4;
 
+  /// Returns the combined serialized size of the last input and first output of [tx].
   int getInOutSize(Transaction tx) {
     return tx.inputs[2].serialize().length + 1 + tx.outputs[0].serialize().length;
   }
 
+  /// Calculates padding bytes needed to align the witness transaction's last input
+  /// to a SHA256 64-byte block boundary.
+  ///
+  /// This alignment enables the partial SHA256 witness proof mechanism.
   List<int> calculatePaddingBytes(Transaction witnessTx ){
 
     var witnessBytes = hex.decode(witnessTx.serialize());
@@ -56,10 +65,11 @@ class TransactionUtils {
     return Uint8List(lastBlockPadding - 1 + 2);
   }
 
-  /*
-   * preImage - The full preimage for which to calculate the partial preimage
-   * excludeBlocks - the number of blocks at tail-end to exclude from partial preimage.
-   */
+  /// Computes a partial SHA256 hash over [preImage], excluding the last
+  /// [excludeBlocks] 64-byte blocks from the intermediate hash.
+  ///
+  /// Returns a record of (partialHash, remainderBytes) where remainderBytes
+  /// contains the excluded tail blocks (128 bytes total).
   (List<int>, List<int>) computePartialHash(List<int> preImage, int excludeBlocks){
 
     var blockCount = preImage.length ~/ PartialSha256.BLOCK_BYTES;
@@ -89,9 +99,8 @@ class TransactionUtils {
 
   }
 
-  /*
-  Returns the LHS of a Transaction. I.e everything except the Outputs.
-   */
+  /// Returns the left-hand side of a transaction: version, input count, and
+  /// all serialized inputs. Excludes outputs and locktime.
   List<int> getTxLHS(Transaction fullTx){
 
     ByteDataWriter writer = ByteDataWriter();
