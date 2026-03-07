@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
@@ -174,27 +176,27 @@ void main() {
     assert(ListEquality().equals(tx.outputs[0].serialize(), txOutput.serialize()), true);
   });
 
-  test("Can issue a new Token Transaction", () {
+  test("Can issue a new Token Transaction", () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
 
-    var issuanceTxn = service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
 
     //weak tests for now. stronger ones follow
     expect(issuanceTxn.outputs.length, 5);
     expect(issuanceTxn.inputs.length, 1);
   });
 
-  test("Can create and spend the witness outputs from a newly issued Token Transaction", () {
+  test("Can create and spend the witness outputs from a newly issued Token Transaction", () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTxn = service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
     //weak tests for now. stronger ones follow
     expect(issuanceTxn.outputs.length, 5);
     expect(issuanceTxn.inputs.length, 1);
@@ -253,14 +255,14 @@ void main() {
   /*
   First transfer spend from issuance
    */
-  test("Can create a first token transfer from a newly issued Token Transaction", () {
+  test("Can create a first token transfer from a newly issued Token Transaction", () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     // 1. Dynamically create the issuance transaction (Bob issues token)
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
     expect(issuanceTx.outputs.length, 5);
 
     // 2. Create the witness transaction for the issuance
@@ -330,14 +332,14 @@ void main() {
   /*
   First transfer from a regular token txn — create witness for the transferred token
    */
-  test("Can create and spend the witness outputs from a Token Transaction", () {
+  test("Can create and spend the witness outputs from a Token Transaction", () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
 
     // 2. Create witness for the issuance
     var issuanceWitnessTx = service.createWitnessTxn(
@@ -453,14 +455,14 @@ void main() {
         returnsNormally);
   });
 
-  test("Can burn a newly issued token", timeout: Timeout(Duration(minutes: 2)), () {
+  test("Can burn a newly issued token", timeout: Timeout(Duration(minutes: 2)), () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
     expect(issuanceTx.outputs.length, 5);
 
     // 2. Burn the token
@@ -509,6 +511,143 @@ void main() {
         () => interp.correctlySpends(
             scriptSigPW!, scriptPubKeyPW, burnTx, 3, verifyFlags, Coin.valueOf(outputSatsPW)),
         returnsNormally);
+  });
+
+  test("Can create an identity anchor transaction", () async {
+    var algorithm = Ed25519();
+    var keyPair = await algorithm.newKeyPair();
+    var wand = await algorithm.newSignatureWandFromKeyPair(keyPair);
+
+    var builder = IdentityAnchorBuilder({
+      'name': 'Test Issuer',
+      'org': 'Test Organization',
+    });
+
+    var fundingTx = getBobFundingTx();
+    var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+    var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+
+    var identityTx = await builder.buildTransaction(
+      fundingTx, fundingSigner, bobPub, bobAddress, wand,
+    );
+
+    // Should have 3 outputs: change, MAP metadata, AIP signature
+    expect(identityTx.outputs.length, 3);
+
+    // Output[1] should be MAP OP_RETURN with identity metadata
+    var mapScript = identityTx.outputs[1].script;
+    expect(mapScript.buffer[0], 0x00); // OP_FALSE
+    expect(mapScript.buffer[1], 0x6a); // OP_RETURN
+
+    var metadata = IdentityAnchorBuilder.extractMetadata(identityTx);
+    expect(metadata['app'], 'tsl1');
+    expect(metadata['type'], 'issuer_identity');
+    expect(metadata['name'], 'Test Issuer');
+    expect(metadata['org'], 'Test Organization');
+
+    // Output[2] should be AIP OP_RETURN with signature
+    var aipScript = identityTx.outputs[2].script;
+    expect(aipScript.buffer[0], 0x00); // OP_FALSE
+    expect(aipScript.buffer[1], 0x6a); // OP_RETURN
+
+    var pubkeyHex = IdentityAnchorBuilder.extractPublicKey(identityTx);
+    expect(pubkeyHex.isNotEmpty, true);
+  });
+
+  test("Can issue a token with issuer identity and verify the link", () async {
+    var algorithm = Ed25519();
+    var keyPair = await algorithm.newKeyPair();
+    var wand = await algorithm.newSignatureWandFromKeyPair(keyPair);
+
+    // 1. Create the identity anchor transaction
+    var identityBuilder = IdentityAnchorBuilder({
+      'name': 'Token Issuer',
+    });
+
+    var bobFundingTx = getBobFundingTx();
+    var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+
+    var identityTx = await identityBuilder.buildTransaction(
+      bobFundingTx, bobFundingSigner, bobPub, bobAddress, wand,
+    );
+
+    // 2. Issue a token with identity link
+    var service = TokenTool();
+    var issuanceFundingTx = getBobFundingTx();
+    var issuanceTx = await service.createTokenIssuanceTxn(
+      issuanceFundingTx, bobFundingSigner, bobPub, bobAddress, issuanceFundingTx.hash,
+      identityTxId: identityTx.hash,
+      issuerWand: wand,
+    );
+
+    // Should still have 5 outputs
+    expect(issuanceTx.outputs.length, 5);
+
+    // 3. Verify the identity link
+    var identity = IdentityVerification.extractIdentityFromMetadata(issuanceTx.outputs[4].script);
+    expect(identity.identityTxId, isNotNull);
+    expect(identity.identitySig, isNotNull);
+    expect(identity.identityTxId, hex.encode(identityTx.hash));
+
+    // 4. Verify signature
+    var isValid = await IdentityVerification.verifyIssuanceIdentity(issuanceTx, identityTx);
+    expect(isValid, true);
+  });
+
+  test("Identity metadata is preserved across token transfer", () async {
+    var algorithm = Ed25519();
+    var keyPair = await algorithm.newKeyPair();
+    var wand = await algorithm.newSignatureWandFromKeyPair(keyPair);
+
+    var service = TokenTool();
+    var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+
+    // 1. Create identity anchor
+    var identityBuilder = IdentityAnchorBuilder({'name': 'Issuer'});
+    var identityFundingTx = getBobFundingTx();
+    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var identityTx = await identityBuilder.buildTransaction(
+      identityFundingTx, bobFundingSigner, bobPub, bobAddress, wand,
+    );
+
+    // 2. Issue token with identity
+    var bobFundingTx = getBobFundingTx();
+    var issuanceTx = await service.createTokenIssuanceTxn(
+      bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash,
+      identityTxId: identityTx.hash,
+      issuerWand: wand,
+    );
+
+    // 3. Create issuance witness
+    var issuanceWitnessTx = service.createWitnessTxn(
+      bobFundingSigner, bobFundingTx, issuanceTx,
+      List<int>.empty(), bobPub,
+      Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
+      TokenAction.ISSUANCE,
+    );
+
+    // 4. Transfer token from Bob to Alice
+    var pp1 = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var tokenId = pp1.tokenId ?? [];
+    var transferFundingTx = getBobFundingTx();
+    var aliceFundingTx = getAliceFundingTx();
+
+    var transferTx = service.createTokenTransferTxn(
+      issuanceWitnessTx, issuanceTx, bobPub, aliceAddress,
+      transferFundingTx, bobFundingSigner, bobPub,
+      aliceFundingTx.hash, tokenId,
+    );
+
+    // 5. Verify metadata is preserved in transfer
+    var issuanceIdentity = IdentityVerification.extractIdentityFromMetadata(issuanceTx.outputs[4].script);
+    var transferIdentity = IdentityVerification.extractIdentityFromMetadata(transferTx.outputs[4].script);
+    expect(transferIdentity.identityTxId, issuanceIdentity.identityTxId);
+    expect(transferIdentity.identitySig, issuanceIdentity.identitySig);
+
+    // 6. Verify identity link still valid from transfer tx
+    var isValid = await IdentityVerification.verifyIssuanceIdentity(transferTx, identityTx);
+    expect(isValid, true);
   });
 
 }

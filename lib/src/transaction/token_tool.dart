@@ -16,11 +16,15 @@
 
 import 'dart:typed_data';
 
+import 'dart:convert';
+
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
+import 'package:cryptography/cryptography.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 
+import '../builder/map_lockbuilder.dart';
 import '../builder/partial_witness_lock_builder.dart';
 import '../builder/partial_witness_unlock_builder.dart';
 import '../builder/pp1_lock_builder.dart';
@@ -111,14 +115,16 @@ class TokenTool {
    * Additionally, we set the tokenId to the TxId of the Fundingin Transaction
    * to the first Witness Transaction. I.e. TokenId = TxId(FirstWitnessFundingTxn)
    */
-  Transaction createTokenIssuanceTxn(
+  Future<Transaction> createTokenIssuanceTxn(
       Transaction tokenFundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       Address recipientAddress,      //
       List<int> witnessFundingTxId,
-      {List<int>? metadataBytes}
-      ){
+      {List<int>? metadataBytes,
+       List<int>? identityTxId,
+       SignatureWand? issuerWand}
+      ) async {
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var tokenTxBuilder = TransactionBuilder();
@@ -144,7 +150,22 @@ class TokenTool {
     tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
 
     //metadata OP_RETURN output (output[4]) - required by PP1 transferToken validation
-    var metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
+    LockingScriptBuilder metadataLocker;
+    if (identityTxId != null && issuerWand != null) {
+      // Sign the identity txid with the issuer's ED25519 key
+      var identityTxIdHex = hex.encode(identityTxId);
+      var signature = await issuerWand.sign(identityTxId);
+      SimplePublicKey pubkey = (await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey);
+      var b64Sig = base64Encode(signature.bytes);
+
+      var mapData = <String, String>{
+        'identityTxId': identityTxIdHex,
+        'identitySig': b64Sig,
+      };
+      metadataLocker = MapLockBuilder.fromMap(mapData);
+    } else {
+      metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
+    }
     tokenTxBuilder.spendToLockBuilder(metadataLocker, BigInt.zero);
 
     tokenTxBuilder.sendChangeToPKH(recipientAddress);

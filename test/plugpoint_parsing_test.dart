@@ -18,12 +18,12 @@ void main(){
 
   Function listEquals = ListEquality().equals;
 
-  test("PP1Lockbuilder can parse an issuance PP1 script", (){
+  test("PP1Lockbuilder can parse an issuance PP1 script", () async {
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
 
     var issuancePP1Script = issuanceTx.outputs[1].script;
     var pp1Locker = PP1LockBuilder.fromScript(issuancePP1Script);

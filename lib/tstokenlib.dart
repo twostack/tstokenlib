@@ -14,6 +14,8 @@ export 'src/builder/bmap_lockbuilder.dart';
 export 'src/builder/map_lockbuilder.dart';
 export 'src/builder/hodl_lockbuilder.dart';
 export 'src/builder/hodl_unlockbuilder.dart';
+export 'src/builder/identity_anchor_builder.dart';
 export 'src/transaction/token_tool.dart';
 export 'src/transaction/partial_sha256.dart';
+export 'src/transaction/identity_verification.dart';
 export 'src/transaction/utils.dart';
