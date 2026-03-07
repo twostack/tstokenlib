@@ -116,15 +116,27 @@ public function transferToken(
     Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
     Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
     Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
-    
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    // Validate that metadata output is an OP_RETURN (OP_FALSE OP_RETURN = 0x00 0x6a)
+    require(parentMetadataOutput.script[:2] == b'006a');
+
     bytes scriptPubKey = Util.scriptCode(preImage);
     bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
-    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount); 
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
     bytes pp1Output = Util.buildOutput(scriptPubKey, 1); //take pp1 output from sighashPreImage
-    bytes pp3Output = Util.buildOutput(parentPP3Output.script, 1); //take pp3 (sha256) output from parent-to-tokenTx
-    bytes fullTx = scriptLHS 
-                   + Util.writeVarintNum(4) 
-                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output
+    // Rebuild PP3 (PartialWitness) output by substituting ownerPKH at byte offset 425
+    // PartialWitness constructor param layout:
+    //   [0..424]   : script prefix + pushdata byte (0x14)
+    //   [425..444] : ownerPKH data (20 bytes)
+    //   [445..]    : script suffix
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:425] + this.ownerPKH + parentPP3Script[445:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0); //metadata OP_RETURN carries 0 satoshis
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
                    + Util.toLEUnsigned(Util.nLocktime(preImage), 4); 
 
     bytes currTxId = sha256(sha256(fullTx));
@@ -142,37 +154,57 @@ public function transferToken(
 
 
     //2. Rebuild PP2 Output Script and verify that it is the same as parent Tx
-    int fundingOutpointOffset = 117;
-    int witnessChangePKHOffset = fundingOutpointOffset + 37; //fundingOutpoint is 36 bytes
-    int changeAmountOffset = witnessChangePKHOffset + 21; //PKH is 20 bytes long
+    //
+    // PP2 compiled script constructor param layout (byte offsets):
+    //   [0..116]   : script prefix (compiled code before constructor params)
+    //   [117]      : 0x24 pushdata byte for fundingOutpoint (36 bytes)
+    //   [118..153] : fundingOutpoint data (36 bytes)
+    //   [154]      : 0x14 pushdata byte for witnessChangePKH (20 bytes)
+    //   [155..174] : witnessChangePKH data (20 bytes)
+    //   [175]      : 0x51 OP_1 for changeAmount (1 satoshi)
+    //   [176]      : 0x14 pushdata byte for ownerPKH (20 bytes)
+    //   [177..196] : ownerPKH data (20 bytes)
+    //   [197..]    : script code (compiled code after constructor params)
+    //
+    int fundingOutpointStart = 117;   //pushdata byte for fundingOutpoint
+    int witnessChangePKHStart = 154;  //pushdata byte for witnessChangePKH
+    int changeAmountStart = 175;      //OP_1 byte for changeAmount
+    int ownerPKHStart = 176;          //pushdata byte for ownerPKH
+    int scriptCodeStart = 197;        //start of compiled script code after all constructor params
     bytes parentPP2Script = parentPP2Output.script;
 
     bytes pp2OutputScript = TxUtil.getScriptCodeFromOutput(pp2OutputBytes);
-    bytes witnessFundingOutpoint = pp2OutputScript[fundingOutpointOffset: witnessChangePKHOffset];
-    bytes witnessChangePKH = pp2OutputScript[witnessChangePKHOffset:changeAmountOffset - 1];
-    bytes witnessChangeAmount = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset + 4]; //deliberate 4-byte overrun 
+
+    //Extract pushdata-encoded constructor params from the current PP2 script
+    bytes witnessFundingOutpoint = pp2OutputScript[fundingOutpointStart: witnessChangePKHStart]; //37 bytes: pushdata(1) + outpoint(36)
+    bytes witnessChangePKH = pp2OutputScript[witnessChangePKHStart: changeAmountStart];          //21 bytes: pushdata(1) + PKH(20)
+    bytes witnessChangeAmount = pp2OutputScript[changeAmountStart: ownerPKHStart];               //1 byte:  OP_1
+    bytes ownerPKH = pp2OutputScript[ownerPKHStart: scriptCodeStart];                            //21 bytes: pushdata(1) + PKH(20)
 
     //Data validation
-    //Pushdata assertions for Parent PP2 Constructor args. 
-    //The Byte preceding each data entry must be an integer amount equal to the amount of data to push onto stack
-    bytes witnessFundingPushData = pp2OutputScript[fundingOutpointOffset - 1: fundingOutpointOffset];
-    int dataSize = unpack(witnessFundingPushData); 
+    //The first byte of each pushdata-encoded param must equal the length of the data that follows
+    bytes witnessFundingPushData = pp2OutputScript[fundingOutpointStart: fundingOutpointStart + 1];
+    int dataSize = unpack(witnessFundingPushData);
     require(dataSize == 36); //36 bytes for the outpoint
 
-    bytes witnessChangePushData = pp2OutputScript[witnessChangePKHOffset - 1: witnessChangePKHOffset];
-    dataSize = unpack(witnessChangePushData); 
+    bytes witnessChangePushData = pp2OutputScript[witnessChangePKHStart: witnessChangePKHStart + 1];
+    dataSize = unpack(witnessChangePushData);
     require(dataSize == 20); //20 bytes for the PKH
 
-    bytes witnessChangeAmountPushData = pp2OutputScript[changeAmountOffset - 1: changeAmountOffset];
-    require(witnessChangeAmountPushData == b'51'); //require that witness change amount is 1 satoshi
+    require(witnessChangeAmount == b'51'); //require that witness change amount is 1 satoshi (OP_1)
 
-    bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointOffset]  //prepend script bytes
-                             + witnessFundingOutpoint //replace fundingOutpoint with our own fundingOutpoint 
-                             + witnessChangePKH //replace witness change PKH with ours
-                             + witnessChangeAmount //replace changeAmount with our own
-                             + parentPP2Script[changeAmountOffset + 4:]; //append reset of script
+    bytes ownerPKHPushData = pp2OutputScript[ownerPKHStart: ownerPKHStart + 1];
+    dataSize = unpack(ownerPKHPushData);
+    require(dataSize == 20); //20 bytes for the owner PKH
 
-    //assert that data substitutions within parent PP2 script yields the same 
+    bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointStart]  //prepend script prefix
+                             + witnessFundingOutpoint //replace fundingOutpoint
+                             + witnessChangePKH //replace witness change PKH
+                             + witnessChangeAmount //replace changeAmount
+                             + ownerPKH //replace ownerPKH
+                             + parentPP2Script[scriptCodeStart:]; //append rest of compiled script code
+
+    //assert that data substitutions within parent PP2 script yields the same
     //data as this transaction's PP2 script
     require(sha256(rebuiltPP2Script) == sha256(pp2OutputScript)); //compare smaller data sizes for efficiency
 

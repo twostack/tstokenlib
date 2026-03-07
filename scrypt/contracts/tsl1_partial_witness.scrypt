@@ -27,6 +27,12 @@ import "util.scrypt";
 */
 contract Tsl1WitnessCheck{
 
+    Ripemd160 ownerPKH;
+
+    constructor(Ripemd160 ownerPKH){
+        this.ownerPKH = ownerPKH;
+    }
+
     public function unlock(SigHashPreimage preImage, bytes partialHash, bytes witnessPartialPreImage, bytes fundingTxId) {
 
 
@@ -63,11 +69,9 @@ contract Tsl1WitnessCheck{
     }
 
   //allow reclaiming of locked sats and burning of this output
-  /*
-    public function burnToken( PubKey recipientPubKey, Sig recipientSig){
-        //assert P2PKH unlock conditions are met
-        require(hash160(recipientPubKey) == this.ownerPKH);
-        require(checkSig(recipientSig, recipientPubKey));
-    }
-    */
+  public function burnToken( PubKey recipientPubKey, Sig recipientSig){
+      //assert P2PKH unlock conditions are met
+      require(hash160(recipientPubKey) == this.ownerPKH);
+      require(checkSig(recipientSig, recipientPubKey));
+  }
 }

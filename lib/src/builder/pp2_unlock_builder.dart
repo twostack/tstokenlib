@@ -20,20 +20,32 @@ import 'package:dartsv/dartsv.dart';
 
 class PP2UnlockBuilder extends UnlockingScriptBuilder {
 
-  final List<int> _outpointTxId;
+  List<int>? _outpointTxId;
 
-  PP2UnlockBuilder(this._outpointTxId);
+  PP2UnlockBuilder(List<int> outpointTxId) : _outpointTxId = outpointTxId;
+
+  PP2UnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
+
+  List<int>? get outpointTxId => _outpointTxId;
 
   @override
   SVScript getScriptSig() {
+    if (_outpointTxId == null) return SVScript();
     return ScriptBuilder()
-        .addData(Uint8List.fromList(_outpointTxId))
+        .addData(Uint8List.fromList(_outpointTxId!))
+        .opCode(OpCodes.OP_0) // function selector: unlock=0
         .build();
   }
 
   @override
   void parse(SVScript script) {
-    // TODO: implement parse
+    var chunkList = script.chunks;
+
+    if (chunkList.isEmpty) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Empty PP2 ScriptSig");
+    }
+
+    _outpointTxId = chunkList[0].buf;
   }
 
 }

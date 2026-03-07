@@ -22,11 +22,13 @@ contract PlugPointTwo{
 bytes fundingOutpoint;
 Ripemd160 witnessChangePKH;
 int changeAmount;
+Ripemd160 ownerPKH;
 
-constructor(bytes outpoint, Ripemd160 witnessChangePKH, int witnessChangeAmount){
+constructor(bytes outpoint, Ripemd160 witnessChangePKH, int witnessChangeAmount, Ripemd160 ownerPKH){
     this.fundingOutpoint = outpoint;
     this.witnessChangePKH = witnessChangePKH;
     this.changeAmount = witnessChangeAmount;
+    this.ownerPKH = ownerPKH;
 }
 
 
@@ -52,10 +54,10 @@ public function unlock(bytes tokenTxId) {
     bytes prevHashOut = sha256(sha256(prevHashPreImage));
 
     //DEBUG Build
-    bytes fullSubscript = b'0079011879ac777777777777777777777777777777777777777777777777777777777777777777';
+    bytes fullSubscript = b'0079011979ac7777777777777777777777777777777777777777777777777777777777777777777777675e795187636079a9517987695f79011179ac777777777777777777777777777777777767006868';
 
     //RELEASE Build
-    //  bytes fullSubscript = b'76011879ac777777777777777777777777777777777777777777777777777777777777777777';//deleted from PreImage using OP_CODE_SEP
+    //  bytes fullSubscript = b'76011979ac7777777777777777777777777777777777777777777777777777777777777777777777675e795187636079a978885f79011179ac777777777777777777777777777777777767006868';//deleted from PreImage using OP_CODE_SEP
 
     bytes sequenceNumber = Util.toLEUnsigned(4294967295, 4);
     bytes sequenceHash = sha256(sha256(sequenceNumber + sequenceNumber + sequenceNumber));
@@ -91,12 +93,10 @@ public function unlock(bytes tokenTxId) {
 }
 
   //allow reclaiming of locked sats and burning of this output
-  /*
-    public function burnToken( PubKey recipientPubKey, Sig recipientSig){
-        //assert P2PKH unlock conditions are met
-        require(hash160(recipientPubKey) == this.ownerPKH);
-        require(checkSig(recipientSig, recipientPubKey));
-    }
-    */
+  public function burnToken( PubKey recipientPubKey, Sig recipientSig){
+      //assert P2PKH unlock conditions are met
+      require(hash160(recipientPubKey) == this.ownerPKH);
+      require(checkSig(recipientSig, recipientPubKey));
+  }
 
 }

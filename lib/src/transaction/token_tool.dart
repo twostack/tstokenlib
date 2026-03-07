@@ -25,6 +25,7 @@ import '../builder/partial_witness_lock_builder.dart';
 import '../builder/partial_witness_unlock_builder.dart';
 import '../builder/pp1_lock_builder.dart';
 import '../builder/pp1_unlock_builder.dart';
+import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
 import 'utils.dart';
@@ -115,7 +116,8 @@ class TokenTool {
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       Address recipientAddress,      //
-      List<int> witnessFundingTxId
+      List<int> witnessFundingTxId,
+      {List<int>? metadataBytes}
       ){
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -135,11 +137,16 @@ class TokenTool {
     outputWriter.writeUint32(1, Endian.little);
     var fundingOutpoint = outputWriter.toBytes();
 
-    var pp2Locker = PP2LockBuilder(fundingOutpoint,  hex.decode(recipientAddress.pubkeyHash160), 1);
+    var pp2Locker = PP2LockBuilder(fundingOutpoint,  hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
 
-    var shaLocker = PartialWitnessLockBuilder();
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
     tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
+
+    //metadata OP_RETURN output (output[4]) - required by PP1 transferToken validation
+    var metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
+    tokenTxBuilder.spendToLockBuilder(metadataLocker, BigInt.zero);
+
     tokenTxBuilder.sendChangeToPKH(recipientAddress);
 
     return tokenTxBuilder.build(false);
@@ -168,9 +175,12 @@ class TokenTool {
 
     var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId);
 
-    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1);
-    var shaLocker = PartialWitnessLockBuilder();
+    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
 
+    //carry forward metadata from parent token tx (output[4])
+    var metadataScript = prevTokenTx.outputs[4].script;
+    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
@@ -182,6 +192,7 @@ class TokenTool {
         .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1
         .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
         .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
+        .spendToLockBuilder(metadataLocker, BigInt.zero) //metadata OP_RETURN
         .sendChangeToPKH(currentOwnerAddress)
         .withFee(defaultFee)
         .build(false);
@@ -206,6 +217,7 @@ class TokenTool {
         .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1
         .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
         .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
+        .spendToLockBuilder(metadataLocker, BigInt.zero) //metadata OP_RETURN
         .sendChangeToPKH(currentOwnerAddress)
         .withFee(defaultFee)
         .build(false);
@@ -213,5 +225,36 @@ class TokenTool {
     return childTxn;
   }
 
+  /// Returns the subscript after the Nth OP_CODESEPARATOR opcode (0-indexed).
+  /// Walks raw script bytes following Bitcoin script encoding to skip pushdata.
+  SVScript _subscriptAfterCodeSep(SVScript script, int occurrenceIndex) {
+    var bytes = script.buffer;
+    int i = 0;
+    int count = 0;
+    while (i < bytes.length) {
+      int opcode = bytes[i];
+      if (opcode == 0xab) {
+        if (count == occurrenceIndex) {
+          return SVScript.fromBuffer(Uint8List.fromList(bytes.sublist(i + 1)));
+        }
+        count++;
+        i++;
+      } else if (opcode > 0 && opcode <= 75) {
+        i += 1 + opcode; // direct push: 1 byte opcode + N bytes data
+      } else if (opcode == 76) { // OP_PUSHDATA1
+        if (i + 1 < bytes.length) i += 2 + bytes[i + 1];
+        else i++;
+      } else if (opcode == 77) { // OP_PUSHDATA2
+        if (i + 2 < bytes.length) i += 3 + (bytes[i + 1] | (bytes[i + 2] << 8));
+        else i++;
+      } else if (opcode == 78) { // OP_PUSHDATA4
+        if (i + 4 < bytes.length) i += 5 + (bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16) | (bytes[i + 4] << 24));
+        else i++;
+      } else {
+        i++; // regular opcode (1 byte)
+      }
+    }
+    return script;
+  }
 
 }

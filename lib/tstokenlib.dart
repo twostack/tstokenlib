@@ -6,6 +6,7 @@ export 'src/builder/pp1_lock_builder.dart';
 export 'src/builder/pp1_unlock_builder.dart';
 export 'src/builder/pp2_lock_builder.dart';
 export 'src/builder/pp2_unlock_builder.dart';
+export 'src/builder/metadata_lock_builder.dart';
 export 'src/builder/mod_p2pkh_builder.dart';
 export 'src/builder/aip_lockbuilder.dart';
 export 'src/builder/b_lockbuilder.dart';

@@ -16,27 +16,42 @@
 
 import 'dart:typed_data';
 
-import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
 class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
-  final List<int> _preImage;
-  final List<int> _partialHash;
-  final List<int> _partialWitnessPreImage;
-  final List<int> _fundingTxId;
+  List<int>? _preImage;
+  List<int>? _partialHash;
+  List<int>? _partialWitnessPreImage;
+  List<int>? _fundingTxId;
 
+  PartialWitnessUnlockBuilder(
+    List<int> preImage,
+    List<int> partialHash,
+    List<int> partialWitnessPreImage,
+    List<int> fundingTxId,
+  ) : _preImage = preImage,
+      _partialHash = partialHash,
+      _partialWitnessPreImage = partialWitnessPreImage,
+      _fundingTxId = fundingTxId;
 
-  PartialWitnessUnlockBuilder(this._preImage, this._partialHash, this._partialWitnessPreImage, this._fundingTxId);
+  PartialWitnessUnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
+
+  List<int>? get preImage => _preImage;
+  List<int>? get partialHash => _partialHash;
+  List<int>? get partialWitnessPreImage => _partialWitnessPreImage;
+  List<int>? get fundingTxId => _fundingTxId;
 
   @override
   SVScript getScriptSig() {
+    if (_preImage == null) return SVScript();
 
     var builder = ScriptBuilder()
-        .addData(Uint8List.fromList(_preImage))
-        .addData(Uint8List.fromList(_partialHash))
-        .addData(Uint8List.fromList(_partialWitnessPreImage))
-        .addData(Uint8List.fromList(_fundingTxId));
+        .addData(Uint8List.fromList(_preImage!))
+        .addData(Uint8List.fromList(_partialHash!))
+        .addData(Uint8List.fromList(_partialWitnessPreImage!))
+        .addData(Uint8List.fromList(_fundingTxId!))
+        .opCode(OpCodes.OP_0); // function selector: unlock=0
 
     var result = builder.build();
     return result;
@@ -44,7 +59,16 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
   @override
   void parse(SVScript script) {
-    // TODO: implement parse
+    var chunkList = script.chunks;
+
+    if (chunkList.length < 4) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for PartialWitness ScriptSig");
+    }
+
+    _preImage = chunkList[0].buf;
+    _partialHash = chunkList[1].buf;
+    _partialWitnessPreImage = chunkList[2].buf;
+    _fundingTxId = chunkList[3].buf;
   }
 
 }
