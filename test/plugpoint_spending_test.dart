@@ -236,10 +236,7 @@ void main() {
 
     //verify PP1 spending
     expect(
-        () => {
-              interp.correctlySpends(
-                  scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1))
-            },
+        () => interp.correctlySpends(scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1)),
         returnsNormally);
 
     var scriptSigPP2 = witnessTx.inputs[2].script;
@@ -248,14 +245,8 @@ void main() {
 
     //verify PP2 spending
     expect(
-        () => {
-              interp.correctlySpends(
-                  scriptSigPP2!, scriptPubKeyPP2, witnessTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2))
-            },
+        () => interp.correctlySpends(scriptSigPP2!, scriptPubKeyPP2, witnessTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2)),
         returnsNormally);
-
-    print("Issuance Txn " + issuanceTxn.serialize());
-    print("Witness Txn " + witnessTx.serialize());
   });
 
   /*
@@ -389,36 +380,6 @@ void main() {
       TokenAction.TRANSFER,
     );
 
-    print("Witness inputs: ${witnessTx.inputs.length}, outputs: ${witnessTx.outputs.length}");
-    print("RecipientTokenTx inputs: ${recipientTokenTx.inputs.length}, outputs: ${recipientTokenTx.outputs.length}");
-    print("IssuanceTx outputs: ${issuanceTx.outputs.length}");
-    print("IssuanceTx output[4] scriptHex: ${hex.encode(issuanceTx.outputs[4].script.buffer)}");
-    print("RecipientTx output[4] scriptHex: ${hex.encode(recipientTokenTx.outputs[4].script.buffer)}  sats: ${recipientTokenTx.outputs[4].satoshis}");
-    // Debug PP2 script structure
-    var pp2Script = recipientTokenTx.outputs[2].script.buffer;
-    print("PP2 script bytes [115:180]: ${hex.encode(pp2Script.sublist(115, 180))}");
-    print("PP2 byte[117]=${pp2Script[117].toRadixString(16)} [153]=${pp2Script[153].toRadixString(16)} [154]=${pp2Script[154].toRadixString(16)} [174]=${pp2Script[174].toRadixString(16)} [175]=${pp2Script[175].toRadixString(16)}");
-    // Same for issuance PP2 (parent)
-    var parentPP2Script = issuanceTx.outputs[2].script.buffer;
-    print("Parent PP2 script bytes [115:180]: ${hex.encode(parentPP2Script.sublist(115, 180))}");
-    print("Parent PP2 byte[117]=${parentPP2Script[117].toRadixString(16)} [153]=${parentPP2Script[153].toRadixString(16)} [154]=${parentPP2Script[154].toRadixString(16)} [174]=${parentPP2Script[174].toRadixString(16)} [175]=${parentPP2Script[175].toRadixString(16)}");
-    print("PP2 total script length: ${pp2Script.length}  Parent PP2 length: ${parentPP2Script.length}");
-    // Check what's at offset 176 onwards (should be ownerPKH in new template)
-    print("Parent PP2 bytes [175:200]: ${hex.encode(parentPP2Script.sublist(175, 200))}");
-    print("RecipientTx change (output[0]) sats: ${recipientTokenTx.outputs[0].satoshis}");
-    // Verify the token tx can be rebuilt from scriptLHS + outputs + locktime
-    var tsl1 = TransactionUtils();
-    var tokenTxLHS = tsl1.getTxLHS(recipientTokenTx);
-    var recipientTxHex = recipientTokenTx.serialize();
-    var lhsHex = hex.encode(tokenTxLHS);
-    // Check that the serialized tx starts with the LHS
-    print("LHS matches start of tx? ${recipientTxHex.startsWith(lhsHex)}");
-    // What follows LHS should be the varint output count
-    var afterLHS = recipientTxHex.substring(lhsHex.length);
-    print("After LHS (first 10 hex chars): ${afterLHS.substring(0, 10)}");
-    // For 5 outputs, varint should be 05
-    print("Output count varint: ${afterLHS.substring(0, 2)}");
-
     var interp = Interpreter();
     var verifyFlags = Set<VerifyFlag>();
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
@@ -429,24 +390,9 @@ void main() {
     var scriptSigPP1 = witnessTx.inputs[1].script;
     var scriptPubKeyPP1 = recipientTokenTx.outputs[1].script;
     var outputSatsPP1 = recipientTokenTx.outputs[1].satoshis;
-    try {
-      interp.correctlySpends(
-          scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1));
-      print("PP1 spending: PASS");
-    } catch (e, st) {
-      if (e is ScriptException) {
-        print("PP1 spending: FAIL - ${e.error} : ${e.cause}");
-        // Print stack trace to find which line in interpreter
-        print("Stack trace: ${st.toString().split('\n').take(5).join('\n')}");
-      } else {
-        print("PP1 spending: FAIL - $e");
-      }
-    }
     expect(
-        () => {
-              interp.correctlySpends(
-                  scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1))
-            },
+        () => interp.correctlySpends(
+                  scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1)),
         returnsNormally);
 
     //verify PP2 spending
@@ -454,10 +400,8 @@ void main() {
     var scriptPubKeyPP2 = recipientTokenTx.outputs[2].script;
     var outputSatsPP2 = recipientTokenTx.outputs[2].satoshis;
     expect(
-        () => {
-              interp.correctlySpends(
-                  scriptSigPP2!, scriptPubKeyPP2, witnessTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2))
-            },
+        () => interp.correctlySpends(
+                  scriptSigPP2!, scriptPubKeyPP2, witnessTx, 2, verifyFlags, Coin.valueOf(outputSatsPP2)),
         returnsNormally);
   });
 

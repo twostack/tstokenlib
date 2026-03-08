@@ -10,10 +10,8 @@ The TSL1 Token Protocol allows for the creation of P2P tokens on Bitcoin (BSV) t
 
 [Download a copy of the whitepaper for a full technical explanation](https://github.com/twostack/tsl1)
 
-### NOTE:
-This library is an *Alpha Release* and is NOT PRODUCTION READY. It is intended as a technology demonstrator
-and for early experimentation. The library now includes metadata support, issuer identity anchoring, token
-transfers, and token burns, but the protocol and API surface may still change without notice.
+This library supports the full token lifecycle: issuance (with optional metadata and issuer identity anchoring),
+transfers, witness creation, and burns. All sCrypt contract templates use release-optimized builds.
 
 Code contributions are welcome and encouraged.
 

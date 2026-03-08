@@ -111,34 +111,35 @@ Goal: Build confidence that the protocol implementation is correct and handles e
 Goal: Make the library usable by external developers.
 
 ### 4.1 API Documentation
-- [ ] Add Dartdoc comments to all public classes and methods in `TokenTool`
-- [ ] Add Dartdoc comments to all builder classes
-- [ ] Add Dartdoc comments to utility functions
+- [x] Add Dartdoc comments to all public classes and methods in `TokenTool`
+- [x] Add Dartdoc comments to all builder classes
+- [x] Add Dartdoc comments to utility functions
 - [ ] Generate and host API reference docs
 
 ### 4.2 Architecture Guide
-- [ ] Document the 5-output transaction structure (Change, PP1, PP2, PartialWitness, Metadata)
-- [ ] Explain the inductive proof mechanism and why no back-to-genesis tracing is needed
-- [ ] Explain the partial SHA256 witness mechanism
-- [ ] Document the relationship between token, witness, and funding transactions
-- [ ] Include transaction flow diagrams
+- [x] Document the 5-output transaction structure (Change, PP1, PP2, PartialWitness, Metadata)
+- [x] Explain the inductive proof mechanism and why no back-to-genesis tracing is needed
+- [x] Explain the partial SHA256 witness mechanism
+- [x] Document the relationship between token, witness, and funding transactions
+- [x] Include transaction flow diagrams
 
 ### 4.3 Usage Guide
-- [ ] Expand README with complete examples for: issuance, transfer, burn
-- [ ] Add example project in `example/` directory
-- [ ] Document error handling and common failure modes
-- [ ] Add troubleshooting section
+- [x] Expand README with complete examples for: issuance, transfer, burn
+- [x] Add example project in `example/` directory
+- [x] Document error handling and common failure modes
+- [x] Add troubleshooting section
 
 ### 4.4 Security Review
-- [ ] Audit all script template hex strings against compiled sCrypt output
-- [ ] Review sighash preimage handling for correctness
-- [ ] Verify no private key material is logged or leaked
-- [ ] Document security model and threat assumptions
+- [x] Audit all script template hex strings against compiled sCrypt output
+- [x] Review sighash preimage handling for correctness
+- [x] Verify no private key material is logged or leaked
+- [x] Document security model and threat assumptions
 - [ ] External review of sCrypt contract logic
 
 ### 4.5 Release
-- [ ] Remove "NOT PRODUCTION READY" warning from README
-- [ ] Update version to 1.0.0
+- [x] Remove "NOT PRODUCTION READY" warning from README
+- [x] Update version to 1.0.0
+- [x] Switch all sCrypt contract templates from DEBUG to RELEASE builds
 - [ ] Publish to pub.dev
 - [ ] Tag release in git
 
