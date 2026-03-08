@@ -112,6 +112,6 @@ class PP5LockBuilder extends LockingScriptBuilder {
     var amountLen = paramBytes[offset];
     offset++;
     var amountBytesList = paramBytes.sublist(offset, offset + amountLen);
-    _amount = castToBigInt(amountBytesList, true).toInt();
+    _amount = castToBigInt(amountBytesList, false, nMaxNumSize: 8).toInt();
   }
 }
