@@ -8,3 +8,4 @@ pubspec.lock
 
 .idea
 .DS_Store
+*.iml

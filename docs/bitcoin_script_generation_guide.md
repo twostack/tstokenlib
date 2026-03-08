@@ -2,7 +2,7 @@
 
 ## A Guide for LLM Coding Agents
 
-This guide teaches how to generate optimized Bitcoin Script programmatically using Dart and the `dartsv` library's `ScriptBuilder`. The technique replaces large compiled sCrypt templates (~100KB) with compact, hand-optimized scripts (~62KB) while maintaining identical on-chain behavior.
+This guide teaches how to generate optimized Bitcoin Script programmatically using Dart and the `dartsv` library's `ScriptBuilder`. The technique replaces large compiled sCrypt templates with more compact, hand-optimized scripts while maintaining identical on-chain behavior.
 
 The approach was developed for BSV (Bitcoin SV), which restored the full original Bitcoin opcode set after the Genesis upgrade, including `OP_MUL`, `OP_DIV`, `OP_MOD`, `OP_LSHIFT`, `OP_RSHIFT`, `OP_CAT`, `OP_SPLIT`, and others.
 
