@@ -113,4 +113,20 @@ class OpcodeHelpers {
     b.opCode(OpCodes.OP_ADD);
     return truncate32(b);
   }
+
+  /// Reverses a 32-byte value on top of stack (big-endian ↔ little-endian).
+  ///
+  /// Stack: [... x(32 bytes)] → [... x_reversed(32 bytes)]
+  /// Cost: 124 bytes of script (31 splits + 31 swap-cats).
+  static ScriptBuilder reverseBytes32(ScriptBuilder b) {
+    for (int i = 0; i < 31; i++) {
+      b.opCode(OpCodes.OP_1);
+      b.opCode(OpCodes.OP_SPLIT);
+    }
+    for (int i = 0; i < 31; i++) {
+      b.opCode(OpCodes.OP_SWAP);
+      b.opCode(OpCodes.OP_CAT);
+    }
+    return b;
+  }
 }
