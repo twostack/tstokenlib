@@ -1,0 +1,111 @@
+/*
+Copyright 2024 - Stephan M. February
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+import "util.scrypt";
+
+/*
+*  PP2-FT: Parameterized witness bridge for fungible tokens.
+*
+*  Identical to PlugPointTwo except pp5OutputIndex and pp2OutputIndex are
+*  constructor params instead of being hardcoded to 1 and 2 respectively.
+*  This allows the contract to work for both:
+*    - Recipient triplet: pp5OutputIndex=1, pp2OutputIndex=2
+*    - Change triplet:    pp5OutputIndex=4, pp2OutputIndex=5
+*/
+contract PlugPointTwoFT {
+
+bytes fundingOutpoint;
+Ripemd160 witnessChangePKH;
+int changeAmount;
+Ripemd160 ownerPKH;
+int pp5OutputIndex;
+int pp2OutputIndex;
+
+constructor(bytes outpoint, Ripemd160 witnessChangePKH, int witnessChangeAmount, Ripemd160 ownerPKH, int pp5OutputIndex, int pp2OutputIndex) {
+    this.fundingOutpoint = outpoint;
+    this.witnessChangePKH = witnessChangePKH;
+    this.changeAmount = witnessChangeAmount;
+    this.ownerPKH = ownerPKH;
+    this.pp5OutputIndex = pp5OutputIndex;
+    this.pp2OutputIndex = pp2OutputIndex;
+}
+
+
+/**
+Params used to reconstruct Sighash PreImage
+tokenTxId - the token transaction's txid
+
+Note: By enforcing a simultaneous spend of PP5 & PP2-FT we can leave PP2-FT unlocked
+    because it can only be spent if PP5's PKH puzzle is solved as well
+*/
+public function unlock(bytes tokenTxId) {
+
+    //assemble the sighash pre-image
+    bytes txVersion = b'02000000';
+
+    //expect simultaneous spend of Witness from PP5 & PP2-FT
+    // Use parameterized output indices instead of hardcoded 1 and 2
+    bytes prevOutpoint2 = tokenTxId + Utils.toLEUnsigned(this.pp5OutputIndex, 4);  //PP5
+    bytes prevOutpoint3 = tokenTxId + Utils.toLEUnsigned(this.pp2OutputIndex, 4);  //PP2-FT
+    bytes thisOutpoint = tokenTxId + Utils.toLEUnsigned(this.pp2OutputIndex, 4);
+
+
+    bytes prevHashPreImage = this.fundingOutpoint + prevOutpoint2 + prevOutpoint3 ;
+    bytes prevHashOut = sha256(sha256(prevHashPreImage));
+
+    //RELEASE Build
+    bytes fullSubscript = b'76011b79ac77777777777777777777777777777777777777777777777777777777777777777777777777676079518763011279a9537988011179011379ac7777777777777777777777777777777777777767006868';
+
+    bytes sequenceNumber = Util.toLEUnsigned(4294967295, 4);
+    bytes sequenceHash = sha256(sha256(sequenceNumber + sequenceNumber + sequenceNumber));
+    int nLockTime = 0;
+    bytes sigHashType = SigHash.ALL | SigHash.FORKID;
+
+    bytes changeOutputScript = Util.buildModPKHScript(this.witnessChangePKH);
+    bytes changeOutput = num2bin(this.changeAmount, 8)  + Utils.writeVarint(changeOutputScript);
+
+    //cast sighashType into 4-byte LE
+    int tmp = unpack(sigHashType);
+
+    bytes sigBytes = num2bin(tmp, 4);
+    bytes preImage = txVersion + prevHashOut + sequenceHash           //txVersion + prevHashOut + sequenceHash
+                            + thisOutpoint
+                            + Utils.writeVarint(fullSubscript)
+                            + num2bin(1, 8)  //lock 1 sat in output
+                            + sequenceNumber
+                            + sha256(sha256(changeOutput)) //double hash of witness tx scriptPubKey
+                            + num2bin(nLockTime, 4)    //nLockTime
+                            + sigBytes;  //
+
+    bytes sigHash = sha256(sha256(preImage));
+
+    int hashInt = unpack(reverseBytes(sigHash , 32) + b'00');
+    Sig theSig = Tx.sign(hashInt, Tx.privKey, Tx.invK, Tx.r, Tx.rBigEndian, SigHashType(SigHash.ALL | SigHash.FORKID));
+
+***
+    require(checkSig(theSig, Tx.pubKey));
+
+
+}
+
+  //allow reclaiming of locked sats and burning of this output
+  public function burnToken( PubKey recipientPubKey, Sig recipientSig){
+      //assert P2PKH unlock conditions are met
+      require(hash160(recipientPubKey) == this.ownerPKH);
+      require(checkSig(recipientSig, recipientPubKey));
+  }
+
+}
