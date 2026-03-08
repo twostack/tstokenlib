@@ -125,13 +125,13 @@ public function transferToken(
     bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
     bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
     bytes pp1Output = Util.buildOutput(scriptPubKey, 1); //take pp1 output from sighashPreImage
-    // Rebuild PP3 (PartialWitness) output by substituting ownerPKH at byte offset 425
-    // PartialWitness constructor param layout:
-    //   [0..424]   : script prefix + pushdata byte (0x14)
-    //   [425..444] : ownerPKH data (20 bytes)
-    //   [445..]    : script suffix
+    // Rebuild PP3 (PartialWitness) output by substituting ownerPKH at byte offset 1
+    // PartialWitness constructor param layout (dynamically generated script):
+    //   [0]        : pushdata byte (0x14)
+    //   [1..20]    : ownerPKH data (20 bytes)
+    //   [21..]     : script body
     bytes parentPP3Script = parentPP3Output.script;
-    bytes rebuiltPP3Script = parentPP3Script[:425] + this.ownerPKH + parentPP3Script[445:];
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
     bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
     bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0); //metadata OP_RETURN carries 0 satoshis
     bytes fullTx = scriptLHS

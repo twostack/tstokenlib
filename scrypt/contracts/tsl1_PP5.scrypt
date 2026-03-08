@@ -51,10 +51,12 @@ import "txUtil_ft.scrypt";
 *    pp2OutputIndex:            200
 *    scriptCode start:          201
 *
-*  PP3-FT byte offsets (from compilation of tsl1_partial_witness_ft.scrypt):
-*    ownerPKH data:     425
-*    pp2OutputIndex:     445
-*    suffix start:       446
+*  PP3-FT byte offsets (dynamically generated script from WitnessCheckScriptGen):
+*    pushdata byte:           0     (0x14)
+*    ownerPKH data:           1-20  (20 bytes)
+*    script body:             21+
+*    pp2OutputIndex data:     61348 (1 byte within 4-byte LE at 61348-61351)
+*    Total script length:     61962 bytes
 */
 contract FungiblePlugPoint {
 
@@ -151,9 +153,9 @@ public function transferToken(
     bytes satoshiChangeOutput = Util.buildOutput(pkhScript, changeAmount);
     bytes pp5Output = Util.buildOutput(scriptPubKey, 1);
 
-    //rebuild PP3-FT with current owner's PKH and pp2OutputIndex=2
+    //rebuild PP3-FT with current owner's PKH (pp2OutputIndex stays at 2, already in script body)
     bytes parentPP3Script = parentPP3Output.script;
-    bytes rebuiltPP3Script = parentPP3Script[:425] + this.ownerPKH + Utils.toLEUnsigned(0x52, 1) + parentPP3Script[446:];
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
     bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
 
     bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
@@ -262,12 +264,14 @@ public function splitTransfer(
         require(sha256(changePP5Script) == sha256(myScriptPubKey));
     }
 
-    //rebuild PP3-FT scripts
+    //rebuild PP3-FT scripts (dynamically generated: PKH at bytes 1-20, pp2OutputIndex at byte 61348)
     bytes parentPP3Script = parentPP3Output.script;
-    // Recipient PP3-FT: ownerPKH=recipientPKH, pp2OutputIndex=2 (OP_2=0x52)
-    bytes recipientPP3Script = parentPP3Script[:425] + recipientPKH + Utils.toLEUnsigned(0x52, 1) + parentPP3Script[446:];
-    // Change PP3-FT: ownerPKH=parentOwnerPKH, pp2OutputIndex=5 (OP_5=0x55)
-    bytes changePP3Script = parentPP3Script[:425] + parentOwnerPKH + Utils.toLEUnsigned(0x55, 1) + parentPP3Script[446:];
+    // Recipient PP3-FT: ownerPKH=recipientPKH, pp2OutputIndex=2
+    bytes recipientPP3Script = parentPP3Script[:1] + recipientPKH + parentPP3Script[21:61348]
+                                + Utils.toLEUnsigned(2, 1) + parentPP3Script[61349:];
+    // Change PP3-FT: ownerPKH=parentOwnerPKH, pp2OutputIndex=5
+    bytes changePP3Script = parentPP3Script[:1] + parentOwnerPKH + parentPP3Script[21:61348]
+                                + Utils.toLEUnsigned(5, 1) + parentPP3Script[61349:];
 
     //build all 8 outputs
     bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);

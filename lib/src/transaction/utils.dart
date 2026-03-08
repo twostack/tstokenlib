@@ -52,13 +52,11 @@ class TransactionUtils {
     // The SHA256 padding will take us the rest of the way.
     var lastInputStart = originalSize - (inOutSize + LOCKTIME_SIZE);
 
-    // Avoid landing exactly on a block boundary — fudge by -2 bytes
-    if (lastInputStart % SHA256_BLOCK_SIZE == 0){
-        lastInputStart -= 2;
-    }
-
-    // Place the start of the last input on a 64-byte boundary
-    var lastBlockPadding = SHA256_BLOCK_SIZE - (lastInputStart % SHA256_BLOCK_SIZE);
+    // Calculate bytes needed to reach the next 64-byte boundary.
+    // When already on a boundary (remainder=0), we add a full block (64 bytes)
+    // to ensure non-empty padding (required by PP1/PP5 contracts).
+    var remainder = lastInputStart % SHA256_BLOCK_SIZE;
+    var lastBlockPadding = remainder == 0 ? SHA256_BLOCK_SIZE : SHA256_BLOCK_SIZE - remainder;
 
     // We subtract 1 to accommodate the pushdata byte in script.
     // +2 for placeholder padding prior to running this algo
