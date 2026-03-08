@@ -112,6 +112,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     int parentOutputCount,
   ) : _preImage = preImage,
       _pp2Output = pp2RecipientOutput,
+      _pp2ChangeOutput = pp2ChangeOutput,
       _ownerPubKey = ownerPubKey,
       _changePKH = changePKH,
       _changeAmount = changeAmount,
