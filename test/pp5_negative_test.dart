@@ -473,4 +473,214 @@ void main() {
         reason: 'Wrong tokenChangeAmount should fail balance conservation');
     });
   });
+
+  // =========================================================================
+  // Merge negative tests
+  // =========================================================================
+  // Merge scriptSig chunks:
+  //   [0: preImage, 1: pp2Output, 2: ownerPubKey, 3: changePKH,
+  //    4: changeAmount, 5: ownerSig, 6: tokenLHS, 7: prevTokenTxA,
+  //    8: prevTokenTxB, 9: witnessPadding, 10: parentOutputCountA,
+  //    11: parentOutputCountB, 12: parentPP5IndexA, 13: parentPP5IndexB,
+  //    14: OP_3(selector)]
+  group('Merge negative tests', () {
+    late Transaction splitTx;
+    late Transaction mergeTx;
+    late Transaction mergeWitnessTx;
+
+    setUpAll(() async {
+      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+
+      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp5Lock.tokenId;
+
+      // Split: 600 to Bob, 400 change to Bob
+      var splitFundingTx = getBobFundingTx();
+      var recipientWitnessFundingTx = getBobFundingTx();
+      var changeWitnessFundingTx = getBobFundingTx();
+
+      splitTx = service.createFungibleSplitTxn(
+        mintWitnessTx, mintTx, bobPub, bobAddress, 600,
+        splitFundingTx, bobFundingSigner, bobPub,
+        recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
+        tokenId, 1000,
+      );
+
+      // Witnesses for both triplets
+      var recipientWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, recipientWitnessFundingTx, splitTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 1,
+      );
+
+      var changeWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, changeWitnessFundingTx, splitTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 4,
+      );
+
+      // Merge 600 + 400 = 1000
+      var mergeFundingTx = getBobFundingTx();
+      var mergeWitnessFundingTx = getBobFundingTx();
+
+      mergeTx = service.createFungibleMergeTxn(
+        recipientWitnessTx, splitTx,
+        changeWitnessTx, splitTx,
+        bobPub,
+        bobFundingSigner,
+        mergeFundingTx, bobFundingSigner, bobPub,
+        mergeWitnessFundingTx.hash,
+        tokenId, 1000,
+        prevTripletBaseIndexA: 1,
+        prevTripletBaseIndexB: 4,
+      );
+
+      // Create merge witness
+      var splitTxBytes = hex.decode(splitTx.serialize());
+      mergeWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, mergeWitnessFundingTx, mergeTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.MERGE,
+        parentTokenTxBytes: splitTxBytes,
+        parentTokenTxBytesB: splitTxBytes,
+        parentOutputCount: 8,
+        parentOutputCountB: 8,
+        parentPP5IndexA: 1,
+        parentPP5IndexB: 4,
+        tripletBaseIndex: 1,
+      );
+    });
+
+    test('sanity: valid merge witness passes', () {
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            mergeWitnessTx.inputs[1].script!, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        returnsNormally,
+        reason: 'Valid merge witness should pass');
+    });
+
+    test('rejects wrong ownerPubKey',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var wrongPubKey = Uint8List.fromList(hex.decode(alicePubKey.toHex()));
+      var tamperedSig = tamperChunkData(validScriptSig, 2, wrongPubKey);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong ownerPubKey should fail hash160 check');
+    });
+
+    test('rejects wrong ownerSig',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var origSig = validScriptSig.chunks[5].buf!;
+      var wrongSig = Uint8List.fromList(List.filled(origSig.length, 0xCC));
+      var tamperedSig = tamperChunkData(validScriptSig, 5, wrongSig);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong ownerSig should fail checkSig');
+    });
+
+    test('rejects wrong parentRawTxA',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var wrongParentTx = Uint8List.fromList(hex.decode(getBobFundingTx().serialize()));
+      var tamperedSig = tamperChunkData(validScriptSig, 7, wrongParentTx);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong parentRawTxA should fail');
+    });
+
+    test('rejects wrong parentRawTxB',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var wrongParentTx = Uint8List.fromList(hex.decode(getBobFundingTx().serialize()));
+      var tamperedSig = tamperChunkData(validScriptSig, 8, wrongParentTx);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong parentRawTxB should fail');
+    });
+
+    test('rejects wrong pp2Output',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var origPP2 = Uint8List.fromList(validScriptSig.chunks[1].buf!);
+      origPP2[10] ^= 0xFF;
+      var tamperedSig = tamperChunkData(validScriptSig, 1, origPP2);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong pp2Output should fail PP2 validation');
+    });
+
+    test('rejects wrong parentOutputCountA',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var tamperedSig = tamperChunkNumber(validScriptSig, 10, 3);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong parentOutputCountA should fail');
+    });
+
+    test('rejects wrong parentPP5IndexA',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var tamperedSig = tamperChunkNumber(validScriptSig, 12, 3);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong parentPP5IndexA should fail');
+    });
+
+    test('rejects wrong parentPP5IndexB',
+        timeout: Timeout(Duration(minutes: 2)), () {
+      var validScriptSig = mergeWitnessTx.inputs[1].script!;
+      var tamperedSig = tamperChunkNumber(validScriptSig, 13, 2);
+
+      var interp = Interpreter();
+      expect(
+        () => interp.correctlySpends(
+            tamperedSig, mergeTx.outputs[1].script,
+            mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+        throwsA(isA<ScriptException>()),
+        reason: 'Wrong parentPP5IndexB should fail');
+    });
+  });
 }
