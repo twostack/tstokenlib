@@ -612,32 +612,32 @@ class PP5ScriptGen {
   ///   recipientPKH, myOutIdx, outCnt, pp5Idx
   /// Altstack: [amount(bottom), tokenId, ownerPKH(top)]
   static void _emitSplitTransfer(ScriptBuilder b) {
-    _emitSplitPhase1Auth(b);
-    _emitSplitPhase2Validate(b);
-    _emitSplitPhase3PreimageFields(b);
-    _emitSplitPhase4Preimage(b);
-    _emitSplitPhase5ParseParent(b);
-    _emitSplitPhase6Metadata(b);
-    _emitSplitPhase7Balance(b);
-    _emitSplitPhase8DrainAlt(b);
-    _emitSplitPhase9RebuildPP5s(b);
-    _emitSplitPhase10MyOutputIdx(b);
-    _emitSplitPhase11RebuildPP3s(b);
-    _emitSplitPhase12BuildOutputs(b);
-    _emitSplitPhase13FullTx(b);
-    _emitSplitPhase14TxIdVerify(b);
-    _emitSplitPhase15ValidatePP2s(b);
-    _emitSplitPhase16Outpoint(b);
+    _emitSplitAuth(b);
+    _emitSplitValidateInputLengths(b);
+    _emitSplitExtractPreimageFields(b);
+    _emitSplitCheckPreimage(b);
+    _emitSplitParseParentOutputs(b);
+    _emitSplitValidateMetadata(b);
+    _emitSplitBalanceConservation(b);
+    _emitSplitDrainAltstack(b);
+    _emitSplitRebuildPP5s(b);
+    _emitSplitVerifyMyOutputIdx(b);
+    _emitSplitRebuildPP3s(b);
+    _emitSplitBuildOutputs(b);
+    _emitSplitReconstructFullTx(b);
+    _emitSplitVerifyTxId(b);
+    _emitSplitValidatePP2s(b);
+    _emitSplitVerifyParentOutpoint(b);
   }
 
-  /// Phase 1: P2PKH auth.
+  /// P2PKH auth.
   /// Entry stack (16): [..., pp5Idx]  Alt: [amount, tokenId, ownerPKH]
   /// Exit stack  (17): [..., pp5Idx, ownerPKH]  Alt: [amount, tokenId]
   /// idx: ownerPKH=0, pp5Idx=1, outCnt=2, myOutIdx=3, recipientPKH=4,
   ///   tokenChangeAmt=5, recipientAmt=6, padding=7, parentRawTx=8, scriptLHS=9,
   ///   ownerSig=10, changeAmt=11, changePkh=12, ownerPK=13, pp2ChangeOut=14,
   ///   pp2RecipOut=15, preImage=16
-  static void _emitSplitPhase1Auth(ScriptBuilder b) {
+  static void _emitSplitAuth(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
 
     // hash160(ownerPK) == ownerPKH
@@ -656,9 +656,9 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_VERIFY);
   }
 
-  /// Phase 2: Validate padding and parentRawTx lengths.
+  /// Validate padding and parentRawTx lengths.
   /// Stack unchanged (17 items).
-  static void _emitSplitPhase2Validate(ScriptBuilder b) {
+  static void _emitSplitValidateInputLengths(ScriptBuilder b) {
     // padding at idx 7
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);
@@ -672,11 +672,11 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
   }
 
-  /// Phase 3: Extract currentTxId, nLocktime, and sha256(scriptCode) from preImage.
+  /// Extract currentTxId, nLocktime, and sha256(scriptCode) from preImage.
   /// Entry stack (17): [..., ownerPKH]  preImage at idx 16
   /// Exit stack  (18): [..., ownerPKH, sha256sc]
   /// Alt: [amount, tokenId, currentTxId, nLocktime]
-  static void _emitSplitPhase3PreimageFields(ScriptBuilder b) {
+  static void _emitSplitExtractPreimageFields(ScriptBuilder b) {
     // Extract currentTxId = preImage[68:100]
     OpcodeHelpers.pushInt(b, 16);
     b.opCode(OpCodes.OP_PICK);           // copy preImage
@@ -714,25 +714,25 @@ class PP5ScriptGen {
     // Stack (18): [..., ownerPKH, sha256sc]
   }
 
-  /// Phase 4: checkPreimageOCS (consumes preImage).
+  /// checkPreimageOCS (consumes preImage).
   /// Entry stack (18): [..., ownerPKH, sha256sc]  preImage at idx 17
   /// Exit stack  (17): [..., ownerPKH, sha256sc]  (preImage consumed)
   /// idx: sha256sc=0, ownerPKH=1, pp5Idx=2, outCnt=3, myOutIdx=4,
   ///   recipientPKH=5, tokenChangeAmt=6, recipientAmt=7, padding=8,
   ///   parentRawTx=9, scriptLHS=10, ownerSig=11, changeAmt=12, changePkh=13,
   ///   ownerPK=14, pp2ChangeOut=15, pp2RecipOut=16
-  static void _emitSplitPhase4Preimage(ScriptBuilder b) {
+  static void _emitSplitCheckPreimage(ScriptBuilder b) {
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_ROLL);
     CheckPreimageOCS.emitCheckPreimageOCS(b, useCodeSeparator: false);
     b.opCode(OpCodes.OP_VERIFY);
   }
 
-  /// Phase 5: Parse parent tx outputs (PP5, PP2, PP3, metadata).
+  /// Parse parent tx outputs (PP5, PP2, PP3, metadata).
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (17): [..., ownerPKH, sha256sc]  (same size, rawTx consumed)
   /// Alt: [amount, tokenId, currentTxId, nLocktime, PP5, PP2, PP3, metadata]
-  static void _emitSplitPhase5ParseParent(ScriptBuilder b) {
+  static void _emitSplitParseParentOutputs(ScriptBuilder b) {
     // parentRawTx at idx 9, pp5Idx at idx 2
     b.opCode(OpCodes.OP_9);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTx
@@ -771,11 +771,11 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_DROP);           // drop remaining tx bytes
   }
 
-  /// Phase 6: Validate metadata starts with 006a.
+  /// Validate metadata starts with 006a.
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (18): [..., ownerPKH, sha256sc, metadata]
   /// Alt: [..., PP5, PP2, PP3]  (metadata popped)
-  static void _emitSplitPhase6Metadata(ScriptBuilder b) {
+  static void _emitSplitValidateMetadata(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // metadata
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_2);
@@ -784,12 +784,12 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_EQUALVERIFY);
   }
 
-  /// Phase 7: Balance conservation.
+  /// Balance conservation.
   /// Pops PP3, PP2, PP5 from alt. Extracts parentAmount from PP5.
   /// Verifies recipientAmt > 0, tokenChangeAmt > 0, recipientAmt + tokenChangeAmt == parentAmount.
   /// Entry stack (18): [..., sha256sc, metadata]  Alt: [..., nLocktime, PP5, PP2, PP3]
   /// Exit stack  (21): [..., sha256sc, metadata, PP3, PP2, PP5]  Alt: [amount, tokenId, currentTxId, nLocktime]
-  static void _emitSplitPhase7Balance(ScriptBuilder b) {
+  static void _emitSplitBalanceConservation(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP3
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP2
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP5
@@ -830,7 +830,7 @@ class PP5ScriptGen {
     // Stack (21): [..., sha256sc, metadata, PP3, PP2, PP5]
   }
 
-  /// Phase 8: Drain altstack — get nLocktime and currentTxId, drop tokenId and amount.
+  /// Drain altstack — get nLocktime and currentTxId, drop tokenId and amount.
   /// Entry stack (21): [..., PP5]  Alt: [amount, tokenId, currentTxId, nLocktime]
   /// Exit stack  (23): [..., PP5, nLocktime, currentTxId]  Alt: empty
   /// idx: currentTxId=0, nLocktime=1, PP5=2, PP2=3, PP3=4, metadata=5,
@@ -838,7 +838,7 @@ class PP5ScriptGen {
   ///   tokenChangeAmt=12, recipientAmt=13, padding=14, parentRawTx=15,
   ///   scriptLHS=16, ownerSig=17, changeAmt=18, changePkh=19, ownerPK=20,
   ///   pp2ChangeOut=21, pp2RecipOut=22
-  static void _emitSplitPhase8DrainAlt(ScriptBuilder b) {
+  static void _emitSplitDrainAltstack(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // nLocktime
     b.opCode(OpCodes.OP_FROMALTSTACK);   // currentTxId
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
@@ -847,10 +847,10 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_DROP);
   }
 
-  /// Phase 9: Rebuild recipient PP5 and change PP5 from parent template.
+  /// Rebuild recipient PP5 and change PP5 from parent template.
   /// Entry stack (23): [..., PP5, nLocktime, currentTxId]  Alt: empty
   /// Exit stack  (25): [..., PP5, nLocktime, currentTxId, recipientPP5, changePP5]
-  static void _emitSplitPhase9RebuildPP5s(ScriptBuilder b) {
+  static void _emitSplitRebuildPP5s(ScriptBuilder b) {
     // --- Rebuild recipient PP5 ---
     // _emitRebuildPP5 expects: [parentPP5Script, newOwnerPKH, newAmount]
     // PP5 at idx 2, recipientPKH at idx 11, recipientAmt at idx 13
@@ -888,12 +888,12 @@ class PP5ScriptGen {
     // Stack (25): [..., PP5, nLocktime, currentTxId, recipientPP5, changePP5]
   }
 
-  /// Phase 10: myOutputIndex check.
+  /// myOutputIndex check.
   /// Verify sha256(correct rebuilt PP5) == sha256(scriptCode).
   /// Entry stack (25): [..., recipientPP5, changePP5]
   /// Exit stack  (25): [..., recipientPP5, changePP5]  (unchanged)
   /// idx: changePP5=0, recipPP5=1, ..., myOutIdx=10, ..., sha256sc=6
-  static void _emitSplitPhase10MyOutputIdx(ScriptBuilder b) {
+  static void _emitSplitVerifyMyOutputIdx(ScriptBuilder b) {
     // myOutIdx at idx 12 (was 10 in Phase 8, +2 from Phase 9 adding recipPP5+changePP5)
     OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // copy myOutIdx → stack 26
@@ -919,12 +919,12 @@ class PP5ScriptGen {
     // Stack (25): unchanged
   }
 
-  /// Phase 11: Rebuild recipient PP3 and change PP3 from parent template.
+  /// Rebuild recipient PP3 and change PP3 from parent template.
   /// Recipient PP3: ownerPKH=recipientPKH, pp2OutputIndex=2
   /// Change PP3: ownerPKH=parentOwnerPKH (from PP5[1:21]), pp2OutputIndex=5
   /// Entry stack (25): [..., PP3, PP2, PP5, nLocktime, currentTxId, recipPP5, changePP5]
   /// Exit stack  (27): [..., recipPP5, changePP5, recipPP3, changePP3]
-  static void _emitSplitPhase11RebuildPP3s(ScriptBuilder b) {
+  static void _emitSplitRebuildPP3s(ScriptBuilder b) {
     // --- Rebuild recipient PP3 ---
     // _emitRebuildPP3WithPP2Idx expects: [parentPP3Script, newOwnerPKH]
     // PP3 at idx: changePP5=0, recipPP5=1, curTxId=2, nLock=3, PP5=4, PP2=5, PP3=6
@@ -955,14 +955,14 @@ class PP5ScriptGen {
     // Stack (27): [..., recipPP5, changePP5, recipPP3, changePP3]
   }
 
-  /// Phase 12: Build all 8 outputs.
+  /// Build all 8 outputs.
   /// Builds: changeOut, pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut.
   /// (pp2RecipOut and pp2ChangeOut are raw bytes from scriptSig, not built here.)
   /// Entry stack (27): [..., metadata, PP3, PP2, PP5, nLocktime, currentTxId,
   ///   recipPP5, changePP5, recipPP3, changePP3]
   /// Exit stack  (29): [..., currentTxId, pp5RecipOut, pp5ChangeOut,
   ///   pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
-  static void _emitSplitPhase12BuildOutputs(ScriptBuilder b) {
+  static void _emitSplitBuildOutputs(ScriptBuilder b) {
     // --- Build PP5 recipient output (1 sat) ---
     // recipPP5 at idx: changePP3=0, recipPP3=1, changePP5=2, recipPP5=3
     b.opCode(OpCodes.OP_3);
@@ -1021,7 +1021,7 @@ class PP5ScriptGen {
     // Stack (33): [..., pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   }
 
-  /// Phase 13: Reconstruct fullTx.
+  /// Reconstruct fullTx.
   /// fullTx = scriptLHS + varint(8) + changeOut + pp5RecipOut + pp2RecipOut
   ///        + pp3RecipOut + pp5ChangeOut + pp2ChangeOut + pp3ChangeOut + metaOut + nLocktime
   ///
@@ -1032,7 +1032,7 @@ class PP5ScriptGen {
   /// Entry stack (33): [..., nLocktime, currentTxId, recipPP5, changePP5, recipPP3, changePP3,
   ///   pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   /// Exit stack: [..., nLocktime, currentTxId, fullTx]
-  static void _emitSplitPhase13FullTx(ScriptBuilder b) {
+  static void _emitSplitReconstructFullTx(ScriptBuilder b) {
     // Stack top (12 items from Phase 12):
     //   changeOut=0, metaOut=1, pp3ChangeOut=2, pp3RecipOut=3,
     //   pp5ChangeOut=4, pp5RecipOut=5, changePP3=6, recipPP3=7,
@@ -1180,7 +1180,7 @@ class PP5ScriptGen {
     // Stack: [..., nLocktime, currentTxId, fullTx]
   }
 
-  /// Phase 14: Verify sha256(sha256(fullTx)) == currentTxId.
+  /// Verify sha256(sha256(fullTx)) == currentTxId.
   /// Entry stack: [..., nLocktime, currentTxId, fullTx]
   /// Exit stack:  [..., PP5, PP2, PP3, metadata, sha256sc, ownerPKH, ...]
   ///   (nLocktime, currentTxId, fullTx all consumed)
@@ -1190,7 +1190,7 @@ class PP5ScriptGen {
   ///   outCnt=7, myOutIdx=8, recipientPKH=9, tokenChangeAmt=10, recipientAmt=11,
   ///   padding=12, parentRawTx=13, scriptLHS=14, ownerSig=15, changeAmt=16,
   ///   changePkh=17, ownerPK=18, pp2ChangeOut=19, pp2RecipOut=20
-  static void _emitSplitPhase14TxIdVerify(ScriptBuilder b) {
+  static void _emitSplitVerifyTxId(ScriptBuilder b) {
     // Stack: [..., nLocktime, currentTxId, fullTx]
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_SHA256);
@@ -1217,11 +1217,11 @@ class PP5ScriptGen {
     // Top indices: PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5
   }
 
-  /// Phase 15: Validate both PP2-FT outputs.
+  /// Validate both PP2-FT outputs.
   /// Entry stack (21): top = PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, ...
   ///   pp2ChangeOut=19, pp2RecipOut=20
   /// Exit: PP5, PP2 consumed; PP3, metadata, sha256sc, ownerPKH remain + cleanup items.
-  static void _emitSplitPhase15ValidatePP2s(ScriptBuilder b) {
+  static void _emitSplitValidatePP2s(ScriptBuilder b) {
     b.opCode(OpCodes.OP_DROP);           // drop PP5 (no longer needed)
     // Stack (20): PP2=0, PP3=1, metadata=2, sha256sc=3, ownerPKH=4, ...
     //   pp2ChangeOut=18, pp2RecipOut=19
@@ -1288,13 +1288,13 @@ class PP5ScriptGen {
     //   changePkh=15, ownerPK=16, pp2ChangeOut=17, pp2RecipOut=18
   }
 
-  /// Phase 16: Verify outpoint[2][:32] == sha256(sha256(parentRawTx)).
+  /// Verify outpoint[2][:32] == sha256(sha256(parentRawTx)).
   /// Entry stack (19): PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp5Idx=4,
   ///   outCnt=5, myOutIdx=6, recipientPKH=7, tokenChangeAmt=8, recipientAmt=9,
   ///   padding=10, parentRawTx=11, scriptLHS=12, ownerSig=13, changeAmt=14,
   ///   changePkh=15, ownerPK=16, pp2ChangeOut=17, pp2RecipOut=18
   /// Exit: leaves TRUE on stack.
-  static void _emitSplitPhase16Outpoint(ScriptBuilder b) {
+  static void _emitSplitVerifyParentOutpoint(ScriptBuilder b) {
     // Drop unneeded items: PP3, metadata, sha256sc, ownerPKH, pp5Idx, outCnt,
     //   myOutIdx, recipientPKH, tokenChangeAmt, recipientAmt, padding (11 items)
     for (int i = 0; i < 11; i++) {
