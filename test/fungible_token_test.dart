@@ -516,6 +516,405 @@ void main() {
     });
   });
 
+  group('Merge transaction: split then merge', () {
+    test('split 600/400 then merge back to 1000',
+        timeout: Timeout(Duration(minutes: 3)), () async {
+      var service = FungibleTokenTool();
+      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+
+      // --- Step 1: Mint 1000 tokens ---
+      var bobFundingTx = getBobFundingTx();
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, 1000,
+      );
+
+      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp5Lock.tokenId;
+
+      // --- Step 2: Mint witness ---
+      var mintWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.MINT,
+      );
+
+      // --- Step 3: Split: 600 to Bob (recipient), 400 change to Bob ---
+      var splitFundingTx = getBobFundingTx();
+      var recipientWitnessFundingTx = getBobFundingTx();
+      var changeWitnessFundingTx = getBobFundingTx();
+
+      var splitTx = service.createFungibleSplitTxn(
+        mintWitnessTx, mintTx, bobPub, bobAddress, 600,
+        splitFundingTx, bobFundingSigner, bobPub,
+        recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
+        tokenId, 1000,
+      );
+
+      expect(splitTx.outputs.length, 8);
+
+      // Verify split amounts
+      var recipientPP5 = PP5LockBuilder.fromScript(splitTx.outputs[1].script);
+      var changePP5 = PP5LockBuilder.fromScript(splitTx.outputs[4].script);
+      expect(recipientPP5.amount, 600);
+      expect(changePP5.amount, 400);
+
+      // --- Step 4: Witness for recipient triplet (base index 1) ---
+      var recipientWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, recipientWitnessFundingTx, splitTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 1,
+      );
+
+      // --- Step 5: Witness for change triplet (base index 4) ---
+      var changeWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, changeWitnessFundingTx, splitTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 4,
+      );
+
+      // --- Step 6: Merge 600 + 400 = 1000 ---
+      var mergeFundingTx = getBobFundingTx();
+      var mergeWitnessFundingTx = getBobFundingTx();
+
+      var mergeTx = service.createFungibleMergeTxn(
+        recipientWitnessTx, splitTx,
+        changeWitnessTx, splitTx,
+        bobPub,
+        bobFundingSigner,
+        mergeFundingTx, bobFundingSigner, bobPub,
+        mergeWitnessFundingTx.hash,
+        tokenId, 1000,
+        prevTripletBaseIndexA: 1,
+        prevTripletBaseIndexB: 4,
+      );
+
+      // Verify merge tx structure
+      expect(mergeTx.outputs.length, 5, reason: 'Merge should create 5 outputs');
+      expect(mergeTx.inputs.length, 5, reason: 'Merge should have 5 inputs');
+
+      // Verify merged PP5 amount
+      var mergedPP5 = PP5LockBuilder.fromScript(mergeTx.outputs[1].script);
+      expect(mergedPP5.amount, 1000, reason: 'Merged amount should be 1000');
+      expect(hex.encode(mergedPP5.recipientPKH), bobPubkeyHash);
+
+      // Verify PP2-FT indices
+      var mergedPP2 = PP2FtLockBuilder.fromScript(mergeTx.outputs[2].script);
+      expect(mergedPP2.pp5OutputIndex, 1);
+      expect(mergedPP2.pp2OutputIndex, 2);
+
+      // Verify output satoshi values
+      expect(mergeTx.outputs[1].satoshis, BigInt.one); // PP5
+      expect(mergeTx.outputs[2].satoshis, BigInt.one); // PP2-FT
+      expect(mergeTx.outputs[3].satoshis, BigInt.one); // PP3-FT
+      expect(mergeTx.outputs[4].satoshis, BigInt.zero); // Metadata
+
+      // --- Step 7: Verify script execution ---
+      // Input ordering: [funding(0), witnessA(1), witnessB(2), PP3_A_burn(3), PP3_B_burn(4)]
+      var interp = Interpreter();
+      var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
+
+      // Verify ModP2PKH witness A spending (input[1] spends recipientWitnessTx output[0])
+      expect(
+          () => interp.correctlySpends(
+              mergeTx.inputs[1].script!, recipientWitnessTx.outputs[0].script,
+              mergeTx, 1, verifyFlags, Coin.valueOf(recipientWitnessTx.outputs[0].satoshis)),
+          returnsNormally,
+          reason: 'ModP2PKH witness A spending in merge should verify');
+
+      // Verify ModP2PKH witness B spending (input[2] spends changeWitnessTx output[0])
+      expect(
+          () => interp.correctlySpends(
+              mergeTx.inputs[2].script!, changeWitnessTx.outputs[0].script,
+              mergeTx, 2, verifyFlags, Coin.valueOf(changeWitnessTx.outputs[0].satoshis)),
+          returnsNormally,
+          reason: 'ModP2PKH witness B spending in merge should verify');
+
+      // Verify PP3-FT-A burn spending (input[3] spends splitTx output[3])
+      expect(
+          () => interp.correctlySpends(
+              mergeTx.inputs[3].script!, splitTx.outputs[3].script,
+              mergeTx, 3, verifyFlags, Coin.valueOf(splitTx.outputs[3].satoshis)),
+          returnsNormally,
+          reason: 'PP3-FT-A burn spending in merge should verify');
+
+      // Verify PP3-FT-B burn spending (input[4] spends splitTx output[6])
+      expect(
+          () => interp.correctlySpends(
+              mergeTx.inputs[4].script!, splitTx.outputs[6].script,
+              mergeTx, 4, verifyFlags, Coin.valueOf(splitTx.outputs[6].satoshis)),
+          returnsNormally,
+          reason: 'PP3-FT-B burn spending in merge should verify');
+
+      // --- Step 8: Create merge witness (exercises PP5.mergeToken) ---
+      var splitTxBytes = hex.decode(splitTx.serialize());
+      var mergeWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, mergeWitnessFundingTx, mergeTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.MERGE,
+        parentTokenTxBytes: splitTxBytes,
+        parentTokenTxBytesB: splitTxBytes,
+        parentOutputCount: 8,
+        parentOutputCountB: 8,
+        parentPP5IndexA: 1,
+        parentPP5IndexB: 4,
+        tripletBaseIndex: 1,
+      );
+      expect(mergeWitnessTx.outputs.length, 1);
+
+      // Verify PP5 spending in merge witness (input[1] spends mergeTx output[1])
+      expect(
+          () => interp.correctlySpends(
+              mergeWitnessTx.inputs[1].script!, mergeTx.outputs[1].script,
+              mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP5 mergeToken spending in witness should verify');
+
+      // --- Step 9: Transfer merged tokens to Alice (proves merged UTXOs are spendable) ---
+      var transferFundingTx = getBobFundingTx();
+      var aliceWitnessFundingTx = getAliceFundingTx();
+
+      var transferTx = service.createFungibleTransferTxn(
+        mergeWitnessTx, mergeTx, bobPub, aliceAddress,
+        transferFundingTx, bobFundingSigner, bobPub,
+        aliceWitnessFundingTx.hash, tokenId, 1000,
+      );
+
+      expect(transferTx.outputs.length, 5);
+
+      // Verify transferred PP5 has correct amount and recipient
+      var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
+      expect(transferPP5.amount, 1000, reason: 'Transferred amount should be 1000');
+      expect(hex.encode(transferPP5.recipientPKH), alicePubkeyHash,
+          reason: 'Recipient should be Alice');
+
+      // Verify PP3-FT spending in transfer (input[2] spends mergeTx output[3])
+      expect(
+          () => interp.correctlySpends(
+              transferTx.inputs[2].script!, mergeTx.outputs[3].script,
+              transferTx, 2, verifyFlags, Coin.valueOf(mergeTx.outputs[3].satoshis)),
+          returnsNormally,
+          reason: 'PP3-FT spending in post-merge transfer should verify');
+
+      // Verify ModP2PKH witness spending (input[1] spends mergeWitnessTx output[0])
+      expect(
+          () => interp.correctlySpends(
+              transferTx.inputs[1].script!, mergeWitnessTx.outputs[0].script,
+              transferTx, 1, verifyFlags, Coin.valueOf(mergeWitnessTx.outputs[0].satoshis)),
+          returnsNormally,
+          reason: 'ModP2PKH spending in post-merge transfer should verify');
+
+      // --- Step 10: Witness for Alice's transfer (exercises PP5.transferToken on merged output) ---
+      // tokenChangePKH must be Bob's PKH because the transfer tx's satoshi change goes to Bob (the sender)
+      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceWitnessTx = service.createFungibleWitnessTxn(
+        aliceFundingSigner, aliceWitnessFundingTx, transferTx,
+        alicePubKey, bobPubkeyHash,
+        FungibleTokenAction.TRANSFER,
+        parentTokenTxBytes: hex.decode(mergeTx.serialize()),
+        parentOutputCount: 5,
+      );
+      expect(aliceWitnessTx.outputs.length, 1);
+
+      // Verify PP5 spending in Alice's witness (input[1] spends transferTx output[1])
+      expect(
+          () => interp.correctlySpends(
+              aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP5 transferToken spending after merge should verify');
+    });
+  });
+
+  group('Split after split: spending change triplet', () {
+    test('split change triplet (parentPP5Index=4) then verify witnesses',
+        timeout: Timeout(Duration(minutes: 3)), () async {
+      var service = FungibleTokenTool();
+      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+
+      // --- Step 1: Mint 1000 tokens ---
+      var bobFundingTx = getBobFundingTx();
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, 1000,
+      );
+
+      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp5Lock.tokenId;
+
+      // --- Step 2: Mint witness ---
+      var mintWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.MINT,
+      );
+
+      // --- Step 3: First split: 700 to Alice, 300 change to Bob ---
+      var split1FundingTx = getBobFundingTx();
+      var aliceWitnessFundingTx = getAliceFundingTx();
+      var changeWitnessFundingTx = getBobFundingTx();
+
+      var split1Tx = service.createFungibleSplitTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress, 700,
+        split1FundingTx, bobFundingSigner, bobPub,
+        aliceWitnessFundingTx.hash, changeWitnessFundingTx.hash,
+        tokenId, 1000,
+      );
+
+      expect(split1Tx.outputs.length, 8);
+      var recipientPP5 = PP5LockBuilder.fromScript(split1Tx.outputs[1].script);
+      var changePP5 = PP5LockBuilder.fromScript(split1Tx.outputs[4].script);
+      expect(recipientPP5.amount, 700);
+      expect(changePP5.amount, 300);
+      expect(hex.encode(recipientPP5.recipientPKH), alicePubkeyHash);
+      expect(hex.encode(changePP5.recipientPKH), bobPubkeyHash);
+
+      // --- Step 4: Witness for change triplet (base index 4) ---
+      var changeWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, changeWitnessFundingTx, split1Tx, bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 4,
+      );
+
+      // --- Step 5: Second split of change: 200 to Alice, 100 change to Bob ---
+      // This exercises prevTripletBaseIndex=4 (spending from change triplet)
+      var split2FundingTx = getBobFundingTx();
+      var alice2WitnessFundingTx = getAliceFundingTx();
+      var change2WitnessFundingTx = getBobFundingTx();
+
+      var split2Tx = service.createFungibleSplitTxn(
+        changeWitnessTx, split1Tx, bobPub, aliceAddress, 200,
+        split2FundingTx, bobFundingSigner, bobPub,
+        alice2WitnessFundingTx.hash, change2WitnessFundingTx.hash,
+        tokenId, 300,
+        prevTripletBaseIndex: 4,
+      );
+
+      expect(split2Tx.outputs.length, 8, reason: 'Second split should create 8 outputs');
+      expect(split2Tx.inputs.length, 3);
+
+      // Verify second split amounts
+      var split2RecipientPP5 = PP5LockBuilder.fromScript(split2Tx.outputs[1].script);
+      var split2ChangePP5 = PP5LockBuilder.fromScript(split2Tx.outputs[4].script);
+      expect(split2RecipientPP5.amount, 200, reason: 'Recipient should get 200');
+      expect(split2ChangePP5.amount, 100, reason: 'Change should be 100');
+      expect(hex.encode(split2RecipientPP5.recipientPKH), alicePubkeyHash);
+      expect(hex.encode(split2ChangePP5.recipientPKH), bobPubkeyHash);
+
+      // Verify balance conservation
+      expect(split2RecipientPP5.amount + split2ChangePP5.amount, 300,
+          reason: 'Total should equal change amount from first split');
+
+      var interp = Interpreter();
+      var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
+
+      // Verify PP3-FT spending in second split (input[2] spends split1Tx output[6] — change PP3)
+      expect(
+          () => interp.correctlySpends(
+              split2Tx.inputs[2].script!, split1Tx.outputs[6].script,
+              split2Tx, 2, verifyFlags, Coin.valueOf(split1Tx.outputs[6].satoshis)),
+          returnsNormally,
+          reason: 'PP3-FT spending from change triplet in second split should verify');
+
+      // Verify ModP2PKH spending (input[1] spends changeWitnessTx output[0])
+      expect(
+          () => interp.correctlySpends(
+              split2Tx.inputs[1].script!, changeWitnessTx.outputs[0].script,
+              split2Tx, 1, verifyFlags, Coin.valueOf(changeWitnessTx.outputs[0].satoshis)),
+          returnsNormally,
+          reason: 'ModP2PKH witness spending in second split should verify');
+
+      // --- Step 6: Witness for second split recipient (base=1, parentPP5Index=4) ---
+      // Parent is split1Tx (8 outputs), PP5 was at index 4 (change triplet)
+      var alice2WitnessTx = service.createFungibleWitnessTxn(
+        aliceFundingSigner, alice2WitnessFundingTx, split2Tx,
+        alicePubKey, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(split1Tx.serialize()),
+        parentOutputCount: 8,
+        tripletBaseIndex: 1,
+        parentPP5IndexA: 4,
+      );
+      expect(alice2WitnessTx.outputs.length, 1);
+
+      // Verify PP5 splitTransfer spending in recipient witness
+      expect(
+          () => interp.correctlySpends(
+              alice2WitnessTx.inputs[1].script!, split2Tx.outputs[1].script,
+              alice2WitnessTx, 1, verifyFlags, Coin.valueOf(split2Tx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP5 splitTransfer (recipient) with parentPP5Index=4 should verify');
+
+      // --- Step 7: Witness for second split change (base=4, parentPP5Index=4) ---
+      var change2WitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, change2WitnessFundingTx, split2Tx,
+        bobPub, bobPubkeyHash,
+        FungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(split1Tx.serialize()),
+        parentOutputCount: 8,
+        tripletBaseIndex: 4,
+        parentPP5IndexA: 4,
+      );
+      expect(change2WitnessTx.outputs.length, 1);
+
+      // Verify PP5 splitTransfer spending in change witness
+      expect(
+          () => interp.correctlySpends(
+              change2WitnessTx.inputs[1].script!, split2Tx.outputs[4].script,
+              change2WitnessTx, 1, verifyFlags, Coin.valueOf(split2Tx.outputs[4].satoshis)),
+          returnsNormally,
+          reason: 'PP5 splitTransfer (change) with parentPP5Index=4 should verify');
+
+      // --- Step 8: Transfer Alice's 200 tokens to Bob (exercises transferToken with parentPP5Index=4) ---
+      // Alice's 200-token recipient triplet came from split2Tx (base=1)
+      // But the parent of that triplet is split1Tx where PP5 was at index 4
+      var transferFundingTx = getAliceFundingTx();
+      var bobTransferWitnessFundingTx = getBobFundingTx();
+
+      var transferTx = service.createFungibleTransferTxn(
+        alice2WitnessTx, split2Tx, alicePubKey, bobAddress,
+        transferFundingTx, aliceFundingSigner, alicePubKey,
+        bobTransferWitnessFundingTx.hash, tokenId, 200,
+      );
+
+      expect(transferTx.outputs.length, 5);
+      var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
+      expect(transferPP5.amount, 200, reason: 'Transferred amount should be 200');
+      expect(hex.encode(transferPP5.recipientPKH), bobPubkeyHash,
+          reason: 'Recipient should be Bob');
+
+      // Verify PP3-FT spending in transfer (input[2] spends split2Tx output[3])
+      expect(
+          () => interp.correctlySpends(
+              transferTx.inputs[2].script!, split2Tx.outputs[3].script,
+              transferTx, 2, verifyFlags, Coin.valueOf(split2Tx.outputs[3].satoshis)),
+          returnsNormally,
+          reason: 'PP3-FT spending in transfer-after-split should verify');
+
+      // --- Step 9: Witness for Bob's transfer (exercises transferToken, parent=split2Tx) ---
+      var bobTransferWitnessTx = service.createFungibleWitnessTxn(
+        bobFundingSigner, bobTransferWitnessFundingTx, transferTx,
+        bobPub, alicePubkeyHash,
+        FungibleTokenAction.TRANSFER,
+        parentTokenTxBytes: hex.decode(split2Tx.serialize()),
+        parentOutputCount: 8,
+      );
+      expect(bobTransferWitnessTx.outputs.length, 1);
+
+      // Verify PP5 transferToken spending in witness
+      expect(
+          () => interp.correctlySpends(
+              bobTransferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+              bobTransferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP5 transferToken after split-change transfer should verify');
+    });
+  });
+
   group('FungibleTokenTool configuration', () {
     test('can be constructed with both network types', () {
       var testnetTool = FungibleTokenTool(networkType: NetworkType.TEST);

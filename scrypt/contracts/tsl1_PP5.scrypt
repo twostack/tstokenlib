@@ -110,6 +110,7 @@ public function mintToken(SigHashPreimage preImage, bytes fundingTxId, bytes pad
   parentRawTx      - Raw bytes of the parent token transaction
   padding          - Alignment padding
   parentOutputCount - Number of outputs in parent tx (5 or 8)
+  parentPP5Index    - Index of PP5 in parent tx (1=standard, 4=change triplet)
 */
 public function transferToken(
     SigHashPreimage preImage,
@@ -121,7 +122,8 @@ public function transferToken(
     bytes           scriptLHS,
     bytes           parentRawTx,
     bytes           padding,
-    int             parentOutputCount
+    int             parentOutputCount,
+    int             parentPP5Index
     ) {
 
     require(len(parentRawTx) > 0);
@@ -132,10 +134,10 @@ public function transferToken(
     require(hash160(ownerPubKey) == this.ownerPKH);
     require(checkSig(ownerSig, ownerPubKey));
 
-    //read parent outputs
-    FTOutput parentPP5Output = TxUtil_FT.readOutput(parentRawTx, 1);
-    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, 2);
-    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, 3);
+    //read parent outputs (PP5 at parentPP5Index, PP2 and PP3 follow)
+    FTOutput parentPP5Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index);
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index + 2);
 
     //metadata is at last output of parent
     int metadataIndex = parentOutputCount - 1;
@@ -203,6 +205,7 @@ public function transferToken(
   recipientPKH          - Recipient's pubkey hash
   myOutputIndex         - Which PP5 output am I? (1=recipient, 4=change)
   parentOutputCount     - Number of outputs in parent tx (5 or 8)
+  parentPP5Index        - Index of PP5 in parent tx (1=standard, 4=change triplet)
 */
 public function splitTransfer(
     SigHashPreimage preImage,
@@ -219,7 +222,8 @@ public function splitTransfer(
     int             tokenChangeAmount,
     Ripemd160       recipientPKH,
     int             myOutputIndex,
-    int             parentOutputCount
+    int             parentOutputCount,
+    int             parentPP5Index
     ) {
 
     require(len(parentRawTx) > 0);
@@ -235,7 +239,7 @@ public function splitTransfer(
     require(tokenChangeAmount > 0);
 
     //read parent PP5 to get total amount and template
-    FTOutput parentPP5Output = TxUtil_FT.readOutput(parentRawTx, 1);
+    FTOutput parentPP5Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index);
     bytes parentPP5Script = parentPP5Output.script;
 
     int parentAmount = unpack(parentPP5Script[169 : 177] + b'00');
@@ -245,8 +249,8 @@ public function splitTransfer(
     Ripemd160 parentOwnerPKH = Ripemd160(parentPP5Script[115 : 135]);
 
     //read other parent outputs
-    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, 2);
-    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, 3);
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, parentPP5Index + 2);
 
     int metadataIndex = parentOutputCount - 1;
     FTOutput parentMetadataOutput = TxUtil_FT.readOutput(parentRawTx, metadataIndex);
@@ -310,12 +314,108 @@ public function splitTransfer(
 
 /*
   Merge two fungible token UTXOs into one (5 outputs).
-  TODO: Full implementation. Stub for now.
+
+  Combines amountA + amountB into this.amount. Both parents must share the same tokenId.
+  The merge tx has 5 inputs: [funding, witnessA, PP3-FT-A, witnessB, PP3-FT-B]
+  and 5 outputs: [Change, PP5_merged, PP2-FT, PP3-FT, Metadata].
+
+  parentRawTxA/B      - Raw bytes of the two parent token transactions being merged
+  parentOutputCountA/B - Number of outputs in each parent tx (5 or 8)
+  parentPP5IndexA/B    - PP5 output index in each parent (1=standard triplet, 4=change triplet)
 */
-public function mergeToken(PubKey ownerPubKey, Sig ownerSig) {
+public function mergeToken(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          ownerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             ownerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTxA,
+    bytes           parentRawTxB,
+    bytes           padding,
+    int             parentOutputCountA,
+    int             parentOutputCountB,
+    int             parentPP5IndexA,
+    int             parentPP5IndexB
+    ) {
+
+    require(len(parentRawTxA) > 0);
+    require(len(parentRawTxB) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    //assert P2PKH unlock conditions
     require(hash160(ownerPubKey) == this.ownerPKH);
     require(checkSig(ownerSig, ownerPubKey));
-    //TODO: implement merge with two parent raw txs and dual PP3-FT verification
+
+    //read PP5 outputs from both parents at their respective indices
+    FTOutput parentPP5OutputA = TxUtil_FT.readOutput(parentRawTxA, parentPP5IndexA);
+    FTOutput parentPP5OutputB = TxUtil_FT.readOutput(parentRawTxB, parentPP5IndexB);
+
+    bytes parentPP5ScriptA = parentPP5OutputA.script;
+    bytes parentPP5ScriptB = parentPP5OutputB.script;
+
+    //extract amounts from both parents
+    int amountA = unpack(parentPP5ScriptA[169 : 177] + b'00');
+    int amountB = unpack(parentPP5ScriptB[169 : 177] + b'00');
+
+    //balance conservation: merged amount must equal sum of parents
+    require(amountA + amountB == this.amount);
+
+    //verify both parents are the same token
+    bytes tokenIdA = parentPP5ScriptA[136 : 168];
+    bytes tokenIdB = parentPP5ScriptB[136 : 168];
+    require(tokenIdA == tokenIdB);
+
+    //read PP2, PP3 and metadata from parent A (template source)
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTxA, parentPP5IndexA + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTxA, parentPP5IndexA + 2);
+
+    int metadataIndexA = parentOutputCountA - 1;
+    FTOutput parentMetadataOutput = TxUtil_FT.readOutput(parentRawTxA, metadataIndexA);
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    //rebuild current token tx (5 outputs, same shape as transfer)
+    bytes scriptPubKey = Util.scriptCode(preImage);
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes satoshiChangeOutput = Util.buildOutput(pkhScript, changeAmount);
+    bytes pp5Output = Util.buildOutput(scriptPubKey, 1);
+
+    //rebuild PP3-FT with current owner's PKH (pp2OutputIndex stays at 2)
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + satoshiChangeOutput + pp5Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    //inductive proof: rebuild PP5 from parent A template with merged PKH+amount
+    bytes rebuiltPP5Script = parentPP5ScriptA[:115] + this.ownerPKH + parentPP5ScriptA[135 : 169]
+                             + num2bin(this.amount, 8) + parentPP5ScriptA[177 :];
+    require(sha256(rebuiltPP5Script) == sha256(scriptPubKey));
+
+    //validate PP2-FT output structure
+    bytes pp2OutputScript = TxUtil_FT.getScriptCodeFromOutput(pp2OutputBytes);
+    this.validatePP2FT(pp2OutputScript, parentPP2Output.script, 1, 2);
+
+    //check that input[3] spends from parent A's PP3-FT (burned, not unlocked)
+    bytes outpointA = this.readOutpoint(fullTx, 3);
+    bytes parentTxIdA = sha256(sha256(parentRawTxA));
+    require(outpointA[:32] == parentTxIdA);
+
+    //check that input[4] spends from parent B's PP3-FT (burned, not unlocked)
+    bytes outpointB = this.readOutpoint(fullTx, 4);
+    bytes parentTxIdB = sha256(sha256(parentRawTxB));
+    require(outpointB[:32] == parentTxIdB);
 }
 
 
@@ -401,15 +501,15 @@ function validatePP2FT(bytes pp2Script, bytes parentPP2Script, int expectedPP5Id
 
 /*
   Read an outpoint (36 bytes: txid + output index) from a raw tx at the given input index.
-  Supports up to 3 inputs (sufficient for token tx and witness tx; merge needs more).
+  Supports up to 6 inputs (merge tx has 5 inputs: funding, witnessA, PP3-A, witnessB, PP3-B).
 */
 function readOutpoint(bytes tx, int inputIndex): bytes {
     bytes outpoint = b'';
     int pos = 4;
     int ninputs = Utils.fromLEUnsigned(tx[pos : pos + 1]);
     pos = pos + 1;
-    require(ninputs <= 3);
-    loop(3): i {
+    require(ninputs <= 6);
+    loop(6): i {
       if (i < ninputs) {
         if (i == inputIndex) {
           outpoint = tx[pos : pos + 36];

@@ -55,6 +55,12 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
   int? _myOutputIndex;
   int? _parentOutputCount;
 
+  // Merge-specific fields
+  List<int>? _prevTokenTxB;
+  int? _parentOutputCountB;
+  int? _parentPP5IndexA;
+  int? _parentPP5IndexB;
+
   //these are populated upon parsing/reconstruction
   List<int>? _sigBytes;
 
@@ -83,6 +89,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     List<int> prevTokenTx,
     List<int> witnessPadding,
     int parentOutputCount,
+    int parentPP5Index,
   ) : _preImage = preImage,
       _pp2Output = pp2Output,
       _ownerPubKey = ownerPubKey,
@@ -92,6 +99,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _prevTokenTx = prevTokenTx,
       _witnessPadding = witnessPadding,
       _parentOutputCount = parentOutputCount,
+      _parentPP5IndexA = parentPP5Index,
       _action = FungibleTokenAction.TRANSFER;
 
   /// Creates a PP5 unlock builder for a split transfer.
@@ -110,6 +118,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     List<int> recipientPKH,
     int myOutputIndex,
     int parentOutputCount,
+    int parentPP5Index,
   ) : _preImage = preImage,
       _pp2Output = pp2RecipientOutput,
       _pp2ChangeOutput = pp2ChangeOutput,
@@ -124,6 +133,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _recipientPKH = recipientPKH,
       _myOutputIndex = myOutputIndex,
       _parentOutputCount = parentOutputCount,
+      _parentPP5IndexA = parentPP5Index,
       _action = FungibleTokenAction.SPLIT_TRANSFER;
 
   List<int>? _pp2ChangeOutput;
@@ -133,10 +143,35 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       : _ownerPubKey = ownerPubKey,
         _action = FungibleTokenAction.BURN;
 
-  /// Creates a PP5 unlock builder for merging token UTXOs.
-  PP5UnlockBuilder.forMerge(SVPublicKey ownerPubKey)
-      : _ownerPubKey = ownerPubKey,
-        _action = FungibleTokenAction.MERGE;
+  /// Creates a PP5 unlock builder for merging two token UTXOs.
+  PP5UnlockBuilder.forMerge(
+    List<int> preImage,
+    List<int> pp2Output,
+    SVPublicKey ownerPubKey,
+    String changePKH,
+    BigInt changeAmount,
+    List<int> tokenLHS,
+    List<int> prevTokenTxA,
+    List<int> prevTokenTxB,
+    List<int> witnessPadding,
+    int parentOutputCountA,
+    int parentOutputCountB,
+    int parentPP5IndexA,
+    int parentPP5IndexB,
+  ) : _preImage = preImage,
+      _pp2Output = pp2Output,
+      _ownerPubKey = ownerPubKey,
+      _changePKH = changePKH,
+      _changeAmount = changeAmount,
+      _tokenLHS = tokenLHS,
+      _prevTokenTx = prevTokenTxA,
+      _prevTokenTxB = prevTokenTxB,
+      _witnessPadding = witnessPadding,
+      _parentOutputCount = parentOutputCountA,
+      _parentOutputCountB = parentOutputCountB,
+      _parentPP5IndexA = parentPP5IndexA,
+      _parentPP5IndexB = parentPP5IndexB,
+      _action = FungibleTokenAction.MERGE;
 
   /// Reconstructs a [PP5UnlockBuilder] by parsing an existing script.
   PP5UnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
@@ -222,6 +257,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._prevTokenTx!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.number(this._parentOutputCount!);
+      result.number(this._parentPP5IndexA!);
 
     } else if (_action == FungibleTokenAction.SPLIT_TRANSFER) {
 
@@ -241,12 +277,25 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._recipientPKH!));
       result.number(this._myOutputIndex!);
       result.number(this._parentOutputCount!);
+      result.number(this._parentPP5IndexA!);
 
     } else if (_action == FungibleTokenAction.MERGE) {
 
       var sigBytes = hex.decode(this.signatures.first.toTxFormat());
-      result.addData(Uint8List.fromList(hex.decode(_ownerPubKey!.toHex())));
+      result.addData(Uint8List.fromList(this._preImage!));
+      result.addData(Uint8List.fromList(this._pp2Output!));
+      result.addData(Uint8List.fromList(hex.decode(this._ownerPubKey!.toHex())));
+      result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
+      result.number(this._changeAmount!.toInt());
       result.addData(Uint8List.fromList(sigBytes));
+      result.addData(Uint8List.fromList(this._tokenLHS!));
+      result.addData(Uint8List.fromList(this._prevTokenTx!));
+      result.addData(Uint8List.fromList(this._prevTokenTxB!));
+      result.addData(Uint8List.fromList(this._witnessPadding!));
+      result.number(this._parentOutputCount!);
+      result.number(this._parentOutputCountB!);
+      result.number(this._parentPP5IndexA!);
+      result.number(this._parentPP5IndexB!);
 
     } else if (_action == FungibleTokenAction.BURN) {
 

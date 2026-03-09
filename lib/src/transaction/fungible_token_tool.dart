@@ -33,10 +33,10 @@ import 'utils.dart';
 /// High-level API for creating fungible token transactions using the TSL1-FT protocol.
 ///
 /// Encapsulates the construction of multi-output token transactions with
-/// balance conservation, supporting mint, transfer, split, and burn operations.
+/// balance conservation, supporting mint, transfer, split, merge, and burn operations.
 ///
 /// Transaction structures:
-/// - Mint/Transfer: 5 outputs [Change, PP5, PP2-FT, PP3-FT, Metadata]
+/// - Mint/Transfer/Merge: 5 outputs [Change, PP5, PP2-FT, PP3-FT, Metadata]
 /// - Split: 8 outputs [Change, PP5-recv, PP2FT-recv, PP3FT-recv, PP5-change, PP2FT-change, PP3FT-change, Metadata]
 /// - Witness: 1 output [Witness]
 /// - Burn: 1 output [Change]
@@ -120,8 +120,10 @@ class FungibleTokenTool {
   /// - TRANSFER: validates inductive proof from parent
   /// - SPLIT_TRANSFER: validates split with balance conservation
   ///
-  /// [parentTokenTxBytes] is required for TRANSFER and SPLIT_TRANSFER actions.
+  /// [parentTokenTxBytes] is required for TRANSFER, SPLIT_TRANSFER, and MERGE actions.
   /// [tripletBaseIndex] is 1 for standard triplet, 4 for change triplet (after split).
+  /// For MERGE: [parentTokenTxBytesB], [parentOutputCountB], [parentPP5IndexA],
+  /// [parentPP5IndexB] provide the second parent's data.
   Transaction createFungibleWitnessTxn(
       TransactionSigner fundingSigner,
       Transaction fundingTx,
@@ -131,7 +133,11 @@ class FungibleTokenTool {
       FungibleTokenAction action,
       {List<int>? parentTokenTxBytes,
        int parentOutputCount = 5,
-       int tripletBaseIndex = 1}
+       int tripletBaseIndex = 1,
+       List<int>? parentTokenTxBytesB,
+       int parentOutputCountB = 5,
+       int parentPP5IndexA = 1,
+       int parentPP5IndexB = 1}
   ) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -162,7 +168,11 @@ class FungibleTokenTool {
     // Build PP5 unlocker and rebuild with padding (two passes)
     var pp5Unlocker = _buildPP5Unlocker(action, preImage!, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash);
+        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentTokenTxBytesB: parentTokenTxBytesB,
+        parentOutputCountB: parentOutputCountB,
+        parentPP5IndexA: parentPP5IndexA,
+        parentPP5IndexB: parentPP5IndexB);
 
     var witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp5Index, pp2Index, ownerPubkey, pp5Unlocker, pp2FtUnlocker, witnessLocker);
@@ -172,7 +182,11 @@ class FungibleTokenTool {
 
     pp5Unlocker = _buildPP5Unlocker(action, preImage, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash);
+        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentTokenTxBytesB: parentTokenTxBytesB,
+        parentOutputCountB: parentOutputCountB,
+        parentPP5IndexA: parentPP5IndexA,
+        parentPP5IndexB: parentPP5IndexB);
 
     witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp5Index, pp2Index, ownerPubkey, pp5Unlocker, pp2FtUnlocker, witnessLocker);
@@ -385,6 +399,75 @@ class FungibleTokenTool {
     return burnTx;
   }
 
+  /// Creates a 5-output merge transaction combining two token UTXOs.
+  ///
+  /// Inputs: [funding(0), witnessA(1), witnessB(2), PP3_A_burn(3), PP3_B_burn(4)]
+  /// Outputs: [Change, PP5_merged, PP2-FT, PP3-FT, Metadata]
+  ///
+  /// PP3 inputs are burned (P2PKH only) rather than unlocked, because PP3-FT's
+  /// hashPrevOuts verification hardcodes 3 inputs and cannot work with 5.
+  /// Security is maintained: PP5 verifies outpoints, PP3 UTXOs prove parent txs exist.
+  ///
+  /// Both token UTXOs must have the same tokenId and be owned by [currentOwnerPubkey].
+  /// [totalAmount] = amountA + amountB.
+  /// [prevTripletBaseIndexA/B] = 1 for standard triplet, 4 for change triplet.
+  Transaction createFungibleMergeTxn(
+      Transaction prevWitnessTxA,
+      Transaction prevTokenTxA,
+      Transaction prevWitnessTxB,
+      Transaction prevTokenTxB,
+      SVPublicKey currentOwnerPubkey,
+      TransactionSigner ownerSigner,
+      Transaction fundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey,
+      List<int> mergedWitnessFundingTxId,
+      List<int> tokenId,
+      int totalAmount,
+      {int prevTripletBaseIndexA = 1,
+       int prevTripletBaseIndexB = 1}
+  ) {
+
+    var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
+    var ownerPKH = hex.decode(currentOwnerAddress.pubkeyHash160);
+    var prevPP3IndexA = prevTripletBaseIndexA + 2;
+    var prevPP3IndexB = prevTripletBaseIndexB + 2;
+
+    // Build output lockers (single merged triplet)
+    var pp5Locker = PP5LockBuilder(ownerPKH, tokenId, totalAmount);
+    var pp2FtLocker = PP2FtLockBuilder(
+        getOutpoint(mergedWitnessFundingTxId), ownerPKH, 1, ownerPKH, 1, 2);
+    var pp3FtLocker = PartialWitnessFtLockBuilder(ownerPKH, 2);
+
+    // Carry forward metadata from parent A (last output)
+    var metadataScript = prevTokenTxA.outputs.last.script;
+    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
+
+    // Input unlockers
+    // Inputs: [funding(0), witnessA(1), witnessB(2), PP3_A_burn(3), PP3_B_burn(4)]
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var prevWitnessAUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
+    var prevWitnessBUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
+    var pp3BurnUnlockerA = PartialWitnessFtUnlockBuilder.forBurn(currentOwnerPubkey);
+    var pp3BurnUnlockerB = PartialWitnessFtUnlockBuilder.forBurn(currentOwnerPubkey);
+
+    var childTxn = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTxA, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessAUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTxB, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessBUnlocker)
+        .spendFromTxnWithSigner(ownerSigner, prevTokenTxA, prevPP3IndexA, TransactionInput.MAX_SEQ_NUMBER, pp3BurnUnlockerA)
+        .spendFromTxnWithSigner(ownerSigner, prevTokenTxB, prevPP3IndexB, TransactionInput.MAX_SEQ_NUMBER, pp3BurnUnlockerB)
+        .spendToLockBuilder(pp5Locker, BigInt.one)
+        .spendToLockBuilder(pp2FtLocker, BigInt.one)
+        .spendToLockBuilder(pp3FtLocker, BigInt.one)
+        .spendToLockBuilder(metadataLocker, BigInt.zero)
+        .sendChangeToPKH(currentOwnerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return childTxn;
+  }
+
   // --- Private helpers ---
 
   /// Builds the PP5 unlock builder for the given action.
@@ -400,6 +483,10 @@ class FungibleTokenTool {
       int parentOutputCount,
       int tripletBaseIndex,
       List<int> fundingTxHash,
+      {List<int>? parentTokenTxBytesB,
+       int parentOutputCountB = 5,
+       int parentPP5IndexA = 1,
+       int parentPP5IndexB = 1}
   ) {
     var pp2Index = tripletBaseIndex + 1;
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
@@ -411,7 +498,7 @@ class FungibleTokenTool {
       return PP5UnlockBuilder.forTransfer(
           preImage, pp2Output, ownerPubkey, tokenChangePKH,
           tokenChangeAmount, tokenTxLHS, parentTokenTxBytes!,
-          paddingBytes, parentOutputCount);
+          paddingBytes, parentOutputCount, parentPP5IndexA);
     } else if (action == FungibleTokenAction.SPLIT_TRANSFER) {
       var pp2RecipientOutput = tokenTx.outputs[2].serialize();
       var pp2ChangeOutput = tokenTx.outputs[5].serialize();
@@ -425,7 +512,16 @@ class FungibleTokenTool {
           tokenChangePKH, tokenChangeAmount, tokenTxLHS,
           parentTokenTxBytes!, paddingBytes,
           recipientPP5.amount, changePP5.amount,
-          recipientPP5.recipientPKH, tripletBaseIndex, parentOutputCount);
+          recipientPP5.recipientPKH, tripletBaseIndex, parentOutputCount,
+          parentPP5IndexA);
+    } else if (action == FungibleTokenAction.MERGE) {
+      var pp2Output = tokenTx.outputs[2].serialize();
+      return PP5UnlockBuilder.forMerge(
+          preImage, pp2Output, ownerPubkey, tokenChangePKH,
+          tokenChangeAmount, tokenTxLHS,
+          parentTokenTxBytes!, parentTokenTxBytesB!,
+          paddingBytes, parentOutputCount, parentOutputCountB,
+          parentPP5IndexA, parentPP5IndexB);
     } else {
       throw ArgumentError('Unsupported action for witness: $action');
     }
