@@ -15,10 +15,10 @@
 */
 
 import 'dart:typed_data';
-import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'sha256_script_gen.dart';
 import 'opcode_helpers.dart';
+import 'check_preimage_ocs.dart';
 
 /// Generates the complete PP3 (partial witness check) locking script dynamically.
 ///
@@ -33,34 +33,7 @@ import 'opcode_helpers.dart';
 ///   Simple P2PKH check against ownerPKH.
 class WitnessCheckScriptGen {
 
-  // =========================================================================
-  // sCrypt OCS constants (from sCrypt's built-in Tx library)
-  // These are used for the checkPreimageOCS ECDSA signature trick.
-  // =========================================================================
-
-  /// Private key (LE with sign byte) for OCS signature construction.
-  static final Uint8List _privKeyLE = Uint8List.fromList(hex.decode(
-      '97dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff02600'));
-
-  /// Modular inverse of nonce k (LE with sign byte).
-  static final Uint8List _invKLE = Uint8List.fromList(hex.decode(
-      '0ac407f0e4bd44bfc207355a778b046225a7068fc59ee7eda43ad905aadbffc800'));
-
-  /// r value as LE script number (with sign byte).
-  static final Uint8List _rLE = Uint8List.fromList(hex.decode(
-      '6c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce081000'));
-
-  /// r value in big-endian (for DER encoding). Same bytes since r < 2^252.
-  static final Uint8List _rBigEndian = Uint8List.fromList(hex.decode(
-      '1008ce7480da41702918d1ec8e6849ba32b4d65b1e40dc669c31a1e6306b266c'));
-
-  /// Public key corresponding to the OCS private key.
-  static final Uint8List _pubKey = Uint8List.fromList(hex.decode(
-      '02ba79df5f8ae7604a9830f03c7933028186aede0675a16f025dc4f8be8eec0382'));
-
-  /// secp256k1 curve order N (LE with sign byte).
-  static final Uint8List _nLE = Uint8List.fromList(hex.decode(
-      '414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff00'));
+  // OCS constants are now in CheckPreimageOCS shared module.
 
   // =========================================================================
   // Main entry point
@@ -314,143 +287,11 @@ class WitnessCheckScriptGen {
   }
 
   // =========================================================================
-  // checkPreimageOCS — ECDSA signature verification trick
+  // checkPreimageOCS — delegates to shared CheckPreimageOCS module
   // =========================================================================
 
-  /// Implements Tx.checkPreimageOCS: constructs and verifies an ECDSA signature
-  /// using known private key and nonce to validate the sighash preimage.
-  ///
-  /// Pre: [preImage] on stack.
-  /// Post: [TRUE] on stack (or script fails).
-  ///
-  /// Algorithm:
-  /// 1. h = hash256(preImage)
-  /// 2. hashInt = fromBEUnsigned(h)
-  /// 3. s = normalize(invK * (hashInt + r * privKey), N)
-  /// 4. Low-S: if s > N/2, s = N - s
-  /// 5. DER encode signature with rBigEndian and s
-  /// 6. OP_CODESEPARATOR + OP_CHECKSIG with pubKey
   static void _emitCheckPreimageOCS(ScriptBuilder b) {
-    // Step 1: hash256(preImage) → sighash (32 bytes)
-    b.opCode(OpCodes.OP_HASH256);
-    // Stack: [hash(32B)]
-
-    // Step 2: fromBEUnsigned(hash) = unpack(reverseBytes(hash, 32) + 0x00)
-    OpcodeHelpers.reverseBytes32(b);     // hash_LE (32B)
-    b.addData(Uint8List.fromList([0x00]));
-    b.opCode(OpCodes.OP_CAT);           // hash_LE + 0x00 (33B)
-    b.opCode(OpCodes.OP_BIN2NUM);       // hashInt (unsigned script number)
-    // Stack: [hashInt]
-
-    // Step 3: s_raw = invK * (hashInt + r * privKey)
-    b.addData(_rLE);
-    b.addData(_privKeyLE);
-    b.opCode(OpCodes.OP_MUL);           // r * privKey
-    b.opCode(OpCodes.OP_ADD);           // hashInt + r*privKey
-    b.addData(_invKLE);
-    b.opCode(OpCodes.OP_MUL);           // invK * (hashInt + r*privKey)
-    // Stack: [s_raw]
-
-    // Step 3b: normalize(s_raw, N) = s_raw % N; if negative, add N
-    b.addData(_nLE);
-    // Stack: [s_raw, N]
-    b.opCode(OpCodes.OP_2DUP);          // [s_raw, N, s_raw, N]
-    b.opCode(OpCodes.OP_MOD);           // [s_raw, N, s_mod]
-    b.opCode(OpCodes.OP_DUP);           // [s_raw, N, s_mod, s_mod]
-    b.opCode(OpCodes.OP_0);             // [s_raw, N, s_mod, s_mod, 0]
-    b.opCode(OpCodes.OP_LESSTHAN);      // [s_raw, N, s_mod, is_neg]
-    b.opCode(OpCodes.OP_IF);
-    b.opCode(OpCodes.OP_OVER);          // s_mod + N (OVER picks N)
-    b.opCode(OpCodes.OP_ADD);
-    b.opCode(OpCodes.OP_ENDIF);
-    // Stack: [s_raw, N, s_normalized]
-    b.opCode(OpCodes.OP_NIP);
-    b.opCode(OpCodes.OP_NIP);           // [s_normalized]
-
-    // Step 4: Low-S normalization: if s > N/2, s = N - s
-    b.addData(_nLE);
-    // Stack: [s, N]
-    b.opCode(OpCodes.OP_2DUP);          // [s, N, s, N]
-    b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_DIV);           // [s, N, s, N/2]
-    b.opCode(OpCodes.OP_GREATERTHAN);   // [s, N, s>N/2]
-    b.opCode(OpCodes.OP_IF);
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_SUB);           // N - s
-    b.opCode(OpCodes.OP_ELSE);
-    b.opCode(OpCodes.OP_DROP);           // drop N
-    b.opCode(OpCodes.OP_ENDIF);
-    // Stack: [s_final]
-
-    // Step 5: DER encode
-    _emitDerEncode(b);
-    // Stack: [sig]
-
-    // Step 6: OP_CODESEPARATOR + OP_CHECKSIG
-    b.addData(_pubKey);
-    b.opCode(OpCodes.OP_CODESEPARATOR);
-    b.opCode(OpCodes.OP_CHECKSIG);
-    // Stack: [TRUE]
-  }
-
-  /// Converts script number s to DER-encoded signature.
-  ///
-  /// Pre: [s_final] on stack (script number, positive, < N/2).
-  /// Post: [sig] on stack (DER-encoded signature with sighash type 0x41).
-  static void _emitDerEncode(ScriptBuilder b) {
-    // Get slen = SIZE of minimal encoding of s
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_SIZE);
-    b.opCode(OpCodes.OP_NIP);
-    // Stack: [s, slen]
-
-    // Convert s to 32-byte LE, then reverse to BE
-    b.opCode(OpCodes.OP_SWAP);          // [slen, s]
-    OpcodeHelpers.pushInt(b, 32);
-    b.opCode(OpCodes.OP_NUM2BIN);       // [slen, s_32B_LE]
-    OpcodeHelpers.reverseBytes32(b);    // [slen, s_32B_BE]
-
-    // Slice [32-slen:] to get minimal BE representation
-    b.opCode(OpCodes.OP_SWAP);          // [s_32B_BE, slen]
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_TOALTSTACK);    // save slen for later
-    OpcodeHelpers.pushInt(b, 32);
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_SUB);           // [s_32B_BE, 32-slen]
-    b.opCode(OpCodes.OP_SPLIT);
-    b.opCode(OpCodes.OP_NIP);           // [sBigEndian]
-
-    // Build s component: 0x02 || slen || sBigEndian
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // [sBigEndian, slen]
-    b.opCode(OpCodes.OP_1);
-    b.opCode(OpCodes.OP_NUM2BIN);       // [sBigEndian, slen_byte]
-    b.smallNum(2);                       // pushes OP_2 → byte 0x02 when CAT'd
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);           // [sBigEndian, 0x02||slen_byte]
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);           // [0x02||slen_byte||sBigEndian] = s_der
-
-    // Prepend r component (constant): 0x02 0x20 rBigEndian
-    var rDer = Uint8List.fromList([0x02, 0x20] + _rBigEndian.toList());
-    b.addData(rDer);
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);           // [0x0220||rBE||s_der] = inner_der
-
-    // DER sequence header: 0x30 || inner_len
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_SIZE);
-    b.opCode(OpCodes.OP_NIP);           // [inner_der, inner_len]
-    b.opCode(OpCodes.OP_1);
-    b.opCode(OpCodes.OP_NUM2BIN);       // [inner_der, inner_len_byte]
-    b.addData(Uint8List.fromList([0x30]));
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);           // [inner_der, 0x30||inner_len_byte]
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);           // [0x30||len||inner_der] = der_sig
-
-    // Append sighash type: SIGHASH_ALL | SIGHASH_FORKID = 0x41
-    b.addData(Uint8List.fromList([0x41]));
-    b.opCode(OpCodes.OP_CAT);           // [sig]
+    CheckPreimageOCS.emitCheckPreimageOCS(b);
   }
 
   // =========================================================================

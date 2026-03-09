@@ -79,7 +79,7 @@ constructor(Ripemd160 recipientPKH, bytes tokenId, int amount) {
   padding     - Alignment padding bytes
 */
 public function mintToken(SigHashPreimage preImage, bytes fundingTxId, bytes padding) {
-    require(Tx.checkPreimage(preImage));
+    require(Tx.checkPreimageOCS(preImage));
     require(len(padding) > 0);
     require(this.amount > 0);
 
@@ -128,7 +128,7 @@ public function transferToken(
 
     require(len(parentRawTx) > 0);
     require(len(padding) > 0);
-    require(Tx.checkPreimage(preImage));
+    require(Tx.checkPreimageOCS(preImage));
 
     //assert P2PKH unlock conditions
     require(hash160(ownerPubKey) == this.ownerPKH);
@@ -228,7 +228,7 @@ public function splitTransfer(
 
     require(len(parentRawTx) > 0);
     require(len(padding) > 0);
-    require(Tx.checkPreimage(preImage));
+    require(Tx.checkPreimageOCS(preImage));
 
     //assert P2PKH unlock conditions
     require(hash160(ownerPubKey) == this.ownerPKH);
@@ -343,7 +343,7 @@ public function mergeToken(
     require(len(parentRawTxA) > 0);
     require(len(parentRawTxB) > 0);
     require(len(padding) > 0);
-    require(Tx.checkPreimage(preImage));
+    require(Tx.checkPreimageOCS(preImage));
 
     //assert P2PKH unlock conditions
     require(hash160(ownerPubKey) == this.ownerPKH);
