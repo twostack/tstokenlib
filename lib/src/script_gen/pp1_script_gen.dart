@@ -32,7 +32,9 @@ import 'pp5_script_gen.dart';
 /// Bytes 1-20: ownerPKH
 /// Byte 21:    0x20 (pushdata 32)
 /// Bytes 22-53: tokenId
-/// Byte 54+:   Script body
+/// Byte 54:    0x14 (pushdata 20)
+/// Bytes 55-74: rabinPubKeyHash (hash160 of Rabin public key n)
+/// Byte 75+:   Script body
 /// ```
 class PP1ScriptGen {
 
@@ -40,7 +42,9 @@ class PP1ScriptGen {
   static const int pkhDataEnd = 21;
   static const int tokenIdDataStart = 22;
   static const int tokenIdDataEnd = 54;
-  static const int scriptBodyStart = 54;
+  static const int rabinPKHDataStart = 55;
+  static const int rabinPKHDataEnd = 75;
+  static const int scriptBodyStart = 75;
 
   // NFT PP2 compiled byte offsets (different from PP2-FT)
   static const int pp2FundingOutpointStart = 117;
@@ -53,16 +57,20 @@ class PP1ScriptGen {
   static SVScript generate({
     required List<int> ownerPKH,
     required List<int> tokenId,
+    required List<int> rabinPubKeyHash,
   }) {
     var b = ScriptBuilder();
 
     b.addData(Uint8List.fromList(ownerPKH));
     b.addData(Uint8List.fromList(tokenId));
+    b.addData(Uint8List.fromList(rabinPubKeyHash));
 
-    // Stack: [...scriptSig args, selector, ownerPKH, tokenId]
+    // Stack: [...scriptSig args, selector, ownerPKH, tokenId, rabinPubKeyHash]
+    b.opCode(OpCodes.OP_TOALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_TOALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_TOALTSTACK);   // ownerPKH
-    // Altstack: [tokenId(bottom), ownerPKH(top)]
+    // Altstack: [rabinPubKeyHash(bottom), tokenId, ownerPKH(top)]
+    // Pop order: ownerPKH first, then tokenId, then rabinPubKeyHash
 
     _emitDispatch(b);
     return b.build();
@@ -92,10 +100,12 @@ class PP1ScriptGen {
   // burnToken (selector=2)
   // =========================================================================
 
-  /// Stack: [ownerPubKey, ownerSig], Altstack: [tokenId, ownerPKH]
+  /// Stack: [ownerPubKey, ownerSig], Altstack: [rabinPubKeyHash, tokenId, ownerPKH]
   static void _emitBurnToken(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_DROP);
     // Stack: [ownerPubKey, ownerSig, ownerPKH]
     b.opCode(OpCodes.OP_2);
@@ -111,22 +121,62 @@ class PP1ScriptGen {
   // issueToken (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingTxId, padding], Altstack: [tokenId, ownerPKH]
+  /// Stack: [preImage, fundingTxId, witnessPadding, rabinN, rabinS,
+  ///         rabinPadding, identityTxId, ed25519PubKey]
+  /// Altstack: [rabinPubKeyHash, tokenId, ownerPKH]
   static void _emitIssueToken(ScriptBuilder b) {
-    // require(len(padding) > 0)
-    b.opCode(OpCodes.OP_SIZE);
-    b.opCode(OpCodes.OP_0);
-    b.opCode(OpCodes.OP_GREATERTHAN);
-    b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);
-    // Stack: [preImage, fundingTxId]
+    // Stack (8 items, top=0):
+    //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
+    //   witnessPadding=5, fundingTxId=6, preImage=7
 
-    // Clear altstack (not needed for issuance)
+    // --- Phase 1: Validate witnessPadding length ---
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_PICK);           // copy witnessPadding
+    b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
+
+    // --- Phase 2: Clear ownerPKH and tokenId from altstack ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // ownerPKH → drop
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId → drop
     b.opCode(OpCodes.OP_DROP);
+    // Alt: [rabinPubKeyHash]
 
+    // --- Phase 3: Verify hash160(rabinN) == rabinPubKeyHash ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // rabinPubKeyHash (now at top, shifts indices)
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_PICK);           // copy rabinN (index 5 after rabinPubKeyHash push)
+    b.opCode(OpCodes.OP_HASH160);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+    // Alt: [] (empty)
+
+    // --- Phase 4: Rabin signature verification ---
+    // Compute sha256(identityTxId || ed25519PubKey) as positive script number
+    // Stack: ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4, ...
+    b.opCode(OpCodes.OP_CAT);            // identityTxId||ed25519PubKey
+    b.opCode(OpCodes.OP_SHA256);          // raw hash (32 bytes)
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);         // hashNum (positive script number)
+    // Stack: hashNum=0, rabinPadding=1, rabinS=2, rabinN=3,
+    //        witnessPadding=4, fundingTxId=5, preImage=6
+
+    // Rabin verify: s² mod n == hashNum + rabinPadding
+    b.opCode(OpCodes.OP_SWAP);           // [rabinPadding, hashNum, rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_ADD);            // [(hashNum+padding), rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_SWAP);           // [rabinS, (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_MUL);            // [s², (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_ROT);            // [rabinN, s², (h+p), ...]
+    b.opCode(OpCodes.OP_MOD);            // [(s² mod n), (h+p), ...]
+    b.opCode(OpCodes.OP_NUMEQUALVERIFY); // verified!
+    // Stack: [witnessPadding, fundingTxId, preImage]
+
+    // --- Phase 5: Drop witnessPadding ---
+    b.opCode(OpCodes.OP_DROP);
+    // Stack: [fundingTxId, preImage]
+
+    // --- Phase 6: checkPreimageOCS + hashPrevouts (same as before) ---
     b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingTxId
 
     // Extract hashPrevouts (bytes[4:36]) from preImage
@@ -188,7 +238,7 @@ class PP1ScriptGen {
 
   /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
   ///         scriptLHS, parentRawTx, padding]
-  /// Altstack: [tokenId, ownerPKH]
+  /// Altstack: [rabinPubKeyHash, tokenId, ownerPKH]
   static void _emitTransferToken(ScriptBuilder b) {
     // --- Phase 1: Get ownerPKH, do P2PKH auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
@@ -485,11 +535,13 @@ class PP1ScriptGen {
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     // Stack: [..., outpointTxId(32)]
-    b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId  (Alt now: [tokenId])
+    b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId  (Alt now: [tokenId, rabinPubKeyHash])
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    // Clean up alt (drop tokenId)
+    // Clean up alt (drop tokenId and rabinPubKeyHash)
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);    // rabinPubKeyHash
     b.opCode(OpCodes.OP_DROP);
 
     b.opCode(OpCodes.OP_1);               // leave TRUE

@@ -4,6 +4,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 
 var bobWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
 SVPrivateKey bobPrivateKey = SVPrivateKey.fromWIF(bobWif);
@@ -19,6 +20,13 @@ var alicePubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
 
 var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
+late List<int> rabinPubKeyHash;
+late List<int> rabinNBytes;
+late List<int> rabinSBytes;
+late int rabinPaddingValue;
+late List<int> dummyIdentityTxId;
+late List<int> dummyEd25519PubKey;
+
 Transaction getBobFundingTx() {
   var rawTx =
       "0200000001cf5ae107ead0a5117ea2124aacb61d0d700de05a937ed3e48c9245bfab19dd8c000000004847304402206edac55dd4f791a611e05a6d946862ca45d914d0cdf391bfd982399c3d84ea4602205a196505d536b3646834051793acd5d9e820249979c94d0a4252298d0ffe9a7041feffffff0200196bee000000001976a914da217dfa3513d4224802556228d07b278af36b0388ac00ca9a3b000000001976a914650c4adb156f19e36a755c820d892cda108299c488ac65000000";
@@ -32,6 +40,19 @@ Transaction getAliceFundingTx() {
 }
 
 void main() {
+  setUpAll(() {
+    var kp = Rabin.generateKeyPair(1024);
+    rabinNBytes = Rabin.bigIntToScriptNum(kp.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+    dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+    dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+    var messageHash = Rabin.sha256ToScriptInt(messageBytes);
+    var sig = Rabin.sign(messageHash, kp.p, kp.q);
+    rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    rabinPaddingValue = sig.padding;
+  });
+
   group('Full lifecycle: issue -> transfer -> transfer -> burn', () {
     test('Bob issues, transfers to Alice, Alice transfers back to Bob, Bob burns',
         timeout: Timeout(Duration(minutes: 2)), () async {
@@ -42,7 +63,7 @@ void main() {
       // --- Step 1: Bob issues a token ---
       var bobFundingTx = getBobFundingTx();
       var issuanceTx = await service.createTokenIssuanceTxn(
-        bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash,
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash,
       );
       expect(issuanceTx.outputs.length, 5);
       expect(issuanceTx.inputs.length, 1);
@@ -61,6 +82,11 @@ void main() {
         bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       expect(issuanceWitnessTx.outputs.length, 1);
 
@@ -224,7 +250,7 @@ void main() {
       var testnetAddress = Address.fromPublicKey(bobPub, NetworkType.TEST);
 
       var issuanceTx = await service.createTokenIssuanceTxn(
-        fundingTx, bobFundingSigner, bobPub, testnetAddress, fundingTx.hash,
+        fundingTx, bobFundingSigner, bobPub, testnetAddress, fundingTx.hash, rabinPubKeyHash,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -238,7 +264,7 @@ void main() {
       var mainnetAddress = Address.fromPublicKey(bobPub, NetworkType.MAIN);
 
       var issuanceTx = await service.createTokenIssuanceTxn(
-        fundingTx, bobFundingSigner, bobPub, mainnetAddress, fundingTx.hash,
+        fundingTx, bobFundingSigner, bobPub, mainnetAddress, fundingTx.hash, rabinPubKeyHash,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -255,13 +281,18 @@ void main() {
       // Issue tokens with both services
       var fundingTx1 = getBobFundingTx();
       var issuanceTx1 = await defaultService.createTokenIssuanceTxn(
-        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash,
+        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash, rabinPubKeyHash,
       );
       var witnessTx1 = defaultService.createWitnessTxn(
         bobFundingSigner, fundingTx1, issuanceTx1,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
@@ -275,13 +306,18 @@ void main() {
 
       var fundingTx2 = getBobFundingTx();
       var issuanceTx2 = await customService.createTokenIssuanceTxn(
-        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash,
+        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash, rabinPubKeyHash,
       );
       var witnessTx2 = customService.createWitnessTxn(
         bobFundingSigner, fundingTx2, issuanceTx2,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];
@@ -311,13 +347,18 @@ void main() {
 
       var fundingTx1 = getBobFundingTx();
       var issuanceTx1 = await defaultService.createTokenIssuanceTxn(
-        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash,
+        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash, rabinPubKeyHash,
       );
       var witnessTx1 = defaultService.createWitnessTxn(
         bobFundingSigner, fundingTx1, issuanceTx1,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
@@ -331,13 +372,18 @@ void main() {
 
       var fundingTx2 = getBobFundingTx();
       var issuanceTx2 = await lowFeeService.createTokenIssuanceTxn(
-        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash,
+        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash, rabinPubKeyHash,
       );
       var witnessTx2 = lowFeeService.createWitnessTxn(
         bobFundingSigner, fundingTx2, issuanceTx2,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];
@@ -366,13 +412,18 @@ void main() {
 
       var fundingTx1 = getBobFundingTx();
       var issuanceTx1 = await defaultService.createTokenIssuanceTxn(
-        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash,
+        fundingTx1, bobFundingSigner, bobPub, bobAddress, fundingTx1.hash, rabinPubKeyHash,
       );
       var witnessTx1 = defaultService.createWitnessTxn(
         bobFundingSigner, fundingTx1, issuanceTx1,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
@@ -386,13 +437,18 @@ void main() {
 
       var fundingTx2 = getBobFundingTx();
       var issuanceTx2 = await highFeeService.createTokenIssuanceTxn(
-        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash,
+        fundingTx2, bobFundingSigner, bobPub, bobAddress, fundingTx2.hash, rabinPubKeyHash,
       );
       var witnessTx2 = highFeeService.createWitnessTxn(
         bobFundingSigner, fundingTx2, issuanceTx2,
         List<int>.empty(), bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
       var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];

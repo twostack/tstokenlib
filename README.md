@@ -7,6 +7,7 @@ The TSL1 Token Protocol allows for the creation of P2P tokens on Bitcoin (BSV) t
 - No back-to-genesis tracing within the UTXO set
 - No transaction bloating with successive token transfers
 - Double-spend protection with the same level of security as the native token units (satoshis)
+- On-chain identity anchoring via Rabin signature verification (NFT)
 
 [Download a copy of the whitepaper for a full technical explanation](https://github.com/twostack/tsl1)
 
@@ -45,7 +46,7 @@ Token issuance creates a transaction with 5 outputs:
 | Output | Purpose |
 |--------|---------|
 | output[0] | Change output (remaining satoshis back to issuer) |
-| output[1] | PP1 — Proof Point 1 (inductive proof locked to owner, embeds tokenId) |
+| output[1] | PP1 — Proof Point 1 (inductive proof locked to owner, embeds tokenId and Rabin pubkey hash) |
 | output[2] | PP2 — Proof Point 2 (validates witness funding outpoint and owner PKH) |
 | output[3] | PartialWitness — enables transfer authorization via partial SHA-256 |
 | output[4] | Metadata — OP_RETURN output carrying optional metadata or issuer identity |
@@ -53,6 +54,7 @@ Token issuance creates a transaction with 5 outputs:
 ```dart
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 
 var issuerPrivateKey = SVPrivateKey.fromWIF("your_WIF_here");
 var issuerPubKey = issuerPrivateKey.publicKey;
@@ -63,9 +65,15 @@ var fundingSigner = TransactionSigner(sigHashAll, issuerPrivateKey);
 
 var fundingTx = Transaction.fromHex("...");  // from the blockchain
 
+// Generate a Rabin keypair for identity anchoring
+var rabinKeyPair = Rabin.generateKeyPair(1024);
+var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+var rabinPubKeyHash = hash160(rabinNBytes);  // 20-byte hash embedded in PP1
+
 var service = TokenTool();
 var issuanceTx = await service.createTokenIssuanceTxn(
     fundingTx, fundingSigner, issuerPubKey, issuerAddress, fundingTx.hash,
+    rabinPubKeyHash,
 );
 ```
 
@@ -74,6 +82,7 @@ var issuanceTx = await service.createTokenIssuanceTxn(
 ```dart
 var issuanceTx = await service.createTokenIssuanceTxn(
     fundingTx, fundingSigner, issuerPubKey, issuerAddress, fundingTx.hash,
+    rabinPubKeyHash,
     metadataBytes: utf8.encode('{"name": "MyToken", "supply": 1}'),
 );
 ```
@@ -96,6 +105,7 @@ var identityTx = await identityBuilder.buildTransaction(
 
 var issuanceTx = await service.createTokenIssuanceTxn(
     issuanceFundingTx, fundingSigner, issuerPubKey, issuerAddress, issuanceFundingTx.hash,
+    rabinPubKeyHash,
     identityTxId: identityTx.hash,
     issuerWand: wand,
 );
@@ -109,13 +119,27 @@ var isValid = await IdentityVerification.verifyIssuanceIdentity(issuanceTx, iden
 After issuance (or after a transfer), a **witness transaction** proves ownership by spending
 PP1 and PP2 from the token transaction.
 
+For **issuance witnesses**, a Rabin signature over `sha256(identityTxId || ed25519PubKey)` must
+be provided to prove the issuer is authorized by the identity anchor:
+
 ```dart
+// Compute Rabin signature for identity binding
+var identityTxId = ...;       // 32-byte identity anchor txid
+var ed25519PubKey = ...;      // 32-byte ED25519 public key from identity anchor
+var messageHash = Rabin.sha256ToScriptInt([...identityTxId, ...ed25519PubKey]);
+var rabinSig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+
 var witnessTx = service.createWitnessTxn(
     fundingSigner, fundingTx, issuanceTx,
     List<int>.empty(),      // empty for issuance (no parent)
     issuerPubKey,
     issuerAddress.pubkeyHash160,
     TokenAction.ISSUANCE,
+    rabinN: rabinNBytes,
+    rabinS: Rabin.bigIntToScriptNum(rabinSig.s).toList(),
+    rabinPadding: rabinSig.padding,
+    identityTxId: identityTxId,
+    ed25519PubKey: ed25519PubKey,
 );
 ```
 
@@ -300,12 +324,48 @@ var burnTx = tokenTool.createFungibleBurnTxn(
 );
 ```
 
+## On-Chain Identity Anchoring (Rabin Signatures)
+
+NFT tokens enforce issuer identity on-chain using Rabin signature verification. During issuance,
+the PP1 locking script verifies that:
+
+1. `hash160(rabinN) == rabinPubKeyHash` — the Rabin public key matches the hash embedded in PP1
+2. `s² mod n == sha256(identityTxId || ed25519PubKey) + padding` — the signature is valid
+
+This ensures that only the holder of the Rabin private key (the issuer) can create tokens
+linked to a given identity anchor. The verification adds only ~48 bytes to the PP1 script
+(8 opcodes), keeping the total PP1 script size at ~2.5KB.
+
+The `rabinPubKeyHash` is preserved across transfers as part of the PP1 constructor parameters,
+alongside `ownerPKH` and `tokenId`.
+
+### Rabin Key Generation
+
+```dart
+import 'package:tstokenlib/src/crypto/rabin.dart';
+
+// Generate a keypair (1024-bit is sufficient; 2048-bit for production)
+var keyPair = Rabin.generateKeyPair(1024);
+
+// Encode the public key for use in scripts
+var rabinNBytes = Rabin.bigIntToScriptNum(keyPair.n).toList();
+var rabinPubKeyHash = hash160(rabinNBytes);
+
+// Sign a message
+var messageHash = Rabin.sha256ToScriptInt(messageBytes);
+var sig = Rabin.sign(messageHash, keyPair.p, keyPair.q);
+
+// Verify (in Dart, for testing)
+var isValid = Rabin.verify(messageHash, sig, keyPair.n);
+```
+
 ## Error Handling
 
 The library throws `ScriptException` (from the `dartsv` package) for invalid inputs:
 
 - **Wrong-length pubkey hash (PKH)**: Must be exactly 20 bytes (40 hex characters).
 - **Wrong-length tokenId**: Must be exactly 32 bytes.
+- **Wrong-length Rabin pubkey hash**: Must be exactly 20 bytes (hash160 of the encoded Rabin public key).
 - **Invalid outpoint format**: Witness funding outpoints must be 36 bytes.
 
 ```dart

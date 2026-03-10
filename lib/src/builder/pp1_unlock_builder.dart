@@ -46,6 +46,12 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
   TokenAction? action;
   List<int>? _witnessFundingTxId;
 
+  // Rabin identity binding fields (used during issuance)
+  List<int>? _rabinN;           // Rabin public key n, encoded as script number bytes
+  List<int>? _rabinS;           // Rabin signature s, encoded as script number bytes
+  int? _rabinPadding;           // Rabin signature padding (small integer)
+  List<int>? _identityTxId;     // 32-byte identity anchor transaction ID
+  List<int>? _ed25519PubKey;    // 32-byte ED25519 public key
 
   //these are populated upon parsing/reconstruction
   List<int>? _sigBytes;
@@ -65,8 +71,17 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
       this._prevTokenTx,
       this._witnessPadding,
       this.action,
-      this._witnessFundingTxId
-      );
+      this._witnessFundingTxId,
+      {List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}
+      ) : _rabinN = rabinN,
+          _rabinS = rabinS,
+          _rabinPadding = rabinPadding,
+          _identityTxId = identityTxId,
+          _ed25519PubKey = ed25519PubKey;
 
 
   /// Creates a PP1 unlock builder for burning (destroying) a token.
@@ -79,8 +94,6 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
   /// [action] defaults to [TokenAction.TRANSFER]; set to [TokenAction.ISSUANCE]
   /// when parsing the witness for the issuance transaction.
   PP1UnlockBuilder.fromScript(SVScript script, {TokenAction this.action = TokenAction.TRANSFER}): super.fromScript(script);
-
-  // PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
 
   @override
   SVScript getScriptSig() {
@@ -96,7 +109,6 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
 
     var sigBytes = hex.decode(this.signatures.first.toTxFormat());
 
-    // var changePKH = Address.fromPubkeyHash( _changePKH!, NetworkType.TEST).toHex();
     var result = ScriptBuilder();
 
     if (action == TokenAction.ISSUANCE) {
@@ -104,6 +116,12 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._preImage!));
       result.addData(Uint8List.fromList(this._witnessFundingTxId!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
+      // Rabin identity binding data
+      result.addData(Uint8List.fromList(this._rabinN!));
+      result.addData(Uint8List.fromList(this._rabinS!));
+      result.number(this._rabinPadding!);
+      result.addData(Uint8List.fromList(this._identityTxId!));
+      result.addData(Uint8List.fromList(this._ed25519PubKey!));
 
     }else if (action == TokenAction.TRANSFER){
 

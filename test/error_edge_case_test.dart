@@ -4,6 +4,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 
 var bobWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
 SVPrivateKey bobPrivateKey = SVPrivateKey.fromWIF(bobWif);
@@ -29,7 +30,26 @@ Transaction getAliceFundingTx() {
   return Transaction.fromHex(rawTx);
 }
 
+late List<int> rabinPubKeyHash;
+late List<int> rabinNBytes;
+late List<int> rabinSBytes;
+late int rabinPaddingValue;
+late List<int> dummyIdentityTxId;
+late List<int> dummyEd25519PubKey;
+
 void main() {
+  setUpAll(() {
+    var kp = Rabin.generateKeyPair(1024);
+    rabinNBytes = Rabin.bigIntToScriptNum(kp.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+    dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+    dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+    var messageHash = Rabin.sha256ToScriptInt([...dummyIdentityTxId, ...dummyEd25519PubKey]);
+    var sig = Rabin.sign(messageHash, kp.p, kp.q);
+    rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    rabinPaddingValue = sig.padding;
+  });
+
   group('Invalid/missing funding transaction', () {
     test('funding tx with no output at index 1 causes a RangeError', () async {
       var service = TokenTool();
@@ -55,7 +75,7 @@ void main() {
               fundingSigner,
               bobPub,
               bobAddress,
-              singleOutputTx.hash),
+              singleOutputTx.hash, rabinPubKeyHash),
           throwsA(isA<RangeError>()));
     });
   });
@@ -88,7 +108,7 @@ void main() {
           fundingSigner,
           bobPub,
           bobAddress,
-          tinyFundingTx.hash);
+          tinyFundingTx.hash, rabinPubKeyHash);
 
       // The transaction builds but with insufficient funds.
       // The builder may drop the change output when it would be negative,
@@ -110,7 +130,7 @@ void main() {
       var bobFundingTx = getBobFundingTx();
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
-          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
       // 2. Create witness for issuance
       var issuanceWitnessTx = service.createWitnessTxn(
@@ -121,6 +141,11 @@ void main() {
         bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // 3. Extract tokenId
@@ -205,7 +230,7 @@ void main() {
       var bobFundingTx = getBobFundingTx();
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
-          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
       // 2. Create witness for issuance
       var issuanceWitnessTx = service.createWitnessTxn(
@@ -216,6 +241,11 @@ void main() {
         bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // 3. Extract tokenId and do a transfer Bob -> Alice
@@ -300,7 +330,7 @@ void main() {
       var bobFundingTx = getBobFundingTx();
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
-          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+          bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
       // Build a minimal witness transaction to test padding
       var witnessTx = service.createWitnessTxn(
@@ -311,6 +341,11 @@ void main() {
         bobPub,
         Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
         TokenAction.ISSUANCE,
+        rabinN: rabinNBytes,
+        rabinS: rabinSBytes,
+        rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       var utils = TransactionUtils();
@@ -332,7 +367,7 @@ void main() {
 
       // Pass null metadataBytes (the default)
       var issuanceTx = await service.createTokenIssuanceTxn(
-          fundingTx, fundingSigner, bobPub, bobAddress, fundingTx.hash,
+          fundingTx, fundingSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash,
           metadataBytes: null);
 
       expect(issuanceTx.outputs.length, 5);
@@ -358,7 +393,7 @@ void main() {
       }
 
       var issuanceTx = await service.createTokenIssuanceTxn(
-          fundingTx, fundingSigner, bobPub, bobAddress, fundingTx.hash,
+          fundingTx, fundingSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash,
           metadataBytes: largeMetadata.toList());
 
       // Should still produce the standard 5-output structure
@@ -374,19 +409,19 @@ void main() {
   group('PP1LockBuilder validation', () {
     test('throws ScriptException when recipientAddress is null', () {
       expect(
-          () => PP1LockBuilder(null, List<int>.filled(32, 0)),
+          () => PP1LockBuilder(null, List<int>.filled(32, 0), List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
 
     test('throws ScriptException when tokenId is not 32 bytes', () {
       expect(
-          () => PP1LockBuilder(bobAddress, List<int>.filled(16, 0)),
+          () => PP1LockBuilder(bobAddress, List<int>.filled(16, 0), List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
 
     test('throws ScriptException when tokenId is null', () {
       expect(
-          () => PP1LockBuilder(bobAddress, null),
+          () => PP1LockBuilder(bobAddress, null, List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
   });

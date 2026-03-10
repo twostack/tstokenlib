@@ -74,6 +74,11 @@ class TokenTool {
       SVPublicKey ownerPubkey,
       String tokenChangePKH,
       TokenAction action,
+      {List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}
       ){
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -101,7 +106,8 @@ class TokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
 
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
-    var pp1UnlockBuilder = PP1UnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash);
+    var pp1UnlockBuilder = PP1UnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
@@ -112,7 +118,8 @@ class TokenTool {
     //updated padding bytes
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
-    pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash);
+    pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -143,6 +150,7 @@ class TokenTool {
       SVPublicKey fundingPubKey,
       Address recipientAddress,      //
       List<int> witnessFundingTxId,
+      List<int> rabinPubKeyHash,
       {List<int>? metadataBytes,
        List<int>? identityTxId,
        SignatureWand? issuerWand}
@@ -157,7 +165,7 @@ class TokenTool {
     tokenTxBuilder.withFeePerKb(1);
 
     //create PP1 Outpoint
-    var pp1Locker = PP1LockBuilder(recipientAddress, tokenId);
+    var pp1Locker = PP1LockBuilder(recipientAddress, tokenId, rabinPubKeyHash);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
     var outputWriter = ByteDataWriter();
@@ -230,7 +238,9 @@ class TokenTool {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
 
-    var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId);
+    // Carry forward rabinPubKeyHash from previous PP1
+    var prevPP1 = PP1LockBuilder.fromScript(prevTokenTx.outputs[1].script);
+    var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId, prevPP1.rabinPubKeyHash!);
 
     var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));

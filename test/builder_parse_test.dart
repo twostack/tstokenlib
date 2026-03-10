@@ -131,7 +131,8 @@ void main() {
     test('round-trip: build then parse recovers recipientAddress and tokenId', () {
       var tokenId = List<int>.generate(32, (i) => i + 0x10);
 
-      var builder = PP1LockBuilder(bobAddress, tokenId);
+      var rabinPKH = List<int>.generate(20, (i) => i + 0x20);
+      var builder = PP1LockBuilder(bobAddress, tokenId, rabinPKH);
       var script = builder.getScriptPubkey();
       var parsed = PP1LockBuilder.fromScript(script);
 
@@ -171,7 +172,7 @@ void main() {
       var compiledHex = desc['hex'] as String;
 
       // Extract Dart template for comparison
-      var builder = PP1LockBuilder(bobAddress, List.generate(32, (_) => 0));
+      var builder = PP1LockBuilder(bobAddress, List.generate(32, (_) => 0), List.generate(20, (_) => 0));
       // The PP1 template has <recipientPKH> and <tokenId> placeholders
       // We need the raw template string, not the substituted script
       // Access it through reflection or compare the substituted forms

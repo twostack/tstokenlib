@@ -1,6 +1,7 @@
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:collection/collection.dart';
 
 var bobWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
@@ -23,7 +24,8 @@ void main(){
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var rabinPubKeyHash = hash160(Rabin.bigIntToScriptNum(Rabin.generateKeyPair(512).n).toList());
+    var issuanceTx = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
 
     var issuancePP1Script = issuanceTx.outputs[1].script;
     var pp1Locker = PP1LockBuilder.fromScript(issuancePP1Script);

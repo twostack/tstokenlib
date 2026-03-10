@@ -3,10 +3,12 @@ import 'dart:typed_data';
 
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:cryptography/cryptography.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:collection/collection.dart';
 
 /**
@@ -36,6 +38,15 @@ SVPrivateKey charliePrivateKey = SVPrivateKey.fromWIF(charlieWif);
 SVPublicKey charliePubKey = charliePrivateKey.publicKey;
 var charlieAddress = Address.fromPublicKey(charliePubKey, NetworkType.TEST);
 var charliePubkeyHash = charlieAddress.pubkeyHash160;
+
+// Rabin keypair for identity anchoring (generated once, used across tests)
+late RabinKeyPair rabinKeyPair;
+late List<int> rabinPubKeyHash;
+late List<int> rabinNBytes;
+late List<int> dummyIdentityTxId;
+late List<int> dummyEd25519PubKey;
+late List<int> rabinSBytes;
+late int rabinPaddingValue;
 
 var issuerWif = "cQt5q5kwkiuMqQfqbc315eC3rrj3aT4Qe5htpsf9hBPhCvsZeJjA";
 SVPrivateKey issuerPrivateKey = SVPrivateKey.fromWIF(issuerWif);
@@ -74,7 +85,7 @@ Transaction getTokenTxWithPP1andPP2(Transaction witnessFundingTx, Address ownerA
 
   //create PP1 Outpoint
   var pp1Locker = PP1LockBuilder(
-      ownerAddress, hex.decode(witnessFundingTx.id).reversed.toList()); //tokenId is incorrect. issuance vs transfer !
+      ownerAddress, hex.decode(witnessFundingTx.id).reversed.toList(), rabinPubKeyHash); //tokenId is incorrect. issuance vs transfer !
   tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
   var outputWriter = ByteDataWriter();
@@ -121,7 +132,7 @@ Transaction getTokenTxWithPP1andPP2andPP3(Transaction witnessFundingTx, Address 
   }
 
   //create PP1 Outpoint
-  var pp1Locker = PP1LockBuilder(ownerAddress, tokenId);
+  var pp1Locker = PP1LockBuilder(ownerAddress, tokenId, rabinPubKeyHash);
   tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
   var outputWriter = ByteDataWriter();
@@ -150,6 +161,26 @@ Transaction getTokenTxWithPP1andPP2andPP3(Transaction witnessFundingTx, Address 
 }
 
 void main() {
+
+  setUpAll(() {
+    // Generate a 1024-bit Rabin keypair (fast enough for tests)
+    rabinKeyPair = Rabin.generateKeyPair(1024);
+    rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+
+    // Dummy identity anchor data (32-byte txid and 32-byte ed25519 pubkey)
+    dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+    dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+
+    // Pre-compute Rabin signature over sha256(identityTxId || ed25519PubKey)
+    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+    var messageHash = Rabin.sha256ToScriptInt(messageBytes);
+    var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+    rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    rabinPaddingValue = sig.padding;
+
+    print("Rabin key generated: n=${rabinKeyPair.n.bitLength} bits, pubKeyHash=${hex.encode(rabinPubKeyHash)}");
+  });
 
   //this witnessHex has been pre-computed to be properly padded so that a partialSha256
   // calculation will result in the last 128 bytes starting with the last input in the Witness Txn
@@ -189,7 +220,7 @@ void main() {
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
 
-    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
 
     //weak tests for now. stronger ones follow
     expect(issuanceTxn.outputs.length, 5);
@@ -202,7 +233,7 @@ void main() {
 
     var fundingTx = getBobFundingTx();
     var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash);
+    var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
     //weak tests for now. stronger ones follow
     expect(issuanceTxn.outputs.length, 5);
     expect(issuanceTxn.inputs.length, 1);
@@ -217,6 +248,11 @@ void main() {
       //owner pubkey
       Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
       TokenAction.ISSUANCE,
+      rabinN: rabinNBytes,
+      rabinS: rabinSBytes,
+      rabinPadding: rabinPaddingValue,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     var interp = Interpreter();
@@ -259,7 +295,7 @@ void main() {
     // 1. Dynamically create the issuance transaction (Bob issues token)
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
     // 2. Create the witness transaction for the issuance
@@ -271,6 +307,11 @@ void main() {
       bobPub,
       Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
       TokenAction.ISSUANCE,
+      rabinN: rabinNBytes,
+      rabinS: rabinSBytes,
+      rabinPadding: rabinPaddingValue,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // 3. Extract tokenId from the issuance
@@ -336,7 +377,7 @@ void main() {
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
     // 2. Create witness for the issuance
     var issuanceWitnessTx = service.createWitnessTxn(
@@ -347,6 +388,11 @@ void main() {
       bobPub,
       Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
       TokenAction.ISSUANCE,
+      rabinN: rabinNBytes,
+      rabinS: rabinSBytes,
+      rabinPadding: rabinPaddingValue,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // 3. Transfer token from Bob to Alice
@@ -416,7 +462,7 @@ void main() {
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
     // 2. Create witness for the issuance
@@ -428,6 +474,11 @@ void main() {
       bobPub,
       Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
       TokenAction.ISSUANCE,
+      rabinN: rabinNBytes,
+      rabinS: rabinSBytes,
+      rabinPadding: rabinPaddingValue,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // 3. Extract tokenId from issuance PP1
@@ -519,7 +570,7 @@ void main() {
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash);
+    var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
     // 2. Burn the token
@@ -633,7 +684,7 @@ void main() {
     var service = TokenTool();
     var issuanceFundingTx = getBobFundingTx();
     var issuanceTx = await service.createTokenIssuanceTxn(
-      issuanceFundingTx, bobFundingSigner, bobPub, bobAddress, issuanceFundingTx.hash,
+      issuanceFundingTx, bobFundingSigner, bobPub, bobAddress, issuanceFundingTx.hash, rabinPubKeyHash,
       identityTxId: identityTx.hash,
       issuerWand: wand,
     );
@@ -671,7 +722,7 @@ void main() {
     // 2. Issue token with identity
     var bobFundingTx = getBobFundingTx();
     var issuanceTx = await service.createTokenIssuanceTxn(
-      bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash,
+      bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash,
       identityTxId: identityTx.hash,
       issuerWand: wand,
     );
@@ -682,6 +733,11 @@ void main() {
       List<int>.empty(), bobPub,
       Address.fromPublicKey(bobPub, NetworkType.TEST).pubkeyHash160,
       TokenAction.ISSUANCE,
+      rabinN: rabinNBytes,
+      rabinS: rabinSBytes,
+      rabinPadding: rabinPaddingValue,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // 4. Transfer token from Bob to Alice
