@@ -12,6 +12,7 @@ import 'package:convert/convert.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 
 /// Simulates obtaining a funding transaction from the blockchain.
 /// In production, this would come from a wallet or blockchain query.
@@ -47,6 +48,23 @@ Future<void> main() async {
   var aliceAddress = Address.fromPublicKey(alicePubKey, NetworkType.TEST);
   var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
 
+  // --- Rabin Identity Keypair ---
+  // A Rabin keypair is required for identity anchoring in PP1.
+  // The Rabin signature proves identity binding during issuance witness creation.
+  var rabinKeyPair = Rabin.generateKeyPair(1024);
+  var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+  var rabinPubKeyHash = hash160(rabinNBytes);
+
+  // Identity anchoring data (in production, use real identity anchor tx)
+  var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+  var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+
+  // Sign the identity binding message with the Rabin key
+  var identityMessage = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+  var messageHash = Rabin.sha256ToScriptInt(identityMessage);
+  var rabinSig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+  var rabinSBytes = Rabin.bigIntToScriptNum(rabinSig.s).toList();
+
   // The TokenTool is the primary API for all token operations.
   var tokenTool = TokenTool(networkType: NetworkType.TEST);
 
@@ -79,6 +97,7 @@ Future<void> main() async {
     bobPubKey,         // issuer's public key
     bobAddress,        // recipient address (issuer receives token initially)
     bobFundingTx.hash, // witness funding txId (raw byte order)
+    rabinPubKeyHash,   // hash160 of Rabin public key for identity anchoring
   );
 
   print("Issuance TxId: ${issuanceTx.id}");
@@ -137,6 +156,11 @@ Future<void> main() async {
     bobPubKey,                  // current owner's public key
     bobAddress.pubkeyHash160,   // owner's pubkey hash (hex string, 40 chars)
     TokenAction.ISSUANCE,       // this is an issuance witness
+    rabinN: rabinNBytes,
+    rabinS: rabinSBytes,
+    rabinPadding: rabinSig.padding,
+    identityTxId: dummyIdentityTxId,
+    ed25519PubKey: dummyEd25519PubKey,
   );
 
   print("Issuance Witness TxId: ${issuanceWitnessTx.id}");
