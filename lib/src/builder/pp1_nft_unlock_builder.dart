@@ -34,7 +34,7 @@ enum TokenAction {
 /// Supports three token actions: issuance, transfer, and burn. Each action
 /// produces a different scriptSig layout with the appropriate data pushes
 /// and an OP_N function selector.
-class PP1UnlockBuilder extends UnlockingScriptBuilder {
+class PP1NftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _preImage;
   List<int>? _pp2Output;
   SVPublicKey? _ownerPubKey;
@@ -61,7 +61,7 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get preImage => _preImage;
 
   /// Creates a PP1 unlock builder for a token transfer.
-  PP1UnlockBuilder(
+  PP1NftUnlockBuilder(
       this._preImage,
       this._pp2Output,
       this._ownerPubKey,
@@ -85,15 +85,15 @@ class PP1UnlockBuilder extends UnlockingScriptBuilder {
 
 
   /// Creates a PP1 unlock builder for burning (destroying) a token.
-  PP1UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
+  PP1NftUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
       : _ownerPubKey = ownerPubKey,
         action = TokenAction.BURN;
 
-  /// Reconstructs a [PP1UnlockBuilder] by parsing an existing script.
+  /// Reconstructs a [PP1NftUnlockBuilder] by parsing an existing script.
   ///
   /// [action] defaults to [TokenAction.TRANSFER]; set to [TokenAction.ISSUANCE]
   /// when parsing the witness for the issuance transaction.
-  PP1UnlockBuilder.fromScript(SVScript script, {TokenAction this.action = TokenAction.TRANSFER}): super.fromScript(script);
+  PP1NftUnlockBuilder.fromScript(SVScript script, {TokenAction this.action = TokenAction.TRANSFER}): super.fromScript(script);
 
   @override
   SVScript getScriptSig() {

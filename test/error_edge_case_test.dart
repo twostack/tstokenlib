@@ -149,7 +149,7 @@ void main() {
       );
 
       // 3. Extract tokenId
-      var pp1Parsed = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+      var pp1Parsed = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
       var tokenId = pp1Parsed.tokenId ?? [];
 
       // 4. Transfer Bob -> Alice
@@ -249,7 +249,7 @@ void main() {
       );
 
       // 3. Extract tokenId and do a transfer Bob -> Alice
-      var pp1Parsed = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+      var pp1Parsed = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
       var tokenId = pp1Parsed.tokenId ?? [];
 
       var transferFundingTx = getBobFundingTx();
@@ -406,22 +406,22 @@ void main() {
     });
   });
 
-  group('PP1LockBuilder validation', () {
+  group('PP1NftLockBuilder validation', () {
     test('throws ScriptException when recipientAddress is null', () {
       expect(
-          () => PP1LockBuilder(null, List<int>.filled(32, 0), List<int>.filled(20, 0)),
+          () => PP1NftLockBuilder(null, List<int>.filled(32, 0), List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
 
     test('throws ScriptException when tokenId is not 32 bytes', () {
       expect(
-          () => PP1LockBuilder(bobAddress, List<int>.filled(16, 0), List<int>.filled(20, 0)),
+          () => PP1NftLockBuilder(bobAddress, List<int>.filled(16, 0), List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
 
     test('throws ScriptException when tokenId is null', () {
       expect(
-          () => PP1LockBuilder(bobAddress, null, List<int>.filled(20, 0)),
+          () => PP1NftLockBuilder(bobAddress, null, List<int>.filled(20, 0)),
           throwsA(isA<ScriptException>()));
     });
   });

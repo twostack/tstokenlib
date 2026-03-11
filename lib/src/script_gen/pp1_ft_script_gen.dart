@@ -19,7 +19,7 @@ import 'package:dartsv/dartsv.dart';
 import 'opcode_helpers.dart';
 import 'check_preimage_ocs.dart';
 
-/// Generates the complete PP5 (fungible token) locking script dynamically.
+/// Generates the complete PP1_FT (fungible token) locking script dynamically.
 ///
 /// Replaces the ~56KB compiled sCrypt template with a hand-optimized script.
 /// Does NOT use OP_CODESEPARATOR so that the preimage scriptCode field
@@ -35,7 +35,7 @@ import 'check_preimage_ocs.dart';
 /// Bytes 55-62: amount (8-byte LE)
 /// Byte 63+:   Script body
 /// ```
-class PP5ScriptGen {
+class PP1FtScriptGen {
 
   static const int pkhDataStart = 1;
   static const int pkhDataEnd = 21;
@@ -50,14 +50,14 @@ class PP5ScriptGen {
   static const int pp2WitnessChangePKHStart = 156;
   static const int pp2ChangeAmountStart = 177;
   static const int pp2OwnerPKHStart = 178;
-  static const int pp2PP5OutputIndexStart = 199;
+  static const int pp2PP1_FTOutputIndexStart = 199;
   static const int pp2PP2OutputIndexStart = 200;
   static const int pp2ScriptCodeStart = 201;
 
   // PP3-FT (hand-optimized WitnessCheckScriptGen) byte offsets
   static const int pp3PP2OutputIndexStart = 61348;
 
-  /// Generates the complete PP5 fungible token locking script.
+  /// Generates the complete PP1_FT fungible token locking script.
   static SVScript generate({
     required List<int> ownerPKH,
     required List<int> tokenId,
@@ -205,9 +205,9 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_PICK);          // copy currentTxId
     b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
-    b.opCode(OpCodes.OP_CAT);           // pp5Outpoint = currentTxId + LE(1)
+    b.opCode(OpCodes.OP_CAT);           // pp1FtOutpoint = currentTxId + LE(1)
 
-    b.opCode(OpCodes.OP_CAT);           // fundingOutpoint + pp5Outpoint
+    b.opCode(OpCodes.OP_CAT);           // fundingOutpoint + pp1FtOutpoint
 
     b.opCode(OpCodes.OP_ROT);           // [hashPrevouts, outpoints12, currentTxId]
     b.addData(Uint8List.fromList([0x02, 0x00, 0x00, 0x00]));
@@ -226,13 +226,13 @@ class PP5ScriptGen {
   // =========================================================================
 
   /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
-  ///         scriptLHS, parentRawTx, padding, parentOutCnt, parentPP5Idx]
+  ///         scriptLHS, parentRawTx, padding, parentOutCnt, parentPP1_FTIdx]
   /// Altstack: [amount, tokenId, ownerPKH]
   static void _emitTransferToken(ScriptBuilder b) {
     // --- Phase 1: Get ownerPKH, do P2PKH auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
-    // Stack: [..., parentPP5Idx, ownerPKH]  (12 items)
-    // idx: ownerPKH=0, pp5Idx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
+    // Stack: [..., parentPP1_FTIdx, ownerPKH]  (12 items)
+    // idx: ownerPKH=0, pp1FtIdx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
     //      sig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10, preImg=11
 
     // hash160(ownerPubKey) == ownerPKH
@@ -241,7 +241,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_OVER);           // copy ownerPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // Stack: [..., pp5Idx, ownerPKH]
+    // Stack: [..., pp1FtIdx, ownerPKH]
 
     // checkSig(ownerSig, ownerPubKey)
     b.opCode(OpCodes.OP_6);
@@ -250,7 +250,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_PICK);           // copy ownerPK (shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG);
     b.opCode(OpCodes.OP_VERIFY);
-    // Stack: [..., pp5Idx, ownerPKH]
+    // Stack: [..., pp1FtIdx, ownerPKH]
 
     // --- Phase 2: Validate padding and parentRawTx ---
     b.opCode(OpCodes.OP_3);
@@ -293,23 +293,23 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_VERIFY);
     // preImage consumed. Stack (11 items):
     // [pp2Out, ownerPK, changePkh, changeAmt, ownerSig, scriptLHS,
-    //  parentRawTx, padding, parentOutCnt, parentPP5Idx, ownerPKH]
-    // idx: ownerPKH=0, pp5Idx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
+    //  parentRawTx, padding, parentOutCnt, parentPP1_FTIdx, ownerPKH]
+    // idx: ownerPKH=0, pp1FtIdx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
     //      sig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10
 
     // --- Phase 5: Parse parentRawTx outputs ---
-    // Get parentRawTx and parentPP5Idx
+    // Get parentRawTx and parentPP1_FTIdx
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTx
     b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);           // copy parentPP5Idx (was idx 1, shifted to 2 after PICK)
-    // Stack: [..., ownerPKH, parentRawTx, parentPP5Idx]
+    b.opCode(OpCodes.OP_PICK);           // copy parentPP1_FTIdx (was idx 1, shifted to 2 after PICK)
+    // Stack: [..., ownerPKH, parentRawTx, parentPP1_FTIdx]
 
     // Skip past inputs to reach outputs section
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5Idx temporarily
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtIdx temporarily
     emitSkipInputs(b);
     // Stack: [..., ownerPKH, txFromOutputCount]
-    // Alt: [..., nLocktime, pp5Idx]
+    // Alt: [..., nLocktime, pp1FtIdx]
 
     // Read output count varint (and drop it, we don't need it)
     emitReadVarint(b);
@@ -317,35 +317,35 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
     // Stack: [..., ownerPKH, txFromFirstOutput]
 
-    // Skip pp5Idx outputs to reach the PP5 output
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp5Idx back
-    // Stack: [..., ownerPKH, txFromFirstOutput, pp5Idx]
+    // Skip pp1FtIdx outputs to reach the PP1_FT output
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp1FtIdx back
+    // Stack: [..., ownerPKH, txFromFirstOutput, pp1FtIdx]
     emitSkipNOutputs(b);
-    // Stack: [..., ownerPKH, txFromPP5Output]
+    // Stack: [..., ownerPKH, txFromPP1_FTOutput]
 
-    // Read 3 consecutive output scripts: PP5, PP2, PP3
+    // Read 3 consecutive output scripts: PP1_FT, PP2, PP3
     emitReadOneOutputScript(b);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP5Script → alt
+    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP1_FTScript → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP2Script → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP3Script → alt
     // Stack: [..., ownerPKH, txFromAfterPP3]
-    // Alt: [amount, tokenId, currentTxId, nLocktime, PP5, PP2, PP3]
+    // Alt: [amount, tokenId, currentTxId, nLocktime, PP1_FT, PP2, PP3]
 
-    // Compute metadataSkip = parentOutCnt - 1 - parentPP5Idx - 3
+    // Compute metadataSkip = parentOutCnt - 1 - parentPP1_FTIdx - 3
     //   = number of outputs to skip between PP3 and metadata
-    // Stack: [..., outCnt, pp5Idx, ownerPKH, txFromAfterPP3]
-    // idx from top: txRemaining=0, ownerPKH=1, pp5Idx=2, outCnt=3
+    // Stack: [..., outCnt, pp1FtIdx, ownerPKH, txFromAfterPP3]
+    // idx from top: txRemaining=0, ownerPKH=1, pp1FtIdx=2, outCnt=3
     b.opCode(OpCodes.OP_3);
     b.opCode(OpCodes.OP_PICK);           // copy parentOutCnt (idx 3)
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_SUB);    // outCnt - 1
     // Stack: [..., txRemaining, (outCnt-1)]
-    // idx: (outCnt-1)=0, txRemaining=1, ownerPKH=2, pp5Idx=3, outCnt=4
+    // idx: (outCnt-1)=0, txRemaining=1, ownerPKH=2, pp1FtIdx=3, outCnt=4
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy parentPP5Idx (idx 3)
-    b.opCode(OpCodes.OP_SUB);                             // (outCnt-1) - pp5Idx
-    b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_SUB);    // subtract 3 for PP5+PP2+PP3
+    b.opCode(OpCodes.OP_PICK);           // copy parentPP1_FTIdx (idx 3)
+    b.opCode(OpCodes.OP_SUB);                             // (outCnt-1) - pp1FtIdx
+    b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_SUB);    // subtract 3 for PP1_FT+PP2+PP3
     // Stack: [..., ownerPKH, txFromAfterPP3, metadataSkip]
 
     // Skip (metadataSkip) outputs to reach metadata
@@ -358,7 +358,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_DROP);           // drop remaining tx bytes
     // Stack: [..., ownerPKH]
     // Alt: [amount, tokenId, currentTxId, nLocktime,
-    //       parentPP5Script, parentPP2Script, parentPP3Script, parentMetadataScript]
+    //       parentPP1_FTScript, parentPP2Script, parentPP3Script, parentMetadataScript]
 
     // --- Phase 6: Validate metadata starts with 006a ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // parentMetadataScript
@@ -372,16 +372,16 @@ class PP5ScriptGen {
     // --- Phase 7: Verify parent amount == this.amount ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // parentPP3Script
     b.opCode(OpCodes.OP_FROMALTSTACK);   // parentPP2Script
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // parentPP5Script
-    // Stack: [..., ownerPKH, metadataScript, pp3Script, pp2Script, pp5Script]
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // parentPP1_FTScript
+    // Stack: [..., ownerPKH, metadataScript, pp3Script, pp2Script, pp1FtScript]
 
-    // Extract parent amount from parentPP5Script[55:63]
+    // Extract parent amount from parentPP1_FTScript[55:63]
     b.opCode(OpCodes.OP_DUP);
     OpcodeHelpers.pushInt(b, amountDataEnd); // 63
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     OpcodeHelpers.pushInt(b, amountDataStart); // 55
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, parentAmountBytes(8)]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, parentAmountBytes(8)]
     b.addData(Uint8List.fromList([0x00]));
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_BIN2NUM);         // parentAmount as script number
@@ -392,7 +392,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);    // amount (raw 8-byte LE)
     b.opCode(OpCodes.OP_BIN2NUM);         // convert to minimal script number
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, parentAmt, nLocktime, currentTxId, tokenId, amount]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, parentAmt, nLocktime, currentTxId, tokenId, amount]
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_TOALTSTACK);      // keep amount in alt
     // idx from top: amount=0, tokenId=1, currentTxId=2, nLocktime=3, parentAmt=4
@@ -400,32 +400,32 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_ROLL);            // move parentAmt to top
     b.opCode(OpCodes.OP_EQUALVERIFY);     // require parentAmt == amount
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, tokenId]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, tokenId]
     // Alt: [amount]
     b.opCode(OpCodes.OP_TOALTSTACK);      // tokenId → alt (not needed, just stash)
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId]
     // Alt: [amount, tokenId]
 
-    // --- Phase 8: Rebuild PP5 from parent template ---
-    // Stack arrangement: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId]
-    // idx: currentTxId=0, nLocktime=1, pp5S=2, pp2S=3, pp3S=4, metaS=5, ownerPKH=6
+    // --- Phase 8: Rebuild PP1_FT from parent template ---
+    // Stack arrangement: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId]
+    // idx: currentTxId=0, nLocktime=1, pp1FtS=2, pp2S=3, pp3S=4, metaS=5, ownerPKH=6
 
-    // Copy pp5S and ownerPKH for rebuild
+    // Copy pp1FtS and ownerPKH for rebuild
     b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);            // copy pp5S
+    b.opCode(OpCodes.OP_PICK);            // copy pp1FtS
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);            // copy ownerPKH (shifted +1)
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId (LIFO top)
     b.opCode(OpCodes.OP_DROP);            // drop tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);    // amount
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, pp5S_copy, ownerPKH_copy, amount]
-    _emitRebuildPP5(b);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, rebuiltPP5Script]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, pp1FtS_copy, ownerPKH_copy, amount]
+    _emitRebuildPP1Ft(b);
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, rebuiltPP1FtScript]
 
-    // --- Phase 9: Build PP5 output (rebuiltPP5Script, 1 sat) ---
+    // --- Phase 9: Build PP1_FT output (rebuiltPP1FtScript, 1 sat) ---
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, pp5OutputBytes]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, pp1FtOutputBytes]
 
     // --- Phase 10: Rebuild PP3 from parent template ---
     // Copy pp3S and ownerPKH
@@ -434,34 +434,34 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_PICK);            // copy ownerPKH (shifted)
     emitRebuildPP3(b);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, pp5Out, rebuiltPP3Script]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, pp1FtOut, rebuiltPP3Script]
 
     // Build PP3 output (1 sat)
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, pp5Out, pp3Out]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, pp1FtOut, pp3Out]
 
     // --- Phase 11: Build metadata output (0 sats) ---
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);            // copy metadataScript
     b.opCode(OpCodes.OP_0);
     emitBuildOutput(b);
-    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId, pp5Out, pp3Out, metaOut]
+    // Stack: [..., ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId, pp1FtOut, pp3Out, metaOut]
 
     // --- Phase 12: Build change output ---
     // Need changePkh and changeAmt from deep in the stack
-    // idx: metaOut=0, pp3Out=1, pp5Out=2, currentTxId=3, nLocktime=4, pp5S=5,
+    // idx: metaOut=0, pp3Out=1, pp1FtOut=2, currentTxId=3, nLocktime=4, pp1FtS=5,
     //      pp2S=6, pp3S=7, metaS=8, ownerPKH=9, pp2OutBytes=10(orig), ownerPK=11(orig),
     //      changePkh=12(orig), changeAmt=13(orig), sig=14(orig), lhs=15(orig), rawTx=16(orig),
-    //      pad=17(orig), outCnt=18(orig), pp5Idx=19(orig)
+    //      pad=17(orig), outCnt=18(orig), pp1FtIdx=19(orig)
     // Wait, after Phase 4 preImage was consumed so original stack shifted.
     // Let me recount from the full stack state.
 
     // Full stack bottom→top at this point:
     // [pp2OutOrig, ownerPKorig, changePkh, changeAmt, ownerSig, scriptLHS,
-    //  parentRawTx, padding, parentOutCnt, parentPP5Idx,
-    //  ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime, currentTxId,
-    //  pp5Out, pp3Out, metaOut]
+    //  parentRawTx, padding, parentOutCnt, parentPP1_FTIdx,
+    //  ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime, currentTxId,
+    //  pp1FtOut, pp3Out, metaOut]
     // Total: 20 items. idx from top: metaOut=0 ... pp2OutOrig=19
 
     // changePkh at idx 17, changeAmt at idx 16
@@ -471,14 +471,14 @@ class PP5ScriptGen {
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_PICK);            // copy changeAmt (shifted +1)
     emitBuildOutput(b);
-    // Stack: [..., pp5Out, pp3Out, metaOut, changeOut]
+    // Stack: [..., pp1FtOut, pp3Out, metaOut, changeOut]
 
     // --- Phase 13: Reconstruct fullTx ---
-    // fullTx = scriptLHS + varint(5) + changeOut + pp5Out + pp2OutputBytes + pp3Out + metaOut + nLocktime
+    // fullTx = scriptLHS + varint(5) + changeOut + pp1FtOut + pp2OutputBytes + pp3Out + metaOut + nLocktime
 
-    // Get scriptLHS (at index: changeOut=0, metaOut=1, pp3Out=2, pp5Out=3,
-    //   currentTxId=4, nLocktime=5, pp5S=6, pp2S=7, pp3S=8, metaS=9,
-    //   ownerPKH=10, pp5Idx=11, outCnt=12, pad=13, rawTx=14, lhs=15,
+    // Get scriptLHS (at index: changeOut=0, metaOut=1, pp3Out=2, pp1FtOut=3,
+    //   currentTxId=4, nLocktime=5, pp1FtS=6, pp2S=7, pp3S=8, metaS=9,
+    //   ownerPKH=10, pp1FtIdx=11, outCnt=12, pad=13, rawTx=14, lhs=15,
     //   sig=16, chgAmt=17, chgPkh=18, ownerPK=19, pp2OutOrig=20)
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);            // copy scriptLHS
@@ -493,28 +493,28 @@ class PP5ScriptGen {
     // Append changeOut (now at idx 1 after pushing scriptLHS+varint)
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
-    // Stack: [..., pp5Out, pp3Out, metaOut, (lhs+05+changeOut)]
+    // Stack: [..., pp1FtOut, pp3Out, metaOut, (lhs+05+changeOut)]
 
-    // Append pp5Out
-    b.opCode(OpCodes.OP_SWAP);            // [..., pp5Out, pp3Out, (lhs+..+chg), metaOut]
+    // Append pp1FtOut
+    b.opCode(OpCodes.OP_SWAP);            // [..., pp1FtOut, pp3Out, (lhs+..+chg), metaOut]
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash metaOut
-    b.opCode(OpCodes.OP_SWAP);            // [..., pp5Out, (lhs+..+chg), pp3Out]
+    b.opCode(OpCodes.OP_SWAP);            // [..., pp1FtOut, (lhs+..+chg), pp3Out]
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash pp3Out
-    // Stack: [..., currentTxId, pp5Out, (lhs+..+chg)]
+    // Stack: [..., currentTxId, pp1FtOut, (lhs+..+chg)]
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
-    // Stack: [..., currentTxId, (lhs+..+chg+pp5Out)]
+    // Stack: [..., currentTxId, (lhs+..+chg+pp1FtOut)]
 
     // Append pp2OutputBytes (the raw bytes from scriptSig)
     // pp2OutOrig is deep in the stack. Let me find its index.
     // Stack bottom→top at this point:
     // [pp2OutOrig, ownerPKorig, changePkh, changeAmt, ownerSig, scriptLHS,
-    //  parentRawTx, padding, parentOutCnt, parentPP5Idx,
-    //  ownerPKH, metaS, pp3S, pp2S, pp5S, nLocktime,
-    //  currentTxId, (lhs+chg+pp5Out)]
+    //  parentRawTx, padding, parentOutCnt, parentPP1_FTIdx,
+    //  ownerPKH, metaS, pp3S, pp2S, pp1FtS, nLocktime,
+    //  currentTxId, (lhs+chg+pp1FtOut)]
     // Alt: [pp3Out, metaOut]
-    // idx from top: partial=0, currentTxId=1, nLocktime=2, pp5S=3, pp2S=4,
-    //  pp3S=5, metaS=6, ownerPKH=7, pp5Idx=8, outCnt=9, pad=10, rawTx=11,
+    // idx from top: partial=0, currentTxId=1, nLocktime=2, pp1FtS=3, pp2S=4,
+    //  pp3S=5, metaS=6, ownerPKH=7, pp1FtIdx=8, outCnt=9, pad=10, rawTx=11,
     //  lhs=12, sig=13, chgAmt=14, chgPkh=15, ownerPK=16, pp2OutOrig=17
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_PICK);            // copy pp2OutputBytes
@@ -539,16 +539,16 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_SHA256);
     // Stack: [..., currentTxId, calcTxId]
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // Stack: [..., pp5S]
+    // Stack: [..., pp1FtS]
     // Full remaining: [pp2OutOrig, ownerPKorig, changePkh, changeAmt, ownerSig, scriptLHS,
-    //  parentRawTx, padding, parentOutCnt, parentPP5Idx,
-    //  ownerPKH, metaS, pp3S, pp2S, pp5S]
+    //  parentRawTx, padding, parentOutCnt, parentPP1_FTIdx,
+    //  ownerPKH, metaS, pp3S, pp2S, pp1FtS]
 
     // --- Phase 15: Validate PP2-FT ---
-    // Stack top: pp5S=0, pp2S=1, pp3S=2, metaS=3, ownerPKH=4, pp5Idx=5,
+    // Stack top: pp1FtS=0, pp2S=1, pp3S=2, metaS=3, ownerPKH=4, pp1FtIdx=5,
     //   outCnt=6, pad=7, rawTx=8, lhs=9, sig=10, chgAmt=11, chgPkh=12,
     //   ownerPK=13, pp2OutOrig=14
-    b.opCode(OpCodes.OP_DROP);            // drop pp5S (no longer needed)
+    b.opCode(OpCodes.OP_DROP);            // drop pp1FtS (no longer needed)
     // Top: pp2S=0
     // Get pp2OutputBytes from scriptSig (pp2OutOrig at idx 13)
     OpcodeHelpers.pushInt(b, 13);
@@ -568,12 +568,12 @@ class PP5ScriptGen {
     // Stack: [...]
 
     // --- Phase 16: Verify outpoint[2][:32] == sha256(sha256(parentRawTx)) ---
-    // Stack top: pp3S=0, metaS=1, ownerPKH=2, pp5Idx=3, outCnt=4, pad=5,
+    // Stack top: pp3S=0, metaS=1, ownerPKH=2, pp1FtIdx=3, outCnt=4, pad=5,
     //   rawTx=6, lhs=7, sig=8, chgAmt=9, chgPkh=10, ownerPK=11, pp2OutOrig=12
     b.opCode(OpCodes.OP_DROP); // drop pp3S
     b.opCode(OpCodes.OP_DROP); // drop metaS
     b.opCode(OpCodes.OP_DROP); // drop ownerPKH
-    b.opCode(OpCodes.OP_DROP); // drop pp5Idx
+    b.opCode(OpCodes.OP_DROP); // drop pp1FtIdx
     b.opCode(OpCodes.OP_DROP); // drop outCnt
     b.opCode(OpCodes.OP_DROP); // drop padding
     // Top: rawTx=0, lhs=1, sig=2, chgAmt=3, chgPkh=4, ownerPK=5, pp2OutOrig=6
@@ -609,7 +609,7 @@ class PP5ScriptGen {
   /// Stack at entry (16 items, bottom → top):
   ///   preImage, pp2RecipOut, pp2ChangeOut, ownerPK, changePkh, changeAmt,
   ///   ownerSig, scriptLHS, parentRawTx, padding, recipientAmt, tokenChangeAmt,
-  ///   recipientPKH, myOutIdx, outCnt, pp5Idx
+  ///   recipientPKH, myOutIdx, outCnt, pp1FtIdx
   /// Altstack: [amount(bottom), tokenId, ownerPKH(top)]
   static void _emitSplitTransfer(ScriptBuilder b) {
     _emitSplitAuth(b);
@@ -620,7 +620,7 @@ class PP5ScriptGen {
     _emitSplitValidateMetadata(b);
     _emitSplitBalanceConservation(b);
     _emitSplitDrainAltstack(b);
-    _emitSplitRebuildPP5s(b);
+    _emitSplitRebuildPP1_FTs(b);
     _emitSplitVerifyMyOutputIdx(b);
     _emitSplitRebuildPP3s(b);
     _emitSplitBuildOutputs(b);
@@ -631,9 +631,9 @@ class PP5ScriptGen {
   }
 
   /// P2PKH auth.
-  /// Entry stack (16): [..., pp5Idx]  Alt: [amount, tokenId, ownerPKH]
-  /// Exit stack  (17): [..., pp5Idx, ownerPKH]  Alt: [amount, tokenId]
-  /// idx: ownerPKH=0, pp5Idx=1, outCnt=2, myOutIdx=3, recipientPKH=4,
+  /// Entry stack (16): [..., pp1FtIdx]  Alt: [amount, tokenId, ownerPKH]
+  /// Exit stack  (17): [..., pp1FtIdx, ownerPKH]  Alt: [amount, tokenId]
+  /// idx: ownerPKH=0, pp1FtIdx=1, outCnt=2, myOutIdx=3, recipientPKH=4,
   ///   tokenChangeAmt=5, recipientAmt=6, padding=7, parentRawTx=8, scriptLHS=9,
   ///   ownerSig=10, changeAmt=11, changePkh=12, ownerPK=13, pp2ChangeOut=14,
   ///   pp2RecipOut=15, preImage=16
@@ -717,7 +717,7 @@ class PP5ScriptGen {
   /// checkPreimageOCS (consumes preImage).
   /// Entry stack (18): [..., ownerPKH, sha256sc]  preImage at idx 17
   /// Exit stack  (17): [..., ownerPKH, sha256sc]  (preImage consumed)
-  /// idx: sha256sc=0, ownerPKH=1, pp5Idx=2, outCnt=3, myOutIdx=4,
+  /// idx: sha256sc=0, ownerPKH=1, pp1FtIdx=2, outCnt=3, myOutIdx=4,
   ///   recipientPKH=5, tokenChangeAmt=6, recipientAmt=7, padding=8,
   ///   parentRawTx=9, scriptLHS=10, ownerSig=11, changeAmt=12, changePkh=13,
   ///   ownerPK=14, pp2ChangeOut=15, pp2RecipOut=16
@@ -728,40 +728,40 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_VERIFY);
   }
 
-  /// Parse parent tx outputs (PP5, PP2, PP3, metadata).
+  /// Parse parent tx outputs (PP1_FT, PP2, PP3, metadata).
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (17): [..., ownerPKH, sha256sc]  (same size, rawTx consumed)
-  /// Alt: [amount, tokenId, currentTxId, nLocktime, PP5, PP2, PP3, metadata]
+  /// Alt: [amount, tokenId, currentTxId, nLocktime, PP1_FT, PP2, PP3, metadata]
   static void _emitSplitParseParentOutputs(ScriptBuilder b) {
-    // parentRawTx at idx 9, pp5Idx at idx 2
+    // parentRawTx at idx 9, pp1FtIdx at idx 2
     b.opCode(OpCodes.OP_9);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTx
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy pp5Idx (idx 2 shifted to 3)
+    b.opCode(OpCodes.OP_PICK);           // copy pp1FtIdx (idx 2 shifted to 3)
 
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5Idx
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtIdx
     emitSkipInputs(b);
     emitReadVarint(b);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp5Idx
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp1FtIdx
     emitSkipNOutputs(b);
 
-    // Read PP5, PP2, PP3 output scripts
+    // Read PP1_FT, PP2, PP3 output scripts
     emitReadOneOutputScript(b);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // PP5 → alt
+    b.opCode(OpCodes.OP_TOALTSTACK);     // PP1_FT → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // PP2 → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // PP3 → alt
     // Stack: [..., sha256sc, txFromAfterPP3]
-    // idx: txRem=0, sha256sc=1, ownerPKH=2, pp5Idx=3, outCnt=4
+    // idx: txRem=0, sha256sc=1, ownerPKH=2, pp1FtIdx=3, outCnt=4
 
-    // Compute metadataSkip = outCnt - 1 - pp5Idx - 3
+    // Compute metadataSkip = outCnt - 1 - pp1FtIdx - 3
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_PICK);           // copy outCnt
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_SUB);
     b.opCode(OpCodes.OP_4);
-    b.opCode(OpCodes.OP_PICK);           // copy pp5Idx (idx 3 shifted to 4)
+    b.opCode(OpCodes.OP_PICK);           // copy pp1FtIdx (idx 3 shifted to 4)
     b.opCode(OpCodes.OP_SUB);
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_SUB);
 
@@ -774,7 +774,7 @@ class PP5ScriptGen {
   /// Validate metadata starts with 006a.
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (18): [..., ownerPKH, sha256sc, metadata]
-  /// Alt: [..., PP5, PP2, PP3]  (metadata popped)
+  /// Alt: [..., PP1_FT, PP2, PP3]  (metadata popped)
   static void _emitSplitValidateMetadata(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // metadata
     b.opCode(OpCodes.OP_DUP);
@@ -785,20 +785,20 @@ class PP5ScriptGen {
   }
 
   /// Balance conservation.
-  /// Pops PP3, PP2, PP5 from alt. Extracts parentAmount from PP5.
+  /// Pops PP3, PP2, PP1_FT from alt. Extracts parentAmount from PP1_FT.
   /// Verifies recipientAmt > 0, tokenChangeAmt > 0, recipientAmt + tokenChangeAmt == parentAmount.
-  /// Entry stack (18): [..., sha256sc, metadata]  Alt: [..., nLocktime, PP5, PP2, PP3]
-  /// Exit stack  (21): [..., sha256sc, metadata, PP3, PP2, PP5]  Alt: [amount, tokenId, currentTxId, nLocktime]
+  /// Entry stack (18): [..., sha256sc, metadata]  Alt: [..., nLocktime, PP1_FT, PP2, PP3]
+  /// Exit stack  (21): [..., sha256sc, metadata, PP3, PP2, PP1_FT]  Alt: [amount, tokenId, currentTxId, nLocktime]
   static void _emitSplitBalanceConservation(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP3
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP2
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP5
-    // Stack (21): [..., sha256sc, metadata, PP3, PP2, PP5]
-    // idx: PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5,
-    //   pp5Idx=6, outCnt=7, myOutIdx=8, recipientPKH=9, tokenChangeAmt=10,
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP1_FT
+    // Stack (21): [..., sha256sc, metadata, PP3, PP2, PP1_FT]
+    // idx: PP1_FT=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5,
+    //   pp1FtIdx=6, outCnt=7, myOutIdx=8, recipientPKH=9, tokenChangeAmt=10,
     //   recipientAmt=11
 
-    // Extract parentAmount from PP5[55:63]
+    // Extract parentAmount from PP1_FT[55:63]
     b.opCode(OpCodes.OP_DUP);
     OpcodeHelpers.pushInt(b, amountDataEnd); // 63
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
@@ -807,7 +807,7 @@ class PP5ScriptGen {
     b.addData(Uint8List.fromList([0x00]));
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_BIN2NUM);         // parentAmount
-    // Stack (22): [..., PP5, parentAmount]
+    // Stack (22): [..., PP1_FT, parentAmount]
     // idx: parentAmt=0, ..., tokenChangeAmt=11, recipientAmt=12
 
     // recipientAmt > 0
@@ -827,14 +827,14 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_PICK);           // recipientAmt (shifted +1)
     b.opCode(OpCodes.OP_ADD);
     b.opCode(OpCodes.OP_EQUALVERIFY);    // sum == parentAmount
-    // Stack (21): [..., sha256sc, metadata, PP3, PP2, PP5]
+    // Stack (21): [..., sha256sc, metadata, PP3, PP2, PP1_FT]
   }
 
   /// Drain altstack — get nLocktime and currentTxId, drop tokenId and amount.
-  /// Entry stack (21): [..., PP5]  Alt: [amount, tokenId, currentTxId, nLocktime]
-  /// Exit stack  (23): [..., PP5, nLocktime, currentTxId]  Alt: empty
-  /// idx: currentTxId=0, nLocktime=1, PP5=2, PP2=3, PP3=4, metadata=5,
-  ///   sha256sc=6, ownerPKH=7, pp5Idx=8, outCnt=9, myOutIdx=10, recipientPKH=11,
+  /// Entry stack (21): [..., PP1_FT]  Alt: [amount, tokenId, currentTxId, nLocktime]
+  /// Exit stack  (23): [..., PP1_FT, nLocktime, currentTxId]  Alt: empty
+  /// idx: currentTxId=0, nLocktime=1, PP1_FT=2, PP2=3, PP3=4, metadata=5,
+  ///   sha256sc=6, ownerPKH=7, pp1FtIdx=8, outCnt=9, myOutIdx=10, recipientPKH=11,
   ///   tokenChangeAmt=12, recipientAmt=13, padding=14, parentRawTx=15,
   ///   scriptLHS=16, ownerSig=17, changeAmt=18, changePkh=19, ownerPK=20,
   ///   pp2ChangeOut=21, pp2RecipOut=22
@@ -847,70 +847,70 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_DROP);
   }
 
-  /// Rebuild recipient PP5 and change PP5 from parent template.
-  /// Entry stack (23): [..., PP5, nLocktime, currentTxId]  Alt: empty
-  /// Exit stack  (25): [..., PP5, nLocktime, currentTxId, recipientPP5, changePP5]
-  static void _emitSplitRebuildPP5s(ScriptBuilder b) {
-    // --- Rebuild recipient PP5 ---
-    // _emitRebuildPP5 expects: [parentPP5Script, newOwnerPKH, newAmount]
-    // PP5 at idx 2, recipientPKH at idx 11, recipientAmt at idx 13
+  /// Rebuild recipient PP1_FT and change PP1_FT from parent template.
+  /// Entry stack (23): [..., PP1_FT, nLocktime, currentTxId]  Alt: empty
+  /// Exit stack  (25): [..., PP1_FT, nLocktime, currentTxId, recipientPP1_FT, changePP1_FT]
+  static void _emitSplitRebuildPP1_FTs(ScriptBuilder b) {
+    // --- Rebuild recipient PP1_FT ---
+    // _emitRebuildPP1Ft expects: [parentPP1_FTScript, newOwnerPKH, newAmount]
+    // PP1_FT at idx 2, recipientPKH at idx 11, recipientAmt at idx 13
     b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5 → stack 24
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FT → stack 24
     OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // recipientPKH (was 11, +1) → stack 25
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);           // recipientAmt (was 13, +2) → stack 26
-    _emitRebuildPP5(b);
-    // Stack (24): [..., PP5, nLocktime, currentTxId, recipientPP5]
+    _emitRebuildPP1Ft(b);
+    // Stack (24): [..., PP1_FT, nLocktime, currentTxId, recipientPP1_FT]
 
-    // --- Extract parentOwnerPKH from PP5[1:21] and stash ---
+    // --- Extract parentOwnerPKH from PP1_FT[1:21] and stash ---
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5 → stack 25
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FT → stack 25
     OpcodeHelpers.pushInt(b, 21);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack (25): [..., currentTxId, recipientPP5, parentOwnerPKH]
+    // Stack (25): [..., currentTxId, recipientPP1_FT, parentOwnerPKH]
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash parentOwnerPKH
     // Stack (24), Alt: [parentOwnerPKH]
 
-    // --- Rebuild change PP5 ---
-    // PP5 at idx 3, parentOwnerPKH in alt, tokenChangeAmt at idx 13
+    // --- Rebuild change PP1_FT ---
+    // PP1_FT at idx 3, parentOwnerPKH in alt, tokenChangeAmt at idx 13
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5 → stack 25
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FT → stack 25
     b.opCode(OpCodes.OP_FROMALTSTACK);   // parentOwnerPKH → stack 26
-    // idx: parentOwnerPKH=0, PP5copy=1, recipPP5=2, curTxId=3, nLock=4, PP5=5,
-    //   PP2=6, PP3=7, meta=8, sha256sc=9, ownerPKH=10, pp5Idx=11, outCnt=12,
+    // idx: parentOwnerPKH=0, PP1_FTcopy=1, recipPP1_FT=2, curTxId=3, nLock=4, PP1_FT=5,
+    //   PP2=6, PP3=7, meta=8, sha256sc=9, ownerPKH=10, pp1FtIdx=11, outCnt=12,
     //   myOutIdx=13, recipientPKH=14, tokenChangeAmt=15
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);           // tokenChangeAmt → stack 27
-    _emitRebuildPP5(b);
-    // Stack (25): [..., PP5, nLocktime, currentTxId, recipientPP5, changePP5]
+    _emitRebuildPP1Ft(b);
+    // Stack (25): [..., PP1_FT, nLocktime, currentTxId, recipientPP1_FT, changePP1_FT]
   }
 
   /// myOutputIndex check.
-  /// Verify sha256(correct rebuilt PP5) == sha256(scriptCode).
-  /// Entry stack (25): [..., recipientPP5, changePP5]
-  /// Exit stack  (25): [..., recipientPP5, changePP5]  (unchanged)
-  /// idx: changePP5=0, recipPP5=1, ..., myOutIdx=10, ..., sha256sc=6
+  /// Verify sha256(correct rebuilt PP1_FT) == sha256(scriptCode).
+  /// Entry stack (25): [..., recipientPP1_FT, changePP1_FT]
+  /// Exit stack  (25): [..., recipientPP1_FT, changePP1_FT]  (unchanged)
+  /// idx: changePP1_FT=0, recipPP1_FT=1, ..., myOutIdx=10, ..., sha256sc=6
   static void _emitSplitVerifyMyOutputIdx(ScriptBuilder b) {
-    // myOutIdx at idx 12 (was 10 in Phase 8, +2 from Phase 9 adding recipPP5+changePP5)
+    // myOutIdx at idx 12 (was 10 in Phase 8, +2 from Phase 9 adding recipPP1_FT+changePP1_FT)
     OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // copy myOutIdx → stack 26
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_EQUAL);
     b.opCode(OpCodes.OP_IF);
-      // myOutputIndex == 1: check recipientPP5
-      b.opCode(OpCodes.OP_OVER);         // copy recipientPP5 (idx 1) → stack 26
+      // myOutputIndex == 1: check recipientPP1_FT
+      b.opCode(OpCodes.OP_OVER);         // copy recipientPP1_FT (idx 1) → stack 26
       b.opCode(OpCodes.OP_SHA256);
-      // sha256sc at idx: sha256=0, changePP5=1, recipPP5=2, curTxId=3,
-      //   nLock=4, PP5=5, PP2=6, PP3=7, meta=8, sha256sc=9
+      // sha256sc at idx: sha256=0, changePP1_FT=1, recipPP1_FT=2, curTxId=3,
+      //   nLock=4, PP1_FT=5, PP2=6, PP3=7, meta=8, sha256sc=9
       b.opCode(OpCodes.OP_9);
       b.opCode(OpCodes.OP_PICK);         // copy sha256sc
       b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_ELSE);
-      // myOutputIndex != 1: check changePP5
-      b.opCode(OpCodes.OP_DUP);          // copy changePP5 (idx 0) → stack 26
+      // myOutputIndex != 1: check changePP1_FT
+      b.opCode(OpCodes.OP_DUP);          // copy changePP1_FT (idx 0) → stack 26
       b.opCode(OpCodes.OP_SHA256);
       b.opCode(OpCodes.OP_9);
       b.opCode(OpCodes.OP_PICK);         // copy sha256sc
@@ -921,95 +921,95 @@ class PP5ScriptGen {
 
   /// Rebuild recipient PP3 and change PP3 from parent template.
   /// Recipient PP3: ownerPKH=recipientPKH, pp2OutputIndex=2
-  /// Change PP3: ownerPKH=parentOwnerPKH (from PP5[1:21]), pp2OutputIndex=5
-  /// Entry stack (25): [..., PP3, PP2, PP5, nLocktime, currentTxId, recipPP5, changePP5]
-  /// Exit stack  (27): [..., recipPP5, changePP5, recipPP3, changePP3]
+  /// Change PP3: ownerPKH=parentOwnerPKH (from PP1_FT[1:21]), pp2OutputIndex=5
+  /// Entry stack (25): [..., PP3, PP2, PP1_FT, nLocktime, currentTxId, recipPP1_FT, changePP1_FT]
+  /// Exit stack  (27): [..., recipPP1_FT, changePP1_FT, recipPP3, changePP3]
   static void _emitSplitRebuildPP3s(ScriptBuilder b) {
     // --- Rebuild recipient PP3 ---
     // _emitRebuildPP3WithPP2Idx expects: [parentPP3Script, newOwnerPKH]
-    // PP3 at idx: changePP5=0, recipPP5=1, curTxId=2, nLock=3, PP5=4, PP2=5, PP3=6
+    // PP3 at idx: changePP1_FT=0, recipPP1_FT=1, curTxId=2, nLock=3, PP1_FT=4, PP2=5, PP3=6
     b.opCode(OpCodes.OP_6);
     b.opCode(OpCodes.OP_PICK);           // copy PP3 → stack 26
-    // recipientPKH at idx: PP3copy=0, changePP5=1, recipPP5=2, currentTxId=3,
-    //   nLocktime=4, PP5=5, PP2=6, PP3=7, metadata=8, sha256sc=9, ownerPKH=10,
-    //   pp5Idx=11, outCnt=12, myOutIdx=13, recipientPKH=14
+    // recipientPKH at idx: PP3copy=0, changePP1_FT=1, recipPP1_FT=2, currentTxId=3,
+    //   nLocktime=4, PP1_FT=5, PP2=6, PP3=7, metadata=8, sha256sc=9, ownerPKH=10,
+    //   pp1FtIdx=11, outCnt=12, myOutIdx=13, recipientPKH=14
     OpcodeHelpers.pushInt(b, 14);
     b.opCode(OpCodes.OP_PICK);           // copy recipientPKH → stack 27
     _emitRebuildPP3WithPP2Idx(b, 2);
-    // Stack (26): [..., recipPP5, changePP5, recipPP3]
+    // Stack (26): [..., recipPP1_FT, changePP1_FT, recipPP3]
 
     // --- Rebuild change PP3 ---
-    // PP3 at idx: recipPP3=0, changePP5=1, recipPP5=2, curTxId=3, nLock=4, PP5=5, PP2=6, PP3=7
+    // PP3 at idx: recipPP3=0, changePP1_FT=1, recipPP1_FT=2, curTxId=3, nLock=4, PP1_FT=5, PP2=6, PP3=7
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);           // copy PP3 → stack 27
-    // Extract parentOwnerPKH from PP5[1:21]
-    // PP5 at idx: PP3copy=0, recipPP3=1, changePP5=2, recipPP5=3, curTxId=4, nLock=5, PP5=6
+    // Extract parentOwnerPKH from PP1_FT[1:21]
+    // PP1_FT at idx: PP3copy=0, recipPP3=1, changePP1_FT=2, recipPP1_FT=3, curTxId=4, nLock=5, PP1_FT=6
     b.opCode(OpCodes.OP_6);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5 → stack 28
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FT → stack 28
     OpcodeHelpers.pushInt(b, 21);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
     // Stack (28): [..., PP3copy, parentOwnerPKH]
     _emitRebuildPP3WithPP2Idx(b, 5);
-    // Stack (27): [..., recipPP5, changePP5, recipPP3, changePP3]
+    // Stack (27): [..., recipPP1_FT, changePP1_FT, recipPP3, changePP3]
   }
 
   /// Build all 8 outputs.
-  /// Builds: changeOut, pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut.
+  /// Builds: changeOut, pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut, metaOut.
   /// (pp2RecipOut and pp2ChangeOut are raw bytes from scriptSig, not built here.)
-  /// Entry stack (27): [..., metadata, PP3, PP2, PP5, nLocktime, currentTxId,
-  ///   recipPP5, changePP5, recipPP3, changePP3]
-  /// Exit stack  (29): [..., currentTxId, pp5RecipOut, pp5ChangeOut,
+  /// Entry stack (27): [..., metadata, PP3, PP2, PP1_FT, nLocktime, currentTxId,
+  ///   recipPP1_FT, changePP1_FT, recipPP3, changePP3]
+  /// Exit stack  (29): [..., currentTxId, pp1FtRecipOut, pp1FtChangeOut,
   ///   pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   static void _emitSplitBuildOutputs(ScriptBuilder b) {
-    // --- Build PP5 recipient output (1 sat) ---
-    // recipPP5 at idx: changePP3=0, recipPP3=1, changePP5=2, recipPP5=3
+    // --- Build PP1_FT recipient output (1 sat) ---
+    // recipPP1_FT at idx: changePP3=0, recipPP3=1, changePP1_FT=2, recipPP1_FT=3
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy recipPP5 → stack 28
+    b.opCode(OpCodes.OP_PICK);           // copy recipPP1_FT → stack 28
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack (28): [..., recipPP5, changePP5, recipPP3, changePP3, pp5RecipOut]
+    // Stack (28): [..., recipPP1_FT, changePP1_FT, recipPP3, changePP3, pp1FtRecipOut]
 
-    // --- Build PP5 change output (1 sat) ---
-    // changePP5 at idx: pp5RecipOut=0, changePP3=1, recipPP3=2, changePP5=3
+    // --- Build PP1_FT change output (1 sat) ---
+    // changePP1_FT at idx: pp1FtRecipOut=0, changePP3=1, recipPP3=2, changePP1_FT=3
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy changePP5 → stack 29
+    b.opCode(OpCodes.OP_PICK);           // copy changePP1_FT → stack 29
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack (29): [..., recipPP3, changePP3, pp5RecipOut, pp5ChangeOut]
+    // Stack (29): [..., recipPP3, changePP3, pp1FtRecipOut, pp1FtChangeOut]
 
     // --- Build PP3 recipient output (1 sat) ---
-    // recipPP3 at idx: pp5ChangeOut=0, pp5RecipOut=1, changePP3=2, recipPP3=3
+    // recipPP3 at idx: pp1FtChangeOut=0, pp1FtRecipOut=1, changePP3=2, recipPP3=3
     b.opCode(OpCodes.OP_3);
     b.opCode(OpCodes.OP_PICK);           // copy recipPP3 → stack 30
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack (30): [..., changePP3, pp5RecipOut, pp5ChangeOut, pp3RecipOut]
+    // Stack (30): [..., changePP3, pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut]
 
     // --- Build PP3 change output (1 sat) ---
-    // changePP3 at idx: pp3RecipOut=0, pp5ChangeOut=1, pp5RecipOut=2, changePP3=3
+    // changePP3 at idx: pp3RecipOut=0, pp1FtChangeOut=1, pp1FtRecipOut=2, changePP3=3
     b.opCode(OpCodes.OP_3);
     b.opCode(OpCodes.OP_PICK);           // copy changePP3 → stack 31
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack (31): [..., pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut]
+    // Stack (31): [..., pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut]
 
     // --- Build metadata output (0 sats) ---
-    // Full stack idx: pp3ChangeOut=0, pp3RecipOut=1, pp5ChangeOut=2, pp5RecipOut=3,
-    //   changePP3=4, recipPP3=5, changePP5=6, recipPP5=7, currentTxId=8,
-    //   nLocktime=9, PP5=10, PP2=11, PP3=12, metadata=13
+    // Full stack idx: pp3ChangeOut=0, pp3RecipOut=1, pp1FtChangeOut=2, pp1FtRecipOut=3,
+    //   changePP3=4, recipPP3=5, changePP1_FT=6, recipPP1_FT=7, currentTxId=8,
+    //   nLocktime=9, PP1_FT=10, PP2=11, PP3=12, metadata=13
     OpcodeHelpers.pushInt(b, 13);
     b.opCode(OpCodes.OP_PICK);           // copy metadata → stack 32
     b.opCode(OpCodes.OP_0);
     emitBuildOutput(b);
-    // Stack (32): [..., pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut]
+    // Stack (32): [..., pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut, metaOut]
 
     // --- Build change output (P2PKH) ---
-    // changePkh at idx: metaOut=0, pp3ChangeOut=1, pp3RecipOut=2, pp5ChangeOut=3,
-    //   pp5RecipOut=4, changePP3=5, recipPP3=6, changePP5=7, recipPP5=8,
-    //   currentTxId=9, nLocktime=10, PP5=11, PP2=12, PP3=13, metadata=14,
-    //   sha256sc=15, ownerPKH=16, pp5Idx=17, outCnt=18, myOutIdx=19,
+    // changePkh at idx: metaOut=0, pp3ChangeOut=1, pp3RecipOut=2, pp1FtChangeOut=3,
+    //   pp1FtRecipOut=4, changePP3=5, recipPP3=6, changePP1_FT=7, recipPP1_FT=8,
+    //   currentTxId=9, nLocktime=10, PP1_FT=11, PP2=12, PP3=13, metadata=14,
+    //   sha256sc=15, ownerPKH=16, pp1FtIdx=17, outCnt=18, myOutIdx=19,
     //   recipientPKH=20, tokenChangeAmt=21, recipientAmt=22, padding=23,
     //   parentRawTx=24, scriptLHS=25, ownerSig=26, changeAmt=27, changePkh=28
     OpcodeHelpers.pushInt(b, 28);
@@ -1018,70 +1018,70 @@ class PP5ScriptGen {
     OpcodeHelpers.pushInt(b, 28);
     b.opCode(OpCodes.OP_PICK);           // copy changeAmt (shifted +1) → stack 34
     emitBuildOutput(b);
-    // Stack (33): [..., pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
+    // Stack (33): [..., pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   }
 
   /// Reconstruct fullTx.
-  /// fullTx = scriptLHS + varint(8) + changeOut + pp5RecipOut + pp2RecipOut
-  ///        + pp3RecipOut + pp5ChangeOut + pp2ChangeOut + pp3ChangeOut + metaOut + nLocktime
+  /// fullTx = scriptLHS + varint(8) + changeOut + pp1FtRecipOut + pp2RecipOut
+  ///        + pp3RecipOut + pp1FtChangeOut + pp2ChangeOut + pp3ChangeOut + metaOut + nLocktime
   ///
-  /// Strategy: stash the 4 built outputs (pp3RecipOut, pp5ChangeOut, pp3ChangeOut, metaOut)
+  /// Strategy: stash the 4 built outputs (pp3RecipOut, pp1FtChangeOut, pp3ChangeOut, metaOut)
   /// in the altstack in LIFO order so they pop in the order we need them.
   /// Then PICK the deep items (scriptLHS, pp2RecipOut, pp2ChangeOut) from the main stack.
   ///
-  /// Entry stack (33): [..., nLocktime, currentTxId, recipPP5, changePP5, recipPP3, changePP3,
-  ///   pp5RecipOut, pp5ChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
+  /// Entry stack (33): [..., nLocktime, currentTxId, recipPP1_FT, changePP1_FT, recipPP3, changePP3,
+  ///   pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   /// Exit stack: [..., nLocktime, currentTxId, fullTx]
   static void _emitSplitReconstructFullTx(ScriptBuilder b) {
     // Stack top (12 items from Phase 12):
     //   changeOut=0, metaOut=1, pp3ChangeOut=2, pp3RecipOut=3,
-    //   pp5ChangeOut=4, pp5RecipOut=5, changePP3=6, recipPP3=7,
-    //   changePP5=8, recipPP5=9, currentTxId=10, nLocktime=11, ...
+    //   pp1FtChangeOut=4, pp1FtRecipOut=5, changePP3=6, recipPP3=7,
+    //   changePP1_FT=8, recipPP1_FT=9, currentTxId=10, nLocktime=11, ...
     //
     // Desired concatenation after scriptLHS+varint(8):
-    //   changeOut, pp5RecipOut, pp2RecipOut, pp3RecipOut,
-    //   pp5ChangeOut, pp2ChangeOut, pp3ChangeOut, metaOut
+    //   changeOut, pp1FtRecipOut, pp2RecipOut, pp3RecipOut,
+    //   pp1FtChangeOut, pp2ChangeOut, pp3ChangeOut, metaOut
 
     // Stash in reverse of pop order. We need to pop:
-    //   metaOut, pp3ChangeOut, pp2ChangeOut(from stack), pp5ChangeOut,
-    //   pp3RecipOut, pp2RecipOut(from stack), pp5RecipOut
+    //   metaOut, pp3ChangeOut, pp2ChangeOut(from stack), pp1FtChangeOut,
+    //   pp3RecipOut, pp2RecipOut(from stack), pp1FtRecipOut
     // Actually simpler: build partial step by step.
 
     // Step 1: stash metaOut (need it last in the output sequence)
     b.opCode(OpCodes.OP_SWAP);           // [metaOut, changeOut]
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash metaOut
-    // changeOut=0, pp3ChangeOut=1, pp3RecipOut=2, pp5ChangeOut=3, pp5RecipOut=4
+    // changeOut=0, pp3ChangeOut=1, pp3RecipOut=2, pp1FtChangeOut=3, pp1FtRecipOut=4
 
     // Step 2: stash pp3ChangeOut
     b.opCode(OpCodes.OP_SWAP);           // [pp3ChangeOut, changeOut]
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp3ChangeOut
-    // changeOut=0, pp3RecipOut=1, pp5ChangeOut=2, pp5RecipOut=3
+    // changeOut=0, pp3RecipOut=1, pp1FtChangeOut=2, pp1FtRecipOut=3
 
-    // Step 3: stash pp5ChangeOut (need it after pp3RecipOut)
-    // After step 2: changeOut=0, pp3RecipOut=1, pp5ChangeOut=2, pp5RecipOut=3
-    // SWAP brings pp3RecipOut to top, then ROT pulls pp5ChangeOut to top
-    b.opCode(OpCodes.OP_SWAP);           // pp3RecipOut=0, changeOut=1, pp5ChangeOut=2, pp5RecipOut=3
-    b.opCode(OpCodes.OP_ROT);            // pp5ChangeOut=0, pp3RecipOut=1, changeOut=2, pp5RecipOut=3
+    // Step 3: stash pp1FtChangeOut (need it after pp3RecipOut)
+    // After step 2: changeOut=0, pp3RecipOut=1, pp1FtChangeOut=2, pp1FtRecipOut=3
+    // SWAP brings pp3RecipOut to top, then ROT pulls pp1FtChangeOut to top
+    b.opCode(OpCodes.OP_SWAP);           // pp3RecipOut=0, changeOut=1, pp1FtChangeOut=2, pp1FtRecipOut=3
+    b.opCode(OpCodes.OP_ROT);            // pp1FtChangeOut=0, pp3RecipOut=1, changeOut=2, pp1FtRecipOut=3
 
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5ChangeOut
-    // pp3RecipOut=0, changeOut=1, pp5RecipOut=2
-    // Alt (bottom→top): [metaOut, pp3ChangeOut, pp5ChangeOut]
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtChangeOut
+    // pp3RecipOut=0, changeOut=1, pp1FtRecipOut=2
+    // Alt (bottom→top): [metaOut, pp3ChangeOut, pp1FtChangeOut]
 
     // Step 4: stash pp3RecipOut
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp3RecipOut
-    // changeOut=0, pp5RecipOut=1
-    // Alt: [metaOut, pp3ChangeOut, pp5ChangeOut, pp3RecipOut]
+    // changeOut=0, pp1FtRecipOut=1
+    // Alt: [metaOut, pp3ChangeOut, pp1FtChangeOut, pp3RecipOut]
 
-    // Step 5: stash pp5RecipOut
+    // Step 5: stash pp1FtRecipOut
     b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5RecipOut
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtRecipOut
     // changeOut=0
-    // Alt: [metaOut, pp3ChangeOut, pp5ChangeOut, pp3RecipOut, pp5RecipOut]
+    // Alt: [metaOut, pp3ChangeOut, pp1FtChangeOut, pp3RecipOut, pp1FtRecipOut]
 
     // Now build fullTx. Stack top area:
-    // changeOut=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
-    //   currentTxId=5, nLocktime=6, PP5=7, PP2=8, PP3=9, metadata=10,
-    //   sha256sc=11, ownerPKH=12, pp5Idx=13, outCnt=14, myOutIdx=15,
+    // changeOut=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
+    //   currentTxId=5, nLocktime=6, PP1_FT=7, PP2=8, PP3=9, metadata=10,
+    //   sha256sc=11, ownerPKH=12, pp1FtIdx=13, outCnt=14, myOutIdx=15,
     //   recipientPKH=16, tokenChangeAmt=17, recipientAmt=18, padding=19,
     //   parentRawTx=20, scriptLHS=21, ownerSig=22, changeAmt=23,
     //   changePkh=24, ownerPK=25, pp2ChangeOut=26, pp2RecipOut=27
@@ -1097,19 +1097,19 @@ class PP5ScriptGen {
     // Append changeOut
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);            // + changeOut
-    // Stack: [..., recipPP5, currentTxId, nLocktime, ..., partial]
-    // partial=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
+    // Stack: [..., recipPP1_FT, currentTxId, nLocktime, ..., partial]
+    // partial=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
     //   currentTxId=5, nLocktime=6, ...
 
-    // Append pp5RecipOut from alt (LIFO top)
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // pp5RecipOut
-    b.opCode(OpCodes.OP_CAT);            // + pp5RecipOut
-    // Alt: [metaOut, pp3ChangeOut, pp5ChangeOut, pp3RecipOut]
+    // Append pp1FtRecipOut from alt (LIFO top)
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // pp1FtRecipOut
+    b.opCode(OpCodes.OP_CAT);            // + pp1FtRecipOut
+    // Alt: [metaOut, pp3ChangeOut, pp1FtChangeOut, pp3RecipOut]
 
     // Append pp2RecipOut from deep stack
-    // partial=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
-    //   currentTxId=5, nLocktime=6, PP5=7, PP2=8, PP3=9, metadata=10,
-    //   sha256sc=11, ownerPKH=12, pp5Idx=13, outCnt=14, myOutIdx=15,
+    // partial=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
+    //   currentTxId=5, nLocktime=6, PP1_FT=7, PP2=8, PP3=9, metadata=10,
+    //   sha256sc=11, ownerPKH=12, pp1FtIdx=13, outCnt=14, myOutIdx=15,
     //   recipientPKH=16, tokenChangeAmt=17, recipientAmt=18, padding=19,
     //   parentRawTx=20, scriptLHS=21, ownerSig=22, changeAmt=23,
     //   changePkh=24, ownerPK=25, pp2ChangeOut=26, pp2RecipOut=27
@@ -1120,10 +1120,10 @@ class PP5ScriptGen {
     // Append pp3RecipOut from alt
     b.opCode(OpCodes.OP_FROMALTSTACK);   // pp3RecipOut
     b.opCode(OpCodes.OP_CAT);
-    // Alt: [metaOut, pp3ChangeOut, pp5ChangeOut]
+    // Alt: [metaOut, pp3ChangeOut, pp1FtChangeOut]
 
-    // Append pp5ChangeOut from alt
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // pp5ChangeOut
+    // Append pp1FtChangeOut from alt
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // pp1FtChangeOut
     b.opCode(OpCodes.OP_CAT);
     // Alt: [metaOut, pp3ChangeOut]
 
@@ -1142,15 +1142,15 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_CAT);
     // Alt: empty
 
-    // Stack: [..., changePP3, recipPP3, changePP5, recipPP5, currentTxId,
+    // Stack: [..., changePP3, recipPP3, changePP1_FT, recipPP1_FT, currentTxId,
     //   nLocktime, ..., fullTxPartial]
 
     // Append nLocktime
-    // partial=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
+    // partial=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
     //   currentTxId=5, nLocktime=6
     // nLocktime is at idx 6. Use ROT? No, too deep. Just PICK it.
     // Actually: stack layout near top:
-    //   partial=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
+    //   partial=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
     //   currentTxId=5, nLocktime=6
     // We need nLocktime. It's at idx 6. After we ROLL it, everything shifts.
     // But we also need currentTxId to stay for Phase 14.
@@ -1158,35 +1158,35 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_6);
     b.opCode(OpCodes.OP_PICK);           // copy nLocktime
     b.opCode(OpCodes.OP_CAT);            // fullTx complete
-    // Stack: [..., nLocktime, ..., currentTxId, recipPP5, changePP5,
+    // Stack: [..., nLocktime, ..., currentTxId, recipPP1_FT, changePP1_FT,
     //   recipPP3, changePP3, fullTx]
     // Actually let me re-index from the perspective of what's needed next.
-    // fullTx=0, changePP3=1, recipPP3=2, changePP5=3, recipPP5=4,
+    // fullTx=0, changePP3=1, recipPP3=2, changePP1_FT=3, recipPP1_FT=4,
     //   currentTxId=5, nLocktime=6
 
     // Move fullTx below currentTxId for Phase 14.
     // Phase 14 needs: [..., currentTxId, fullTx]
-    // Currently: [..., currentTxId, recipPP5, changePP5, recipPP3, changePP3, fullTx]
+    // Currently: [..., currentTxId, recipPP1_FT, changePP1_FT, recipPP3, changePP3, fullTx]
     // Stash fullTx, then stash the 4 rebuilt scripts we no longer need (drop them),
     // then restore fullTx.
-    // Actually, the rebuilt scripts (recipPP5, changePP5, recipPP3, changePP3) are no
+    // Actually, the rebuilt scripts (recipPP1_FT, changePP1_FT, recipPP3, changePP3) are no
     // longer needed — they were already serialized into outputs. Let me DROP them.
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash fullTx
     b.opCode(OpCodes.OP_DROP);           // drop changePP3
     b.opCode(OpCodes.OP_DROP);           // drop recipPP3
-    b.opCode(OpCodes.OP_DROP);           // drop changePP5
-    b.opCode(OpCodes.OP_DROP);           // drop recipPP5
+    b.opCode(OpCodes.OP_DROP);           // drop changePP1_FT
+    b.opCode(OpCodes.OP_DROP);           // drop recipPP1_FT
     b.opCode(OpCodes.OP_FROMALTSTACK);   // restore fullTx
     // Stack: [..., nLocktime, currentTxId, fullTx]
   }
 
   /// Verify sha256(sha256(fullTx)) == currentTxId.
   /// Entry stack: [..., nLocktime, currentTxId, fullTx]
-  /// Exit stack:  [..., PP5, PP2, PP3, metadata, sha256sc, ownerPKH, ...]
+  /// Exit stack:  [..., PP1_FT, PP2, PP3, metadata, sha256sc, ownerPKH, ...]
   ///   (nLocktime, currentTxId, fullTx all consumed)
   ///
   /// After verify, remaining stack (from top):
-  ///   PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, pp5Idx=6,
+  ///   PP1_FT=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, pp1FtIdx=6,
   ///   outCnt=7, myOutIdx=8, recipientPKH=9, tokenChangeAmt=10, recipientAmt=11,
   ///   padding=12, parentRawTx=13, scriptLHS=14, ownerSig=15, changeAmt=16,
   ///   changePkh=17, ownerPK=18, pp2ChangeOut=19, pp2RecipOut=20
@@ -1200,11 +1200,11 @@ class PP5ScriptGen {
     // Stack: [..., nLocktime, ...]
     // nLocktime is no longer needed either. Drop it.
     // Wait — after EQUALVERIFY, what's on top?
-    // Before: [..., PP5, PP2, PP3, meta, sha256sc, ownerPKH, ..., nLocktime, currentTxId, fullTx]
+    // Before: [..., PP1_FT, PP2, PP3, meta, sha256sc, ownerPKH, ..., nLocktime, currentTxId, fullTx]
     // After SHA256 SHA256: [..., nLocktime, currentTxId, calcTxId]
     // EQUALVERIFY consumes currentTxId and calcTxId → top is nLocktime
     b.opCode(OpCodes.OP_DROP);           // drop nLocktime
-    // Stack (21): [..., PP5, PP2, PP3, metadata, sha256sc, ownerPKH, pp5Idx, outCnt,
+    // Stack (21): [..., PP1_FT, PP2, PP3, metadata, sha256sc, ownerPKH, pp1FtIdx, outCnt,
     //   myOutIdx, recipientPKH, tokenChangeAmt, recipientAmt, padding, parentRawTx,
     //   scriptLHS, ownerSig, changeAmt, changePkh, ownerPK, pp2ChangeOut, pp2RecipOut]
     // Wait, the items are bottom-to-top. Let me re-index from top:
@@ -1212,17 +1212,17 @@ class PP5ScriptGen {
     // Remaining items (21) from bottom to top:
     //   pp2RecipOut, pp2ChangeOut, ownerPK, changePkh, changeAmt, ownerSig,
     //   scriptLHS, parentRawTx, padding, recipientAmt, tokenChangeAmt,
-    //   recipientPKH, myOutIdx, outCnt, pp5Idx, ownerPKH, sha256sc,
-    //   metadata, PP3, PP2, PP5
-    // Top indices: PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5
+    //   recipientPKH, myOutIdx, outCnt, pp1FtIdx, ownerPKH, sha256sc,
+    //   metadata, PP3, PP2, PP1_FT
+    // Top indices: PP1_FT=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5
   }
 
   /// Validate both PP2-FT outputs.
-  /// Entry stack (21): top = PP5=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, ...
+  /// Entry stack (21): top = PP1_FT=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, ...
   ///   pp2ChangeOut=19, pp2RecipOut=20
-  /// Exit: PP5, PP2 consumed; PP3, metadata, sha256sc, ownerPKH remain + cleanup items.
+  /// Exit: PP1_FT, PP2 consumed; PP3, metadata, sha256sc, ownerPKH remain + cleanup items.
   static void _emitSplitValidatePP2s(ScriptBuilder b) {
-    b.opCode(OpCodes.OP_DROP);           // drop PP5 (no longer needed)
+    b.opCode(OpCodes.OP_DROP);           // drop PP1_FT (no longer needed)
     // Stack (20): PP2=0, PP3=1, metadata=2, sha256sc=3, ownerPKH=4, ...
     //   pp2ChangeOut=18, pp2RecipOut=19
 
@@ -1231,7 +1231,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash PP2 copy for second validation
     // Stack (20, same size), Alt: [PP2copy]
 
-    // --- Validate recipient PP2-FT (pp5Idx=1, pp2Idx=2) ---
+    // --- Validate recipient PP2-FT (pp1FtIdx=1, pp2Idx=2) ---
     OpcodeHelpers.pushInt(b, 19);
     b.opCode(OpCodes.OP_PICK);           // copy pp2RecipOut → stack 21
     b.opCode(OpCodes.OP_8);
@@ -1247,7 +1247,7 @@ class PP5ScriptGen {
     // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, ...
     //   pp2ChangeOut=16, pp2RecipOut=17
 
-    // --- Validate change PP2-FT (pp5Idx=4, pp2Idx=5) ---
+    // --- Validate change PP2-FT (pp1FtIdx=4, pp2Idx=5) ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // restore PP2copy → stack 19
     // PP2copy=0, PP3=1, ...
     //   pp2ChangeOut=18, pp2RecipOut=19
@@ -1263,12 +1263,12 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_SWAP);
     _emitValidatePP2FT(b, 4, 5);
     // PP2copy and pp2ChangeScript consumed. Stack (17).
-    // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp5Idx=4, outCnt=5,
+    // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp1FtIdx=4, outCnt=5,
     //   myOutIdx=6, recipientPKH=7, tokenChangeAmt=8, recipientAmt=9,
     //   padding=10, parentRawTx=11, scriptLHS=12, ownerSig=13, changeAmt=14,
     //   changePkh=15, ownerPK=16, pp2ChangeOut=17 ... wait, that's 18.
     // Let me recount: started at 21 after Phase 14 drop.
-    // Phase 15: -1 (drop PP5) = 20, validate recip (-2) = 18, validate change (-2) = 16? No.
+    // Phase 15: -1 (drop PP1_FT) = 20, validate recip (-2) = 18, validate change (-2) = 16? No.
     // _emitValidatePP2FT consumes [pp2Script, parentPP2] = 2 items each time.
     // Start: 20, DUP PP2 → 21 (but TOALTSTACK → 20), PICK pp2Recip → 21, extract → 21,
     // SWAP → 21, validate → 19. Then FROMALTSTACK → 20, PICK pp2Change → 21,
@@ -1276,26 +1276,26 @@ class PP5ScriptGen {
     // Hmm, _emitValidatePP2FT takes [pp2Script, parentPP2Script] and both are consumed.
     // That's -2 items. So: 20 → PICK(+1)=21 → extract(net 0)=21 → SWAP(0)=21 → validate(-2)=19.
     // Then: FROMALTSTACK(+1)=20 → PICK(+1)=21 → extract(0)=21 → SWAP(0)=21 → validate(-2)=19.
-    // Wait that gives 19. But we started with 20 (after dropping PP5) and consumed
+    // Wait that gives 19. But we started with 20 (after dropping PP1_FT) and consumed
     // PP2 + PP2copy + pp2RecipScript + pp2ChangeScript = conceptually 4, but PICK doesn't remove.
     // Actually: 20 items. DUP(+1)→21, TOALTSTACK(-1)→20. First validate: PICK(+1)→21,
     // then net effect of _emitValidatePP2FT is -2 (consumes pp2Script and parentPP2) → 19.
     // FROMALTSTACK(+1)→20. PICK(+1)→21. validate(-2)→19.
     // So final: 19 items.
-    // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp5Idx=4, outCnt=5,
+    // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp1FtIdx=4, outCnt=5,
     //   myOutIdx=6, recipientPKH=7, tokenChangeAmt=8, recipientAmt=9,
     //   padding=10, parentRawTx=11, scriptLHS=12, ownerSig=13, changeAmt=14,
     //   changePkh=15, ownerPK=16, pp2ChangeOut=17, pp2RecipOut=18
   }
 
   /// Verify outpoint[2][:32] == sha256(sha256(parentRawTx)).
-  /// Entry stack (19): PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp5Idx=4,
+  /// Entry stack (19): PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp1FtIdx=4,
   ///   outCnt=5, myOutIdx=6, recipientPKH=7, tokenChangeAmt=8, recipientAmt=9,
   ///   padding=10, parentRawTx=11, scriptLHS=12, ownerSig=13, changeAmt=14,
   ///   changePkh=15, ownerPK=16, pp2ChangeOut=17, pp2RecipOut=18
   /// Exit: leaves TRUE on stack.
   static void _emitSplitVerifyParentOutpoint(ScriptBuilder b) {
-    // Drop unneeded items: PP3, metadata, sha256sc, ownerPKH, pp5Idx, outCnt,
+    // Drop unneeded items: PP3, metadata, sha256sc, ownerPKH, pp1FtIdx, outCnt,
     //   myOutIdx, recipientPKH, tokenChangeAmt, recipientAmt, padding (11 items)
     for (int i = 0; i < 11; i++) {
       b.opCode(OpCodes.OP_DROP);
@@ -1331,13 +1331,13 @@ class PP5ScriptGen {
 
   /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
   ///         scriptLHS, parentRawTxA, parentRawTxB, padding,
-  ///         parentOutCntA, parentOutCntB, parentPP5IdxA, parentPP5IdxB]
+  ///         parentOutCntA, parentOutCntB, parentPP1_FTIdxA, parentPP1_FTIdxB]
   /// Altstack: [amount, tokenId, ownerPKH]
   static void _emitMergeToken(ScriptBuilder b) {
     // --- Phase 1: Get ownerPKH, do P2PKH auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
-    // Stack (15 items): [..., pp5IdxB, ownerPKH]
-    // idx: ownerPKH=0, pp5IdxB=1, pp5IdxA=2, outCntB=3, outCntA=4, pad=5,
+    // Stack (15 items): [..., pp1FtIdxB, ownerPKH]
+    // idx: ownerPKH=0, pp1FtIdxB=1, pp1FtIdxA=2, outCntB=3, outCntA=4, pad=5,
     //      rawTxB=6, rawTxA=7, lhs=8, sig=9, chgAmt=10, chgPkh=11,
     //      ownerPK=12, pp2=13, preImg=14
 
@@ -1402,8 +1402,8 @@ class PP5ScriptGen {
     // preImage consumed. Stack (14 items):
     // [pp2Out, ownerPK, changePkh, changeAmt, ownerSig, scriptLHS,
     //  parentRawTxA, parentRawTxB, padding, outCntA, outCntB,
-    //  pp5IdxA, pp5IdxB, ownerPKH]
-    // idx: ownerPKH=0, pp5IdxB=1, pp5IdxA=2, outCntB=3, outCntA=4, pad=5,
+    //  pp1FtIdxA, pp1FtIdxB, ownerPKH]
+    // idx: ownerPKH=0, pp1FtIdxB=1, pp1FtIdxA=2, outCntB=3, outCntA=4, pad=5,
     //      rawTxB=6, rawTxA=7, lhs=8, sig=9, chgAmt=10, chgPkh=11,
     //      ownerPK=12, pp2=13
 
@@ -1411,36 +1411,36 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTxA
     // Stack (15 items): [..., ownerPKH, rawTxA]
-    // idx: rawTxA=0, ownerPKH=1, pp5IdxB=2, pp5IdxA=3
+    // idx: rawTxA=0, ownerPKH=1, pp1FtIdxB=2, pp1FtIdxA=3
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy pp5IdxA
+    b.opCode(OpCodes.OP_PICK);           // copy pp1FtIdxA
 
-    // Stack: [..., ownerPKH, rawTxA, pp5IdxA]
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5IdxA
+    // Stack: [..., ownerPKH, rawTxA, pp1FtIdxA]
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtIdxA
     emitSkipInputs(b);
     emitReadVarint(b);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp5IdxA
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp1FtIdxA
     emitSkipNOutputs(b);
 
-    // Read PP5A, PP2, PP3 output scripts
+    // Read PP1_FTA, PP2, PP3 output scripts
     emitReadOneOutputScript(b);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP5ScriptA → alt
+    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP1_FTScriptA → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP2Script → alt
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP3Script → alt
     // Stack: [..., ownerPKH, txFromAfterPP3A]
-    // Alt: [..., nLocktime, PP5A, PP2, PP3]
+    // Alt: [..., nLocktime, PP1_FTA, PP2, PP3]
 
-    // Compute metadataSkip = outCntA - 1 - pp5IdxA - 3
-    // Stack: [..., outCntA, outCntB, pp5IdxA, pp5IdxB, ownerPKH, txRemaining]
-    // idx: txRem=0, ownerPKH=1, pp5IdxB=2, pp5IdxA=3, outCntB=4, outCntA=5
+    // Compute metadataSkip = outCntA - 1 - pp1FtIdxA - 3
+    // Stack: [..., outCntA, outCntB, pp1FtIdxA, pp1FtIdxB, ownerPKH, txRemaining]
+    // idx: txRem=0, ownerPKH=1, pp1FtIdxB=2, pp1FtIdxA=3, outCntB=4, outCntA=5
     b.opCode(OpCodes.OP_5);
     b.opCode(OpCodes.OP_PICK);           // copy outCntA
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_SUB);
     b.opCode(OpCodes.OP_4);
-    b.opCode(OpCodes.OP_PICK);           // copy pp5IdxA (idx shifted after push)
+    b.opCode(OpCodes.OP_PICK);           // copy pp1FtIdxA (idx shifted after push)
     b.opCode(OpCodes.OP_SUB);
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_SUB);
     emitSkipNOutputs(b);
@@ -1449,48 +1449,48 @@ class PP5ScriptGen {
     emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentMetadataScript → alt
     b.opCode(OpCodes.OP_DROP);           // drop remaining tx bytes
-    // Alt: [..., nLocktime, PP5A, PP2, PP3, metadata]
+    // Alt: [..., nLocktime, PP1_FTA, PP2, PP3, metadata]
 
-    // --- Phase 5b: Parse parentRawTxB to get PP5B ---
+    // --- Phase 5b: Parse parentRawTxB to get PP1_FTB ---
     // Stack: [..., ownerPKH]
-    // idx: ownerPKH=0, pp5IdxB=1, pp5IdxA=2, outCntB=3, outCntA=4, pad=5,
+    // idx: ownerPKH=0, pp1FtIdxB=1, pp1FtIdxA=2, outCntB=3, outCntA=4, pad=5,
     //      rawTxB=6, rawTxA=7, lhs=8, sig=9, chgAmt=10, chgPkh=11,
     //      ownerPK=12, pp2=13
     b.opCode(OpCodes.OP_6);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTxB
     b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);           // copy pp5IdxB (idx 1, shifted to 2 after push)
+    b.opCode(OpCodes.OP_PICK);           // copy pp1FtIdxB (idx 1, shifted to 2 after push)
 
-    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp5IdxB
+    b.opCode(OpCodes.OP_TOALTSTACK);     // stash pp1FtIdxB
     emitSkipInputs(b);
     emitReadVarint(b);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp5IdxB
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // get pp1FtIdxB
     emitSkipNOutputs(b);
 
-    // Read PP5B output script only
+    // Read PP1_FTB output script only
     emitReadOneOutputScript(b);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP5ScriptB → alt
+    b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP1_FTScriptB → alt
     b.opCode(OpCodes.OP_DROP);           // drop remaining tx bytes
-    // Alt: [..., nLocktime, PP5A, PP2, PP3, metadata, PP5B]
+    // Alt: [..., nLocktime, PP1_FTA, PP2, PP3, metadata, PP1_FTB]
 
     // --- Phase 6: Validate metadata ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP5B
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP1_FTB
     b.opCode(OpCodes.OP_FROMALTSTACK);   // metadata
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.addData(Uint8List.fromList([0x00, 0x6a]));
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // Stack: [..., ownerPKH, PP5B, metadata]
+    // Stack: [..., ownerPKH, PP1_FTB, metadata]
 
     // --- Phase 7: Verify amountA + amountB == this.amount and tokenIdA == tokenIdB ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP3
     b.opCode(OpCodes.OP_FROMALTSTACK);   // PP2
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP5A
-    // Stack: [..., ownerPKH, PP5B, metadata, PP3, PP2, PP5A]
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // PP1_FTA
+    // Stack: [..., ownerPKH, PP1_FTB, metadata, PP3, PP2, PP1_FTA]
 
-    // Extract amountA from PP5A[55:63]
+    // Extract amountA from PP1_FTA[55:63]
     b.opCode(OpCodes.OP_DUP);
     OpcodeHelpers.pushInt(b, amountDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
@@ -1500,9 +1500,9 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_BIN2NUM);         // amountA
 
-    // Extract amountB from PP5B
+    // Extract amountB from PP1_FTB
     b.opCode(OpCodes.OP_5);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5B
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FTB
     OpcodeHelpers.pushInt(b, amountDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     OpcodeHelpers.pushInt(b, amountDataStart);
@@ -1510,7 +1510,7 @@ class PP5ScriptGen {
     b.addData(Uint8List.fromList([0x00]));
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_BIN2NUM);         // amountB
-    // Stack: [..., PP5B, meta, PP3, PP2, PP5A, amountA, amountB]
+    // Stack: [..., PP1_FTB, meta, PP3, PP2, PP1_FTA, amountA, amountB]
 
     b.opCode(OpCodes.OP_ADD);             // amountA + amountB
 
@@ -1520,60 +1520,60 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);    // amount (raw 8-byte LE)
     b.opCode(OpCodes.OP_BIN2NUM);
-    // Stack: [..., PP5B, meta, PP3, PP2, PP5A, sumAmt, nLock, curTxId, tokenId, amount]
+    // Stack: [..., PP1_FTB, meta, PP3, PP2, PP1_FTA, sumAmt, nLock, curTxId, tokenId, amount]
 
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_TOALTSTACK);      // keep amount in alt for later
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_ROLL);            // move sumAmt to top
     b.opCode(OpCodes.OP_EQUALVERIFY);     // require sumAmt == amount
-    // Stack: [..., PP5B, meta, PP3, PP2, PP5A, nLock, curTxId, tokenId]
+    // Stack: [..., PP1_FTB, meta, PP3, PP2, PP1_FTA, nLock, curTxId, tokenId]
 
     // Verify tokenIdA == tokenIdB
-    // Extract tokenIdA from PP5A
+    // Extract tokenIdA from PP1_FTA
     b.opCode(OpCodes.OP_3);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5A
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FTA
     OpcodeHelpers.pushInt(b, tokenIdDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     OpcodeHelpers.pushInt(b, tokenIdDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack: [..., PP5A, nLock, curTxId, tokenId, tokenIdA]
+    // Stack: [..., PP1_FTA, nLock, curTxId, tokenId, tokenIdA]
 
-    // Extract tokenIdB from PP5B
+    // Extract tokenIdB from PP1_FTB
     b.opCode(OpCodes.OP_8);
-    b.opCode(OpCodes.OP_PICK);           // copy PP5B (deep in stack)
+    b.opCode(OpCodes.OP_PICK);           // copy PP1_FTB (deep in stack)
     OpcodeHelpers.pushInt(b, tokenIdDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     OpcodeHelpers.pushInt(b, tokenIdDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack: [..., PP5A, nLock, curTxId, tokenId, tokenIdA, tokenIdB]
+    // Stack: [..., PP1_FTA, nLock, curTxId, tokenId, tokenIdA, tokenIdB]
 
     b.opCode(OpCodes.OP_EQUALVERIFY);     // tokenIdA == tokenIdB
 
     // Stash tokenId (not needed anymore)
     b.opCode(OpCodes.OP_TOALTSTACK);      // tokenId → alt (just to remove it)
-    // Stack: [..., ownerPKH, PP5B, meta, PP3, PP2, PP5A, nLock, curTxId]
+    // Stack: [..., ownerPKH, PP1_FTB, meta, PP3, PP2, PP1_FTA, nLock, curTxId]
     // Alt: [amount, tokenId]
 
-    // --- Phase 8: Rebuild PP5 from parentA template ---
-    // idx: curTxId=0, nLock=1, PP5A=2, PP2=3, PP3=4, meta=5, PP5B=6, ownerPKH=7
+    // --- Phase 8: Rebuild PP1_FT from parentA template ---
+    // idx: curTxId=0, nLock=1, PP1_FTA=2, PP2=3, PP3=4, meta=5, PP1_FTB=6, ownerPKH=7
     b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);            // copy PP5A
+    b.opCode(OpCodes.OP_PICK);            // copy PP1_FTA
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_PICK);            // copy ownerPKH (shifted +1)
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
     b.opCode(OpCodes.OP_DROP);            // drop tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);    // amount
-    _emitRebuildPP5(b);
-    // Stack: [..., PP5A, nLock, curTxId, rebuiltPP5]
+    _emitRebuildPP1Ft(b);
+    // Stack: [..., PP1_FTA, nLock, curTxId, rebuiltPP1_FT]
 
-    // --- Phase 9: Build PP5 output (1 sat) ---
+    // --- Phase 9: Build PP1_FT output (1 sat) ---
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack: [..., PP5A, nLock, curTxId, pp5Out]
+    // Stack: [..., PP1_FTA, nLock, curTxId, pp1FtOut]
 
     // --- Phase 10: Rebuild PP3 from parentA template ---
-    // idx: pp5Out=0, curTxId=1, nLock=2, PP5A=3, PP2=4, PP3=5, meta=6, PP5B=7, ownerPKH=8
+    // idx: pp1FtOut=0, curTxId=1, nLock=2, PP1_FTA=3, PP2=4, PP3=5, meta=6, PP1_FTB=7, ownerPKH=8
     b.opCode(OpCodes.OP_5);
     b.opCode(OpCodes.OP_PICK);            // copy PP3
     b.opCode(OpCodes.OP_9);
@@ -1581,25 +1581,25 @@ class PP5ScriptGen {
     emitRebuildPP3(b);
     b.opCode(OpCodes.OP_1);
     emitBuildOutput(b);
-    // Stack: [..., PP5A, nLock, curTxId, pp5Out, pp3Out]
+    // Stack: [..., PP1_FTA, nLock, curTxId, pp1FtOut, pp3Out]
 
     // --- Phase 11: Build metadata output (0 sats) ---
-    // idx: pp3Out=0, pp5Out=1, curTxId=2, nLock=3, PP5A=4, PP2=5, PP3=6, meta=7
+    // idx: pp3Out=0, pp1FtOut=1, curTxId=2, nLock=3, PP1_FTA=4, PP2=5, PP3=6, meta=7
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);            // copy metadata
     b.opCode(OpCodes.OP_0);
     emitBuildOutput(b);
-    // Stack: [..., nLock, curTxId, pp5Out, pp3Out, metaOut]
+    // Stack: [..., nLock, curTxId, pp1FtOut, pp3Out, metaOut]
 
     // --- Phase 12: Build change output ---
     // Full stack bottom→top:
     // [pp2Out, ownerPK, changePkh, changeAmt, ownerSig, scriptLHS,
     //  parentRawTxA, parentRawTxB, padding, outCntA, outCntB,
-    //  pp5IdxA, pp5IdxB, ownerPKH, PP5B, meta, PP3, PP2, PP5A,
-    //  nLock, curTxId, pp5Out, pp3Out, metaOut]
-    // idx: metaOut=0, pp3Out=1, pp5Out=2, curTxId=3, nLock=4, PP5A=5,
-    //      PP2=6, PP3=7, meta=8, PP5B=9, ownerPKH=10, pp5IdxB=11,
-    //      pp5IdxA=12, outCntB=13, outCntA=14, pad=15, rawTxB=16,
+    //  pp1FtIdxA, pp1FtIdxB, ownerPKH, PP1_FTB, meta, PP3, PP2, PP1_FTA,
+    //  nLock, curTxId, pp1FtOut, pp3Out, metaOut]
+    // idx: metaOut=0, pp3Out=1, pp1FtOut=2, curTxId=3, nLock=4, PP1_FTA=5,
+    //      PP2=6, PP3=7, meta=8, PP1_FTB=9, ownerPKH=10, pp1FtIdxB=11,
+    //      pp1FtIdxA=12, outCntB=13, outCntA=14, pad=15, rawTxB=16,
     //      rawTxA=17, lhs=18, sig=19, chgAmt=20, chgPkh=21, ownerPK=22, pp2=23
     OpcodeHelpers.pushInt(b, 21);
     b.opCode(OpCodes.OP_PICK);            // copy changePkh
@@ -1607,13 +1607,13 @@ class PP5ScriptGen {
     OpcodeHelpers.pushInt(b, 21);
     b.opCode(OpCodes.OP_PICK);            // copy changeAmt (shifted +1)
     emitBuildOutput(b);
-    // Stack: [..., pp5Out, pp3Out, metaOut, changeOut]
+    // Stack: [..., pp1FtOut, pp3Out, metaOut, changeOut]
 
     // --- Phase 13: Reconstruct fullTx ---
-    // fullTx = scriptLHS + varint(5) + changeOut + pp5Out + pp2OutputBytes + pp3Out + metaOut + nLocktime
-    // lhs is at idx: changeOut=0, metaOut=1, pp3Out=2, pp5Out=3, curTxId=4,
-    //   nLock=5, PP5A=6, PP2=7, PP3=8, meta=9, PP5B=10, ownerPKH=11,
-    //   pp5IdxB=12, pp5IdxA=13, outCntB=14, outCntA=15, pad=16, rawTxB=17,
+    // fullTx = scriptLHS + varint(5) + changeOut + pp1FtOut + pp2OutputBytes + pp3Out + metaOut + nLocktime
+    // lhs is at idx: changeOut=0, metaOut=1, pp3Out=2, pp1FtOut=3, curTxId=4,
+    //   nLock=5, PP1_FTA=6, PP2=7, PP3=8, meta=9, PP1_FTB=10, ownerPKH=11,
+    //   pp1FtIdxB=12, pp1FtIdxA=13, outCntB=14, outCntA=15, pad=16, rawTxB=17,
     //   rawTxA=18, lhs=19
     OpcodeHelpers.pushInt(b, 19);
     b.opCode(OpCodes.OP_PICK);            // copy scriptLHS
@@ -1625,20 +1625,20 @@ class PP5ScriptGen {
 
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);             // + changeOut
-    // Stack: [..., pp5Out, pp3Out, metaOut, (lhs+05+changeOut)]
+    // Stack: [..., pp1FtOut, pp3Out, metaOut, (lhs+05+changeOut)]
 
-    // Stash metaOut, pp3Out; CAT pp5Out
+    // Stash metaOut, pp3Out; CAT pp1FtOut
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash metaOut
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash pp3Out
     b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);             // + pp5Out
+    b.opCode(OpCodes.OP_CAT);             // + pp1FtOut
     // Alt: [pp3Out, metaOut]
 
     // Append pp2OutputBytes
-    // pp2Out is deep: partial=0, curTxId=1, nLock=2, PP5A=3, PP2=4, PP3=5,
-    //   meta=6, PP5B=7, ownerPKH=8, pp5IdxB=9, pp5IdxA=10, outCntB=11,
+    // pp2Out is deep: partial=0, curTxId=1, nLock=2, PP1_FTA=3, PP2=4, PP3=5,
+    //   meta=6, PP1_FTB=7, ownerPKH=8, pp1FtIdxB=9, pp1FtIdxA=10, outCntB=11,
     //   outCntA=12, pad=13, rawTxB=14, rawTxA=15, lhs=16, sig=17, chgAmt=18,
     //   chgPkh=19, ownerPK=20, pp2=21
     OpcodeHelpers.pushInt(b, 21);
@@ -1660,15 +1660,15 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // Stack: [..., PP5A, PP2, PP3, meta, PP5B, ownerPKH, ...]
-    // After fullTx verify, curTxId and fullTx consumed. Top is PP5A.
+    // Stack: [..., PP1_FTA, PP2, PP3, meta, PP1_FTB, ownerPKH, ...]
+    // After fullTx verify, curTxId and fullTx consumed. Top is PP1_FTA.
     // Full stack: [pp2Out, ownerPK, changePkh, changeAmt, ownerSig, scriptLHS,
-    //   rawTxA, rawTxB, padding, outCntA, outCntB, pp5IdxA, pp5IdxB,
-    //   ownerPKH, PP5B, meta, PP3, PP2, PP5A]
-    // idx: PP5A=0, PP2=1, PP3=2, meta=3, PP5B=4, ownerPKH=5, ...
+    //   rawTxA, rawTxB, padding, outCntA, outCntB, pp1FtIdxA, pp1FtIdxB,
+    //   ownerPKH, PP1_FTB, meta, PP3, PP2, PP1_FTA]
+    // idx: PP1_FTA=0, PP2=1, PP3=2, meta=3, PP1_FTB=4, ownerPKH=5, ...
 
     // --- Phase 15: Validate PP2-FT ---
-    b.opCode(OpCodes.OP_DROP);            // drop PP5A
+    b.opCode(OpCodes.OP_DROP);            // drop PP1_FTA
     // Top: PP2=0
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_PICK);            // copy pp2OutOrig from scriptSig
@@ -1682,9 +1682,9 @@ class PP5ScriptGen {
     _emitValidatePP2FT(b, 1, 2);
 
     // --- Phase 16: Verify outpoints against parent tx hashes ---
-    // Stack after Phase 15: [..., PP3, meta, PP5B, ownerPKH, pp5IdxB, pp5IdxA,
+    // Stack after Phase 15: [..., PP3, meta, PP1_FTB, ownerPKH, pp1FtIdxB, pp1FtIdxA,
     //   outCntB, outCntA, pad, rawTxB, rawTxA, lhs, sig, chgAmt, chgPkh, ownerPK, pp2Out]
-    // Drop unneeded items (9 items: PP3, meta, PP5B, ownerPKH, pp5IdxB, pp5IdxA, outCntB, outCntA, pad)
+    // Drop unneeded items (9 items: PP3, meta, PP1_FTB, ownerPKH, pp1FtIdxB, pp1FtIdxA, outCntB, outCntA, pad)
     b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP);
@@ -1891,37 +1891,37 @@ class PP5ScriptGen {
   // Script rebuild helpers
   // =========================================================================
 
-  /// Rebuild PP5 script from parent template with new ownerPKH and amount.
-  /// Pre: [parentPP5Script, newOwnerPKH, newAmount]. Post: [rebuiltScript].
-  static void _emitRebuildPP5(ScriptBuilder b) {
-    // rebuiltPP5 = parent[:1] + newPKH + parent[21:55] + num2bin(amount,8) + parent[63:]
+  /// Rebuild PP1_FT script from parent template with new ownerPKH and amount.
+  /// Pre: [parentPP1_FTScript, newOwnerPKH, newAmount]. Post: [rebuiltScript].
+  static void _emitRebuildPP1Ft(ScriptBuilder b) {
+    // rebuiltPP1_FT = parent[:1] + newPKH + parent[21:55] + num2bin(amount,8) + parent[63:]
     b.opCode(OpCodes.OP_8);
-    b.opCode(OpCodes.OP_NUM2BIN);         // [pp5S, pkh, amountBytes8]
+    b.opCode(OpCodes.OP_NUM2BIN);         // [pp1FtS, pkh, amountBytes8]
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash amountBytes8
 
-    // [pp5S, pkh]
+    // [pp1FtS, pkh]
     b.opCode(OpCodes.OP_SWAP);
-    // [pkh, pp5S]
+    // [pkh, pp1FtS]
 
     // Split parent at byte 1
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT);
-    // [pkh, prefix1, rest]  rest = pp5S[1:]
+    // [pkh, prefix1, rest]  rest = pp1FtS[1:]
 
     // Skip old PKH (20 bytes)
     OpcodeHelpers.pushInt(b, 20);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // [pkh, prefix1, pp5S[21:]]
+    // [pkh, prefix1, pp1FtS[21:]]
 
     // Split off middle part: bytes 21-54 (34 bytes)
     OpcodeHelpers.pushInt(b, 34);
     b.opCode(OpCodes.OP_SPLIT);
-    // [pkh, prefix1, middle34, pp5S[55:]]
+    // [pkh, prefix1, middle34, pp1FtS[55:]]
 
-    // Skip old amount (8 bytes) from pp5S[55:]
+    // Skip old amount (8 bytes) from pp1FtS[55:]
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // [pkh, prefix1, middle34, suffix]  suffix = pp5S[63:]
+    // [pkh, prefix1, middle34, suffix]  suffix = pp1FtS[63:]
 
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash suffix
 
@@ -1954,7 +1954,7 @@ class PP5ScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);      // stash suffix
     b.opCode(OpCodes.OP_CAT);             // (p+p+m) + amountBytes8
     b.opCode(OpCodes.OP_FROMALTSTACK);    // suffix
-    b.opCode(OpCodes.OP_CAT);             // full rebuilt PP5
+    b.opCode(OpCodes.OP_CAT);             // full rebuilt PP1_FT
   }
 
   /// Rebuild PP3 script from parent template with new ownerPKH.
@@ -2030,7 +2030,7 @@ class PP5ScriptGen {
 
   /// Validate PP2-FT output script structure against parent template.
   /// Pre: [pp2Script, parentPP2Script] (parent on top). Post: [].
-  static void _emitValidatePP2FT(ScriptBuilder b, int expectedPP5Idx, int expectedPP2Idx) {
+  static void _emitValidatePP2FT(ScriptBuilder b, int expectedPP1_FTIdx, int expectedPP2Idx) {
     // Extract constructor params from pp2Script at known byte offsets
     // pp2Script is below parentPP2Script on stack
     b.opCode(OpCodes.OP_SWAP);
@@ -2073,13 +2073,13 @@ class PP5ScriptGen {
     b.addData(Uint8List.fromList([0x14]));
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    // Validate pp5OutputIndex == OP_50+expectedPP5Idx
+    // Validate pp1FtOutputIndex == OP_50+expectedPP1_FTIdx
     b.opCode(OpCodes.OP_DUP);
-    OpcodeHelpers.pushInt(b, pp2PP5OutputIndexStart + 1);
+    OpcodeHelpers.pushInt(b, pp2PP1_FTOutputIndexStart + 1);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, pp2PP5OutputIndexStart);
+    OpcodeHelpers.pushInt(b, pp2PP1_FTOutputIndexStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    b.addData(Uint8List.fromList([0x50 + expectedPP5Idx]));
+    b.addData(Uint8List.fromList([0x50 + expectedPP1_FTIdx]));
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
     // Validate pp2OutputIndex == OP_50+expectedPP2Idx

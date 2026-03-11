@@ -13,16 +13,16 @@ Address bobAddress = Address.fromPublicKey(bobPub, NetworkType.TEST);
 var bobPubkeyHash = "650c4adb156f19e36a755c820d892cda108299c4";
 
 void main() {
-  group('PP5LockBuilder round-trip', () {
+  group('PP1FtLockBuilder round-trip', () {
     test('build then parse recovers recipientPKH, tokenId, and amount', () {
       var recipientPKH = hex.decode(bobPubkeyHash).toList();
       var tokenId = List<int>.generate(32, (i) => i + 0xA0);
       var amount = 1000;
 
-      var builder = PP5LockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
       var script = builder.getScriptPubkey();
 
-      var parsed = PP5LockBuilder.fromScript(script);
+      var parsed = PP1FtLockBuilder.fromScript(script);
 
       expect(ListEquality().equals(parsed.recipientPKH, recipientPKH), true,
           reason: 'recipientPKH mismatch after round-trip');
@@ -36,10 +36,10 @@ void main() {
       var tokenId = List<int>.generate(32, (i) => i);
       var amount = 1;
 
-      var builder = PP5LockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
       var script = builder.getScriptPubkey();
 
-      var parsed = PP5LockBuilder.fromScript(script);
+      var parsed = PP1FtLockBuilder.fromScript(script);
 
       expect(parsed.amount, 1);
     });
@@ -49,10 +49,10 @@ void main() {
       var tokenId = List<int>.generate(32, (i) => 0xFF);
       var amount = 21000000 * 100000000; // 21M * 1e8
 
-      var builder = PP5LockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
       var script = builder.getScriptPubkey();
 
-      var parsed = PP5LockBuilder.fromScript(script);
+      var parsed = PP1FtLockBuilder.fromScript(script);
 
       expect(parsed.amount, amount, reason: 'large amount mismatch');
     });
@@ -60,19 +60,19 @@ void main() {
     test('rejects PKH with wrong length', () {
       var badPKH = List<int>.generate(19, (i) => i);
       var tokenId = List<int>.generate(32, (i) => i);
-      expect(() => PP5LockBuilder(badPKH, tokenId, 100), throwsException);
+      expect(() => PP1FtLockBuilder(badPKH, tokenId, 100), throwsException);
     });
 
     test('rejects tokenId with wrong length', () {
       var pkh = hex.decode(bobPubkeyHash).toList();
       var badTokenId = List<int>.generate(31, (i) => i);
-      expect(() => PP5LockBuilder(pkh, badTokenId, 100), throwsException);
+      expect(() => PP1FtLockBuilder(pkh, badTokenId, 100), throwsException);
     });
 
     test('rejects negative amount', () {
       var pkh = hex.decode(bobPubkeyHash).toList();
       var tokenId = List<int>.generate(32, (i) => i);
-      expect(() => PP5LockBuilder(pkh, tokenId, -1), throwsException);
+      expect(() => PP1FtLockBuilder(pkh, tokenId, -1), throwsException);
     });
   });
 
@@ -82,12 +82,12 @@ void main() {
       var witnessChangePKH = hex.decode(bobPubkeyHash).toList();
       var changeAmount = 1;
       var ownerPKH = hex.decode(bobPubkeyHash).toList();
-      var pp5OutputIndex = 1;
+      var pp1FtOutputIndex = 1;
       var pp2OutputIndex = 2;
 
       var builder = PP2FtLockBuilder(
           fundingOutpoint, witnessChangePKH, changeAmount, ownerPKH,
-          pp5OutputIndex, pp2OutputIndex);
+          pp1FtOutputIndex, pp2OutputIndex);
       var script = builder.getScriptPubkey();
 
       var parsed = PP2FtLockBuilder.fromScript(script);
@@ -99,7 +99,7 @@ void main() {
       expect(parsed.changeAmount, changeAmount, reason: 'changeAmount mismatch');
       expect(ListEquality().equals(parsed.ownerPKH, ownerPKH), true,
           reason: 'ownerPKH mismatch');
-      expect(parsed.pp5OutputIndex, pp5OutputIndex, reason: 'pp5OutputIndex mismatch');
+      expect(parsed.pp1FtOutputIndex, pp1FtOutputIndex, reason: 'pp1FtOutputIndex mismatch');
       expect(parsed.pp2OutputIndex, pp2OutputIndex, reason: 'pp2OutputIndex mismatch');
     });
 
@@ -114,7 +114,7 @@ void main() {
 
       var parsed = PP2FtLockBuilder.fromScript(script);
 
-      expect(parsed.pp5OutputIndex, 4);
+      expect(parsed.pp1FtOutputIndex, 4);
       expect(parsed.pp2OutputIndex, 5);
     });
 
@@ -132,13 +132,13 @@ void main() {
     });
   });
 
-  group('PP5UnlockBuilder script construction', () {
+  group('PP1FtUnlockBuilder script construction', () {
     test('MINT action produces OP_0 selector', () {
       var preImage = List<int>.generate(100, (i) => i);
       var witnessFundingTxId = List<int>.generate(32, (i) => i + 0x50);
       var padding = Uint8List(5);
 
-      var builder = PP5UnlockBuilder.forMint(preImage, witnessFundingTxId, padding);
+      var builder = PP1FtUnlockBuilder.forMint(preImage, witnessFundingTxId, padding);
       var script = builder.getScriptSig();
       var chunks = script.chunks;
 
@@ -150,7 +150,7 @@ void main() {
     });
 
     test('BURN action produces OP_4 selector with pubkey and sig', () {
-      var builder = PP5UnlockBuilder.forBurn(bobPub);
+      var builder = PP1FtUnlockBuilder.forBurn(bobPub);
 
       // Need to sign to get a script sig
       var signer = TransactionSigner(

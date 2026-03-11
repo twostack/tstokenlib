@@ -93,8 +93,8 @@ void main() {
       bobFundingTx.hash, 1000,
     );
 
-    var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-    var tokenId = pp5Lock.tokenId;
+    var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+    var tokenId = pp1FtLock.tokenId;
 
     // Step 2: Create mint witness
     mintWitnessTx = service.createFungibleWitnessTxn(
@@ -223,7 +223,7 @@ void main() {
   // Transfer scriptSig chunks:
   //   [0: preImage, 1: pp2Output, 2: ownerPubKey, 3: changePKH,
   //    4: changeAmount, 5: ownerSig, 6: tokenLHS, 7: prevTokenTx,
-  //    8: witnessPadding, 9: parentOutputCount, 10: parentPP5Index, 11: OP_1]
+  //    8: witnessPadding, 9: parentOutputCount, 10: parentPP1FtIndex, 11: OP_1]
   group('Transfer negative tests', () {
     test('rejects wrong ownerPubKey (hash160 mismatch)',
         timeout: Timeout(Duration(minutes: 2)), () {
@@ -322,10 +322,10 @@ void main() {
         reason: 'Wrong parentOutputCount should fail');
     });
 
-    test('rejects wrong parentPP5Index',
+    test('rejects wrong parentPP1FtIndex',
         timeout: Timeout(Duration(minutes: 2)), () {
       var validScriptSig = transferWitnessTx.inputs[1].script!;
-      // parentPP5Index is chunk 10; change from 1 to 2
+      // parentPP1FtIndex is chunk 10; change from 1 to 2
       var tamperedSig = tamperChunkNumber(validScriptSig, 10, 2);
 
       var interp = Interpreter();
@@ -334,7 +334,7 @@ void main() {
             tamperedSig, transferTx.outputs[1].script,
             transferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
         throwsA(isA<ScriptException>()),
-        reason: 'Wrong parentPP5Index should fail');
+        reason: 'Wrong parentPP1FtIndex should fail');
     });
   });
 
@@ -368,7 +368,7 @@ void main() {
   //    4: changePKH, 5: changeAmount, 6: ownerSig, 7: tokenLHS,
   //    8: prevTokenTx, 9: witnessPadding, 10: recipientAmount,
   //    11: tokenChangeAmount, 12: recipientPKH, 13: myOutputIndex,
-  //    14: parentOutputCount, 15: parentPP5Index, 16: OP_2]
+  //    14: parentOutputCount, 15: parentPP1FtIndex, 16: OP_2]
   group('Split negative tests', () {
     late Transaction splitTx;
     late Transaction splitWitnessTx;
@@ -378,8 +378,8 @@ void main() {
       var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
 
       // Use the shared mintTx and mintWitnessTx from outer setUpAll
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // Create split: 700 to Alice, 300 change to Bob
       var splitFundingTx = getBobFundingTx();
@@ -393,7 +393,7 @@ void main() {
         tokenId, 1000,
       );
 
-      // Create split witness (recipient, pp5Idx=1)
+      // Create split witness (recipient, pp1FtIdx=1)
       splitWitnessTx = service.createFungibleWitnessTxn(
         aliceFundingSigner, aliceWitnessFundingTx, splitTx,
         alicePubKey, bobPubkeyHash,
@@ -481,7 +481,7 @@ void main() {
   //   [0: preImage, 1: pp2Output, 2: ownerPubKey, 3: changePKH,
   //    4: changeAmount, 5: ownerSig, 6: tokenLHS, 7: prevTokenTxA,
   //    8: prevTokenTxB, 9: witnessPadding, 10: parentOutputCountA,
-  //    11: parentOutputCountB, 12: parentPP5IndexA, 13: parentPP5IndexB,
+  //    11: parentOutputCountB, 12: parentPP1FtIndexA, 13: parentPP1FtIndexB,
   //    14: OP_3(selector)]
   group('Merge negative tests', () {
     late Transaction splitTx;
@@ -491,8 +491,8 @@ void main() {
     setUpAll(() async {
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // Split: 600 to Bob, 400 change to Bob
       var splitFundingTx = getBobFundingTx();
@@ -548,8 +548,8 @@ void main() {
         parentTokenTxBytesB: splitTxBytes,
         parentOutputCount: 8,
         parentOutputCountB: 8,
-        parentPP5IndexA: 1,
-        parentPP5IndexB: 4,
+        parentPP1FtIndexA: 1,
+        parentPP1FtIndexB: 4,
         tripletBaseIndex: 1,
       );
     });
@@ -655,7 +655,7 @@ void main() {
         reason: 'Wrong parentOutputCountA should fail');
     });
 
-    test('rejects wrong parentPP5IndexA',
+    test('rejects wrong parentPP1FtIndexA',
         timeout: Timeout(Duration(minutes: 2)), () {
       var validScriptSig = mergeWitnessTx.inputs[1].script!;
       var tamperedSig = tamperChunkNumber(validScriptSig, 12, 3);
@@ -666,10 +666,10 @@ void main() {
             tamperedSig, mergeTx.outputs[1].script,
             mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
         throwsA(isA<ScriptException>()),
-        reason: 'Wrong parentPP5IndexA should fail');
+        reason: 'Wrong parentPP1FtIndexA should fail');
     });
 
-    test('rejects wrong parentPP5IndexB',
+    test('rejects wrong parentPP1FtIndexB',
         timeout: Timeout(Duration(minutes: 2)), () {
       var validScriptSig = mergeWitnessTx.inputs[1].script!;
       var tamperedSig = tamperChunkNumber(validScriptSig, 13, 2);
@@ -680,7 +680,7 @@ void main() {
             tamperedSig, mergeTx.outputs[1].script,
             mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
         throwsA(isA<ScriptException>()),
-        reason: 'Wrong parentPP5IndexB should fail');
+        reason: 'Wrong parentPP1FtIndexB should fail');
     });
   });
 }

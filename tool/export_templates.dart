@@ -24,8 +24,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
-import 'package:tstokenlib/src/script_gen/pp1_script_gen.dart';
-import 'package:tstokenlib/src/script_gen/pp5_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_nft_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 
 const String version = '1.3.0';
@@ -39,7 +39,7 @@ void main() {
   print('Exporting TSL1 script templates...');
 
   exportPP1();
-  exportPP5();
+  exportPP1Ft();
   exportPP3Nft();
   exportPP3Ft();
   exportModP2PKH();
@@ -102,7 +102,7 @@ void exportPP1() {
   var tokenId = List.filled(32, 0xBB);
   var rabinPubKeyHash = List.filled(20, 0xCC);
 
-  var script = PP1ScriptGen.generate(
+  var script = PP1NftScriptGen.generate(
     ownerPKH: ownerPKH,
     tokenId: tokenId,
     rabinPubKeyHash: rabinPubKeyHash,
@@ -111,13 +111,13 @@ void exportPP1() {
   var fullHex = hex.encode(script.buffer!);
 
   var templateHex = templatizeHex(fullHex, {
-    'ownerPKH': _SentinelRegion(PP1ScriptGen.pkhDataStart, 20, 0xAA),
-    'tokenId': _SentinelRegion(PP1ScriptGen.tokenIdDataStart, 32, 0xBB),
-    'rabinPubKeyHash': _SentinelRegion(PP1ScriptGen.rabinPKHDataStart, 20, 0xCC),
+    'ownerPKH': _SentinelRegion(PP1NftScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1NftScriptGen.tokenIdDataStart, 32, 0xBB),
+    'rabinPubKeyHash': _SentinelRegion(PP1NftScriptGen.rabinPKHDataStart, 20, 0xCC),
   });
 
-  writeTemplate('templates/nft/pp1.json', {
-    'name': 'PP1',
+  writeTemplate('templates/nft/pp1_nft.json', {
+    'name': 'PP1_NFT',
     'version': version,
     'description': 'NFT inductive proof locking script. Validates parent output structure and token ownership chain.',
     'category': 'nft',
@@ -143,14 +143,14 @@ void exportPP1() {
     ],
     'hex': templateHex,
     'metadata': {
-      'generatedBy': 'PP1ScriptGen',
-      'sourceFile': 'lib/src/script_gen/pp1_script_gen.dart',
+      'generatedBy': 'PP1NftScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_nft_script_gen.dart',
       'note': 'Pushdata prefixes (0x14, 0x20) are part of the static hex. Substitute raw parameter bytes only.',
     },
   });
 }
 
-void exportPP5() {
+void exportPP1Ft() {
   var ownerPKH = List.filled(20, 0xAA);
   var tokenId = List.filled(32, 0xBB);
   // Amount: 8 bytes of 0xDD sentinel
@@ -159,7 +159,7 @@ void exportPP5() {
   // 0xDDDDDDDDDDDDDD = a known test value
   var amount = 0x0DDDDDDDDDDDDDDD; // bit 63 clear
 
-  var script = PP5ScriptGen.generate(
+  var script = PP1FtScriptGen.generate(
     ownerPKH: ownerPKH,
     tokenId: tokenId,
     amount: amount,
@@ -168,8 +168,8 @@ void exportPP5() {
   var fullHex = hex.encode(script.buffer!);
 
   // Verify the amount encoding at the expected offset
-  var amountHexStart = PP5ScriptGen.amountDataStart * 2;
-  var amountHexEnd = PP5ScriptGen.amountDataEnd * 2;
+  var amountHexStart = PP1FtScriptGen.amountDataStart * 2;
+  var amountHexEnd = PP1FtScriptGen.amountDataEnd * 2;
   var amountHex = fullHex.substring(amountHexStart, amountHexEnd);
 
   // Build template by replacing sentinel regions
@@ -185,12 +185,12 @@ void exportPP5() {
 
   // Replace ownerPKH and tokenId using sentinel approach
   var templateHex = templatizeHex(fullHex, {
-    'ownerPKH': _SentinelRegion(PP5ScriptGen.pkhDataStart, 20, 0xAA),
-    'tokenId': _SentinelRegion(PP5ScriptGen.tokenIdDataStart, 32, 0xBB),
+    'ownerPKH': _SentinelRegion(PP1FtScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1FtScriptGen.tokenIdDataStart, 32, 0xBB),
   });
 
   // Replace amount region manually (not uniform sentinel bytes)
-  var amountStart = PP5ScriptGen.amountDataStart * 2;
+  var amountStart = PP1FtScriptGen.amountDataStart * 2;
   // Adjust for placeholder insertions before this offset
   // ownerPKH placeholder: replaced 40 hex chars with "{{ownerPKH}}" (12 chars) = -28 shift
   // tokenId placeholder: replaced 64 hex chars with "{{tokenId}}" (11 chars) = -53 shift
@@ -204,8 +204,8 @@ void exportPP5() {
       '{{amount}}' +
       templateHex.substring(amountInTemplate + amountSentinelHex.length);
 
-  writeTemplate('templates/ft/pp5.json', {
-    'name': 'PP5',
+  writeTemplate('templates/ft/pp1_ft.json', {
+    'name': 'PP1_FT',
     'version': version,
     'description': 'Fungible token locking script. Enforces amount conservation across mint, transfer, split, merge, and burn operations.',
     'category': 'ft',
@@ -231,8 +231,8 @@ void exportPP5() {
     ],
     'hex': templateHex,
     'metadata': {
-      'generatedBy': 'PP5ScriptGen',
-      'sourceFile': 'lib/src/script_gen/pp5_script_gen.dart',
+      'generatedBy': 'PP1FtScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_ft_script_gen.dart',
       'note': 'Amount encoding: 8 bytes LE, byte[0..6] = value bits, byte[7] = (value >> 56) & 0x7F. Pushdata prefix 0x08 is in the static hex.',
     },
   });
@@ -408,20 +408,20 @@ void exportPP2() {
 
 void exportPP2FT() {
   // PP2-FT release template from pp2_ft_lock_builder.dart line 28
-  var rawTemplate = "0176017c018801a901ac5101402097dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff0262102ba79df5f8ae7604a9830f03c7933028186aede0675a16f025dc4f8be8eec0382201008ce7480da41702918d1ec8e6849ba32b4d65b1e40dc669c31a1e6306b266c000000000000<outpoint><witnessChangePKH><witnessChangeAmount><ownerPKH><pp5OutputIndex><pp2OutputIndex>55795c7a755b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a54795b7a755a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a53795a7a75597a597a597a597a597a597a597a597a597a5279597a75587a587a587a587a587a587a587a587a78587a75577a577a577a577a577a577a577a76577a75567a567a567a567a567a567a6d6d6d607900876304020000000112795379546e8b80767682778c7f75007f777777777e0113795379546e8b80767682778c7f75007f777777777e0114795479546e8b80767682778c7f75007f777777777e597953797e52797e76a8a8010005ffffffff00546e8b80767682778c7f75007f7777777776767e787ea8a800011479011479855f79011a79011c797e0119797e01147e787e011a797e0118797e775f79588078768277007802fd009f6378516e8b80767682778c7f75007f77777777776778030000019f6301fd5279526e8b80767682778c7f75007f777777777e7767780500000000019f6301fe5279546e8b80767682778c7f75007f777777777e776778090000000000000000019f6301ff5279586e8b80767682778c7f75007f777777777e77686868687653797e7777777e5279817654805e795a797e57797e5c797e5979768277007802fd009f6378516e8b80767682778c7f75007f77777777776778030000019f6301fd5279526e8b80767682778c7f75007f777777777e7767780500000000019f6301fe5279546e8b80767682778c7f75007f777777777e776778090000000000000000019f6301ff5279586e8b80767682778c7f75007f777777777e77686868687653797e7777777e5158807e58797e5379a8a87e567954807e787e76a8a876517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8176011b79210ac407f0e4bd44bfc207355a778b046225a7068fc59ee7eda43ad905aadbffc800206c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce0810011c7901217901217985537956795479577995939521414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff006e6e9776009f636e936776687777777b757c6e5296a0636e7c947b757c6853798277527982775379012080517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01205279947f77545379935279930130787e527e54797e58797e527e53797e52797e57797e777777777777777777777777ab76011b79ac77777777777777777777777777777777777777777777777777777777777777777777777777676079518763011279a9537988011179011379ac7777777777777777777777777777777777777767006868";
+  var rawTemplate = "0176017c018801a901ac5101402097dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff0262102ba79df5f8ae7604a9830f03c7933028186aede0675a16f025dc4f8be8eec0382201008ce7480da41702918d1ec8e6849ba32b4d65b1e40dc669c31a1e6306b266c000000000000<outpoint><witnessChangePKH><witnessChangeAmount><ownerPKH><pp1FtOutputIndex><pp2OutputIndex>55795c7a755b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a5b7a54795b7a755a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a5a7a53795a7a75597a597a597a597a597a597a597a597a597a5279597a75587a587a587a587a587a587a587a587a78587a75577a577a577a577a577a577a577a76577a75567a567a567a567a567a567a6d6d6d607900876304020000000112795379546e8b80767682778c7f75007f777777777e0113795379546e8b80767682778c7f75007f777777777e0114795479546e8b80767682778c7f75007f777777777e597953797e52797e76a8a8010005ffffffff00546e8b80767682778c7f75007f7777777776767e787ea8a800011479011479855f79011a79011c797e0119797e01147e787e011a797e0118797e775f79588078768277007802fd009f6378516e8b80767682778c7f75007f77777777776778030000019f6301fd5279526e8b80767682778c7f75007f777777777e7767780500000000019f6301fe5279546e8b80767682778c7f75007f777777777e776778090000000000000000019f6301ff5279586e8b80767682778c7f75007f777777777e77686868687653797e7777777e5279817654805e795a797e57797e5c797e5979768277007802fd009f6378516e8b80767682778c7f75007f77777777776778030000019f6301fd5279526e8b80767682778c7f75007f777777777e7767780500000000019f6301fe5279546e8b80767682778c7f75007f777777777e776778090000000000000000019f6301ff5279586e8b80767682778c7f75007f777777777e77686868687653797e7777777e5158807e58797e5379a8a87e567954807e787e76a8a876517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e8176011b79210ac407f0e4bd44bfc207355a778b046225a7068fc59ee7eda43ad905aadbffc800206c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce0810011c7901217901217985537956795479577995939521414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff006e6e9776009f636e936776687777777b757c6e5296a0636e7c947b757c6853798277527982775379012080517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01205279947f77545379935279930130787e527e54797e58797e527e53797e52797e57797e777777777777777777777777ab76011b79ac77777777777777777777777777777777777777777777777777777777777777777777777777676079518763011279a9537988011179011379ac7777777777777777777777777777777777777767006868";
 
   var templateHex = rawTemplate
       .replaceAll('<outpoint>', '{{outpoint}}')
       .replaceAll('<witnessChangePKH>', '{{witnessChangePKH}}')
       .replaceAll('<witnessChangeAmount>', '{{witnessChangeAmount}}')
       .replaceAll('<ownerPKH>', '{{ownerPKH}}')
-      .replaceAll('<pp5OutputIndex>', '{{pp5OutputIndex}}')
+      .replaceAll('<pp1FtOutputIndex>', '{{pp1FtOutputIndex}}')
       .replaceAll('<pp2OutputIndex>', '{{pp2OutputIndex}}');
 
   writeTemplate('templates/ft/pp2_ft.json', {
     'name': 'PP2_FT',
     'version': version,
-    'description': 'Fungible token witness bridge locking script. Extends PP2 with output index parameters for PP5 and PP2-FT outputs.',
+    'description': 'Fungible token witness bridge locking script. Extends PP2 with output index parameters for PP1_FT and PP2-FT outputs.',
     'category': 'ft',
     'parameters': [
       {
@@ -449,10 +449,10 @@ void exportPP2FT() {
         'description': '20-byte owner pubkey hash, encoded with ScriptBuilder.addData()',
       },
       {
-        'name': 'pp5OutputIndex',
+        'name': 'pp1FtOutputIndex',
         'size': null,
         'encoding': 'script_number',
-        'description': 'Output index of the PP5 fungible token output, encoded with ScriptBuilder.number()',
+        'description': 'Output index of the PP1_FT fungible token output, encoded with ScriptBuilder.number()',
       },
       {
         'name': 'pp2OutputIndex',

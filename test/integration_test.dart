@@ -69,7 +69,7 @@ void main() {
       expect(issuanceTx.inputs.length, 1);
 
       // Extract tokenId from issuance PP1
-      var pp1Lock = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+      var pp1Lock = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId ?? [];
       expect(tokenId.isNotEmpty, true);
 
@@ -294,7 +294,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
+      var pp1Lock1 = PP1NftLockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
       var transferFundingTx1 = getBobFundingTx();
       var aliceFundingTx1 = getAliceFundingTx();
@@ -319,7 +319,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
+      var pp1Lock2 = PP1NftLockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];
       var transferFundingTx2 = getBobFundingTx();
       var aliceFundingTx2 = getAliceFundingTx();
@@ -360,7 +360,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
+      var pp1Lock1 = PP1NftLockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
       var transferFundingTx1 = getBobFundingTx();
       var aliceFundingTx1 = getAliceFundingTx();
@@ -385,7 +385,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
+      var pp1Lock2 = PP1NftLockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];
       var transferFundingTx2 = getBobFundingTx();
       var aliceFundingTx2 = getAliceFundingTx();
@@ -425,7 +425,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock1 = PP1LockBuilder.fromScript(issuanceTx1.outputs[1].script);
+      var pp1Lock1 = PP1NftLockBuilder.fromScript(issuanceTx1.outputs[1].script);
       var tokenId1 = pp1Lock1.tokenId ?? [];
       var transferFundingTx1 = getBobFundingTx();
       var aliceFundingTx1 = getAliceFundingTx();
@@ -450,7 +450,7 @@ void main() {
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
-      var pp1Lock2 = PP1LockBuilder.fromScript(issuanceTx2.outputs[1].script);
+      var pp1Lock2 = PP1NftLockBuilder.fromScript(issuanceTx2.outputs[1].script);
       var tokenId2 = pp1Lock2.tokenId ?? [];
       var transferFundingTx2 = getBobFundingTx();
       var aliceFundingTx2 = getAliceFundingTx();

@@ -116,8 +116,8 @@ void main() {
       bobFundingTx, bobFundingSigner, bobPub, bobAddress,
       bobFundingTx.hash, 1000,
     );
-    var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-    var tokenId = pp5Lock.tokenId;
+    var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+    var tokenId = pp1FtLock.tokenId;
 
     // Step 2: Mint witness
     var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -145,9 +145,9 @@ void main() {
 
     print('Transfer tx outputs: ${transferTx.outputs.length}');
     print('Transfer tx inputs: ${transferTx.inputs.length}');
-    print('PP5 script length: ${transferTx.outputs[1].script.buffer.length}');
+    print('PP1_FT script length: ${transferTx.outputs[1].script.buffer.length}');
 
-    // Step 5: Verify PP5 spending with trace
+    // Step 5: Verify PP1_FT spending with trace
     var interp = Interpreter();
     var tracer = ScriptTracer(capacity: 150);
     interp.traceCallback = tracer.record;
@@ -158,9 +158,9 @@ void main() {
       interp.correctlySpends(
           aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
           aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis));
-      print('PP5 transferToken spending PASSED');
+      print('PP1_FT transferToken spending PASSED');
     } catch (e) {
-      print('PP5 transferToken spending FAILED: $e');
+      print('PP1_FT transferToken spending FAILED: $e');
       tracer.dump();
     }
   });

@@ -15,30 +15,30 @@
 */
 
 import 'package:dartsv/dartsv.dart';
-import '../script_gen/pp5_script_gen.dart';
+import '../script_gen/pp1_ft_script_gen.dart';
 
-/// Builds the locking script for the PP5 fungible token output.
+/// Builds the locking script for the PP1_FT fungible token output.
 ///
-/// PP5 holds the fungible token state: recipient, token ID, and amount.
-class PP5LockBuilder extends LockingScriptBuilder {
+/// PP1_FT holds the fungible token state: recipient, token ID, and amount.
+class PP1FtLockBuilder extends LockingScriptBuilder {
 
   List<int> _recipientPKH;
   List<int> _tokenId;
   int _amount;
 
-  /// Reconstructs a [PP5LockBuilder] by parsing an existing script.
-  PP5LockBuilder.fromScript(SVScript script) :
+  /// Reconstructs a [PP1FtLockBuilder] by parsing an existing script.
+  PP1FtLockBuilder.fromScript(SVScript script) :
       _recipientPKH = [],
       _tokenId = [],
       _amount = 0,
       super.fromScript(script);
 
-  /// Creates a PP5 locking script builder.
+  /// Creates a PP1_FT locking script builder.
   ///
   /// [_recipientPKH] - 20-byte pubkey hash of the token recipient.
   /// [_tokenId] - 32-byte token identifier.
   /// [_amount] - The fungible token amount (encoded as 8-byte LE sign-magnitude).
-  PP5LockBuilder(this._recipientPKH, this._tokenId, this._amount) {
+  PP1FtLockBuilder(this._recipientPKH, this._tokenId, this._amount) {
     if (_recipientPKH.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient PKH must be 20 bytes");
     }
@@ -52,7 +52,7 @@ class PP5LockBuilder extends LockingScriptBuilder {
 
   @override
   SVScript getScriptPubkey() {
-    return PP5ScriptGen.generate(
+    return PP1FtScriptGen.generate(
       ownerPKH: _recipientPKH,
       tokenId: _tokenId,
       amount: _amount,
@@ -72,23 +72,23 @@ class PP5LockBuilder extends LockingScriptBuilder {
   void parse(SVScript script) {
     var buf = script.buffer;
 
-    // Hand-optimized PP5 layout:
+    // Hand-optimized PP1_FT layout:
     // Byte 0:     0x14 (pushdata 20)
     // Bytes 1-20: ownerPKH
     // Byte 21:    0x20 (pushdata 32)
     // Bytes 22-53: tokenId
     // Byte 54:    0x08 (pushdata 8)
     // Bytes 55-62: amount (8-byte LE)
-    if (buf.length < PP5ScriptGen.amountDataEnd) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Script too short for PP5");
+    if (buf.length < PP1FtScriptGen.amountDataEnd) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Script too short for PP1_FT");
     }
     if (buf[0] != 0x14) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Expected 0x14 pushdata at byte 0");
     }
 
-    _recipientPKH = buf.sublist(PP5ScriptGen.pkhDataStart, PP5ScriptGen.pkhDataEnd).toList();
-    _tokenId = buf.sublist(PP5ScriptGen.tokenIdDataStart, PP5ScriptGen.tokenIdDataEnd).toList();
-    var amountBytesList = buf.sublist(PP5ScriptGen.amountDataStart, PP5ScriptGen.amountDataEnd);
+    _recipientPKH = buf.sublist(PP1FtScriptGen.pkhDataStart, PP1FtScriptGen.pkhDataEnd).toList();
+    _tokenId = buf.sublist(PP1FtScriptGen.tokenIdDataStart, PP1FtScriptGen.tokenIdDataEnd).toList();
+    var amountBytesList = buf.sublist(PP1FtScriptGen.amountDataStart, PP1FtScriptGen.amountDataEnd);
     _amount = castToBigInt(amountBytesList, false, nMaxNumSize: 8).toInt();
   }
 }

@@ -18,7 +18,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
-import 'pp5_unlock_builder.dart';
+import 'pp1_ft_unlock_builder.dart';
 
 /// Builds the unlocking script (scriptSig) for spending the PP2-FT witness bridge output.
 ///

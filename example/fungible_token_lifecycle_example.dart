@@ -78,7 +78,7 @@ Future<void> main() async {
   // Minting creates a new fungible token with a specified amount. This produces
   // a transaction with 5 outputs (the "triplet" pattern):
   //   output[0] = Change (remaining satoshis from funding)
-  //   output[1] = PP5 (Proof Point 5 — embeds ownerPKH, tokenId, amount)
+  //   output[1] = PP1_FT (Proof Point 5 — embeds ownerPKH, tokenId, amount)
   //   output[2] = PP2-FT (validates witness funding outpoint)
   //   output[3] = PP3-FT (enables transfer via partial SHA-256)
   //   output[4] = Metadata (OP_RETURN — token metadata)
@@ -96,27 +96,27 @@ Future<void> main() async {
     1000,                 // amount to mint
   );
 
-  // Extract token metadata from the PP5 output
-  var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-  var tokenId = pp5Lock.tokenId;
+  // Extract token metadata from the PP1_FT output
+  var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+  var tokenId = pp1FtLock.tokenId;
 
   print("Mint TxId: ${mintTx.id}");
   print("Token ID: ${hex.encode(tokenId)}");
-  print("Amount: ${pp5Lock.amount}");
+  print("Amount: ${pp1FtLock.amount}");
   print("Outputs: ${mintTx.outputs.length}"); // expect 5
 
   // =========================================================================
   // STEP 2: CREATE MINT WITNESS
   // =========================================================================
   // After minting, a witness transaction proves the owner controls the token.
-  // The witness spends PP5 and PP2-FT from the mint transaction.
+  // The witness spends PP1_FT and PP2-FT from the mint transaction.
   //
   // For minting, no parent token tx bytes are needed (this is the genesis).
 
   print("\n=== STEP 2: Mint Witness ===");
 
   var mintWitnessTx = tokenTool.createFungibleWitnessTxn(
-    bobSigner,              // signs funding and PP5 inputs
+    bobSigner,              // signs funding and PP1_FT inputs
     bobFundingTx,           // funding transaction
     mintTx,                 // the token transaction to witness
     bobPubKey,              // owner's public key
@@ -133,7 +133,7 @@ Future<void> main() async {
   // Transfer sends the full token amount to a new owner. The transaction
   // spends the previous witness output and PP3-FT from the token tx.
   //
-  // The transfer creates a new triplet (PP5, PP2-FT, PP3-FT) locked to
+  // The transfer creates a new triplet (PP1_FT, PP2-FT, PP3-FT) locked to
   // the recipient. Metadata is carried forward automatically.
 
   print("\n=== STEP 3: Transfer 1000 tokens (Bob -> Alice) ===");
@@ -154,10 +154,10 @@ Future<void> main() async {
   print("Transfer TxId: ${transferTx.id}");
   print("Transfer outputs: ${transferTx.outputs.length}"); // expect 5
 
-  // Verify the PP5 output has Alice as the new owner
-  var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
-  print("New owner PKH: ${hex.encode(transferPP5.recipientPKH)}");
-  print("Amount: ${transferPP5.amount}");
+  // Verify the PP1_FT output has Alice as the new owner
+  var transferPP1_FT = PP1FtLockBuilder.fromScript(transferTx.outputs[1].script);
+  print("New owner PKH: ${hex.encode(transferPP1_FT.recipientPKH)}");
+  print("Amount: ${transferPP1_FT.amount}");
 
   // =========================================================================
   // STEP 4: TRANSFER WITNESS (Alice proves ownership)
@@ -185,8 +185,8 @@ Future<void> main() async {
   // =========================================================================
   // Split divides a token into two outputs: a recipient amount and change.
   // This creates an 8-output transaction with two triplets:
-  //   Recipient triplet: outputs [1,2,3] — PP5(700), PP2-FT, PP3-FT
-  //   Change triplet:    outputs [4,5,6] — PP5(300), PP2-FT, PP3-FT
+  //   Recipient triplet: outputs [1,2,3] — PP1_FT(700), PP2-FT, PP3-FT
+  //   Change triplet:    outputs [4,5,6] — PP1_FT(300), PP2-FT, PP3-FT
   //   output[0] = Change (satoshis)
   //   output[7] = Metadata
   //
@@ -212,10 +212,10 @@ Future<void> main() async {
   print("Split TxId: ${splitTx.id}");
   print("Split outputs: ${splitTx.outputs.length}"); // expect 8
 
-  var recipientPP5 = PP5LockBuilder.fromScript(splitTx.outputs[1].script);
-  var changePP5 = PP5LockBuilder.fromScript(splitTx.outputs[4].script);
-  print("Recipient (Bob) amount: ${recipientPP5.amount}");   // 700
-  print("Change (Alice) amount: ${changePP5.amount}");        // 300
+  var recipientPP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[1].script);
+  var changePP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[4].script);
+  print("Recipient (Bob) amount: ${recipientPP1_FT.amount}");   // 700
+  print("Change (Alice) amount: ${changePP1_FT.amount}");        // 300
 
   // =========================================================================
   // STEP 6: SPLIT WITNESSES
@@ -263,7 +263,7 @@ Future<void> main() async {
   //
   // PP3 inputs are burned via P2PKH rather than unlocked, because PP3-FT's
   // hashPrevOuts check hardcodes 3 inputs and cannot work with 5.
-  // Security is maintained: PP5 verifies outpoints reference the parent txs.
+  // Security is maintained: PP1_FT verifies outpoints reference the parent txs.
 
   print("\n=== STEP 7: Merge 700 + 300 = 1000 ===");
 
@@ -292,8 +292,8 @@ Future<void> main() async {
   print("Merge TxId: ${mergeTx.id}");
   print("Merge outputs: ${mergeTx.outputs.length}"); // expect 5
 
-  var mergedPP5 = PP5LockBuilder.fromScript(mergeTx.outputs[1].script);
-  print("Merged amount: ${mergedPP5.amount}"); // 1000
+  var mergedPP1_FT = PP1FtLockBuilder.fromScript(mergeTx.outputs[1].script);
+  print("Merged amount: ${mergedPP1_FT.amount}"); // 1000
 
   // =========================================================================
   // STEP 8: MERGE WITNESS
@@ -312,8 +312,8 @@ Future<void> main() async {
     parentTokenTxBytesB: splitTxBytes,      // parent B bytes (same tx here)
     parentOutputCount: 8,                   // parent A had 8 outputs
     parentOutputCountB: 8,                  // parent B had 8 outputs
-    parentPP5IndexA: 1,                     // PP5 A at output index 1
-    parentPP5IndexB: 4,                     // PP5 B at output index 4
+    parentPP1FtIndexA: 1,                     // PP1_FT A at output index 1
+    parentPP1FtIndexB: 4,                     // PP1_FT B at output index 4
   );
 
   print("Merge Witness TxId: ${mergeWitnessTx.id}");
@@ -321,7 +321,7 @@ Future<void> main() async {
   // =========================================================================
   // STEP 9: BURN TOKEN
   // =========================================================================
-  // Burning destroys the token permanently. It spends PP5, PP2-FT, and PP3-FT
+  // Burning destroys the token permanently. It spends PP1_FT, PP2-FT, and PP3-FT
   // without creating new token outputs. Only the current owner can burn.
   // The burn transaction has a single output — change returned to the owner.
 
@@ -354,26 +354,26 @@ Future<void> main() async {
     VerifyFlag.UTXO_AFTER_GENESIS,
   };
 
-  // Verify PP5 burn spending
+  // Verify PP1_FT burn spending
   try {
     interp.correctlySpends(
       burnTx.inputs[1].script!, mergeTx.outputs[1].script,
       burnTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis),
     );
-    print("PP5 burn verification: PASS");
+    print("PP1_FT burn verification: PASS");
   } on ScriptException catch (e) {
-    print("PP5 burn verification: FAIL - $e");
+    print("PP1_FT burn verification: FAIL - $e");
   }
 
-  // Verify PP5 merge witness spending
+  // Verify PP1_FT merge witness spending
   try {
     interp.correctlySpends(
       mergeWitnessTx.inputs[1].script!, mergeTx.outputs[1].script,
       mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis),
     );
-    print("PP5 merge witness verification: PASS");
+    print("PP1_FT merge witness verification: PASS");
   } on ScriptException catch (e) {
-    print("PP5 merge witness verification: FAIL - $e");
+    print("PP1_FT merge witness verification: FAIL - $e");
   }
 
   print("\nFungible token lifecycle example complete.");

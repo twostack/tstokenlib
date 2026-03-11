@@ -54,7 +54,7 @@ class TransactionUtils {
 
     // Calculate bytes needed to reach the next 64-byte boundary.
     // When already on a boundary (remainder=0), we add a full block (64 bytes)
-    // to ensure non-empty padding (required by PP1/PP5 contracts).
+    // to ensure non-empty padding (required by PP1/PP1_FT contracts).
     var remainder = lastInputStart % SHA256_BLOCK_SIZE;
     var lastBlockPadding = remainder == 0 ? SHA256_BLOCK_SIZE : SHA256_BLOCK_SIZE - remainder;
 

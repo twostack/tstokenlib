@@ -18,7 +18,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
-import 'pp5_unlock_builder.dart';
+import 'pp1_ft_unlock_builder.dart';
 
 /// Builds the unlocking script for spending the partial SHA256 witness output
 /// of a fungible token transaction.

@@ -27,8 +27,8 @@ import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 import '../builder/map_lockbuilder.dart';
 import '../builder/partial_witness_lock_builder.dart';
 import '../builder/partial_witness_unlock_builder.dart';
-import '../builder/pp1_lock_builder.dart';
-import '../builder/pp1_unlock_builder.dart';
+import '../builder/pp1_nft_lock_builder.dart';
+import '../builder/pp1_nft_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
@@ -106,7 +106,7 @@ class TokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
 
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
-    var pp1UnlockBuilder = PP1UnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    var pp1UnlockBuilder = PP1NftUnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -118,7 +118,7 @@ class TokenTool {
     //updated padding bytes
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
-    pp1UnlockBuilder = PP1UnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    pp1UnlockBuilder = PP1NftUnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
@@ -165,7 +165,7 @@ class TokenTool {
     tokenTxBuilder.withFeePerKb(1);
 
     //create PP1 Outpoint
-    var pp1Locker = PP1LockBuilder(recipientAddress, tokenId, rabinPubKeyHash);
+    var pp1Locker = PP1NftLockBuilder(recipientAddress, tokenId, rabinPubKeyHash);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
     var outputWriter = ByteDataWriter();
@@ -239,8 +239,8 @@ class TokenTool {
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
 
     // Carry forward rabinPubKeyHash from previous PP1
-    var prevPP1 = PP1LockBuilder.fromScript(prevTokenTx.outputs[1].script);
-    var pp1LockBuilder = PP1LockBuilder(recipientAddress, tokenId, prevPP1.rabinPubKeyHash!);
+    var prevPP1 = PP1NftLockBuilder.fromScript(prevTokenTx.outputs[1].script);
+    var pp1LockBuilder = PP1NftLockBuilder(recipientAddress, tokenId, prevPP1.rabinPubKeyHash!);
 
     var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
@@ -311,7 +311,7 @@ class TokenTool {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var pp1BurnUnlocker = PP1UnlockBuilder.forBurn(ownerPubkey);
+    var pp1BurnUnlocker = PP1NftUnlockBuilder.forBurn(ownerPubkey);
     var pp2BurnUnlocker = PP2UnlockBuilder.forBurn(ownerPubkey);
     var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
 

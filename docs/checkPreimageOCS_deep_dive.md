@@ -362,7 +362,7 @@ The sCrypt-compiled PP3 template was ~100KB of opaque hex. By dynamically genera
 
 4. **Independence from sCrypt toolchain**: No compiler dependency for generating or understanding the contract.
 
-The NFT variant retains the old compiled template because the PP1 inductive proof contract has the expected PP3 script format embedded in its verification logic. The FT variant uses the new dynamic generator since the FT contracts (PP5, PP2-FT) are being built to work with it.
+The NFT variant retains the old compiled template because the PP1 inductive proof contract has the expected PP3 script format embedded in its verification logic. The FT variant uses the new dynamic generator since the FT contracts (PP1_FT, PP2-FT) are being built to work with it.
 
 ---
 

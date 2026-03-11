@@ -158,7 +158,7 @@ var transferWitnessTx = service.createWitnessTxn(
 ### NFT Transfer
 
 ```dart
-var pp1 = PP1LockBuilder.fromScript(currentTokenTx.outputs[1].script);
+var pp1 = PP1NftLockBuilder.fromScript(currentTokenTx.outputs[1].script);
 var tokenId = pp1.tokenId ?? [];
 
 var transferTx = service.createTokenTransferTxn(
@@ -183,8 +183,8 @@ var burnTx = service.createBurnTokenTxn(
 The primary API is the `FungibleTokenTool` class. For a full working example, see
 [`example/fungible_token_lifecycle_example.dart`](example/fungible_token_lifecycle_example.dart).
 
-Fungible tokens use a "triplet" of outputs (PP5, PP2-FT, PP3-FT) that carries the token
-amount, owner PKH, and tokenId. The amount is embedded in the PP5 locking script and
+Fungible tokens use a "triplet" of outputs (PP1_FT, PP2-FT, PP3-FT) that carries the token
+amount, owner PKH, and tokenId. The amount is embedded in the PP1_FT locking script and
 enforced by the Bitcoin Script interpreter at spending time.
 
 ### Minting Fungible Tokens
@@ -195,7 +195,7 @@ funding transaction hash.
 | Output | Purpose |
 |--------|---------|
 | output[0] | Change (remaining satoshis) |
-| output[1] | PP5 — embeds ownerPKH, tokenId, and amount |
+| output[1] | PP1_FT — embeds ownerPKH, tokenId, and amount |
 | output[2] | PP2-FT — validates witness funding outpoint |
 | output[3] | PP3-FT — enables transfer via partial SHA-256 |
 | output[4] | Metadata — OP_RETURN |
@@ -209,9 +209,9 @@ var mintTx = await tokenTool.createFungibleMintTxn(
     1000,             // amount to mint
 );
 
-var pp5 = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-var tokenId = pp5.tokenId;
-var amount = pp5.amount;  // 1000
+var pp1Ft = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+var tokenId = pp1Ft.tokenId;
+var amount = pp1Ft.amount;  // 1000
 ```
 
 ### Fungible Token Witness
@@ -310,8 +310,8 @@ var mergeWitnessTx = tokenTool.createFungibleWitnessTxn(
     parentTokenTxBytesB: hex.decode(tokenTxB.serialize()),
     parentOutputCount: 8,
     parentOutputCountB: 8,
-    parentPP5IndexA: 1,
-    parentPP5IndexB: 4,
+    parentPP1FtIndexA: 1,
+    parentPP1FtIndexB: 4,
 );
 ```
 

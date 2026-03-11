@@ -1,6 +1,6 @@
 import 'package:test/test.dart';
 import 'package:dartsv/dartsv.dart';
-import 'package:tstokenlib/src/script_gen/pp5_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/opcode_helpers.dart';
 import 'dart:typed_data';
 
@@ -10,7 +10,7 @@ void main() {
     // Push data: varint 3, then "abc"
     var b = ScriptBuilder();
     b.addData(Uint8List.fromList([0x03, 0x61, 0x62, 0x63]));
-    PP5ScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b);
     // Should have: [3, "abc"] with "abc" on top
     // Drop rest, check value == 3
     b.opCode(OpCodes.OP_DROP);
@@ -35,7 +35,7 @@ void main() {
     // Verify rest is correct
     var b = ScriptBuilder();
     b.addData(Uint8List.fromList([0x03, 0x61, 0x62, 0x63]));
-    PP5ScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b);
     // Should have: [3, "abc"]
     // Swap to get rest on bottom, value on top
     b.opCode(OpCodes.OP_SWAP);
@@ -65,7 +65,7 @@ void main() {
     var rest = List.filled(256, 0xAA);
     var b = ScriptBuilder();
     b.addData(Uint8List.fromList(data + rest));
-    PP5ScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b);
     // Should have: [256, rest(256 bytes)]
     b.opCode(OpCodes.OP_DROP);  // drop rest
     OpcodeHelpers.pushInt(b, 256);

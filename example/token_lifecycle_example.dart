@@ -180,7 +180,7 @@ Future<void> main() async {
   print("\n=== STEP 3: Transfer (Bob -> Alice) ===");
 
   // Extract tokenId from the issuance PP1 output
-  var pp1 = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+  var pp1 = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
   var tokenId = pp1.tokenId ?? [];
   print("TokenId: ${hex.encode(tokenId)}");
 

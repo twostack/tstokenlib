@@ -28,7 +28,7 @@ void main(){
     var issuanceTx = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
 
     var issuancePP1Script = issuanceTx.outputs[1].script;
-    var pp1Locker = PP1LockBuilder.fromScript(issuancePP1Script);
+    var pp1Locker = PP1NftLockBuilder.fromScript(issuancePP1Script);
 
     expect(listEquals(pp1Locker.getScriptPubkey().buffer, issuancePP1Script.buffer), true);
   });

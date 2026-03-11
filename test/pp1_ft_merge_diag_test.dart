@@ -2,7 +2,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
-import 'pp5_transfer_diag_test.dart' show ScriptTracer;
+import 'pp1_ft_transfer_diag_test.dart' show ScriptTracer;
 
 var bobWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
 SVPrivateKey bobPrivateKey = SVPrivateKey.fromWIF(bobWif);
@@ -31,7 +31,7 @@ Transaction getAliceFundingTx() {
 }
 
 void main() {
-  test('Diagnostic: split-after-split with trace',
+  test('Diagnostic: merge-then-transfer with trace',
       timeout: Timeout(Duration(minutes: 3)), () async {
     var service = FungibleTokenTool();
     var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
@@ -43,8 +43,8 @@ void main() {
       bobFundingTx, bobFundingSigner, bobPub, bobAddress,
       bobFundingTx.hash, 1000,
     );
-    var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-    var tokenId = pp5Lock.tokenId;
+    var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+    var tokenId = pp1FtLock.tokenId;
 
     // Step 2: Mint witness
     var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -52,21 +52,21 @@ void main() {
       FungibleTokenAction.MINT,
     );
 
-    // Step 3: First split 700/300
+    // Step 3: Split 600/400
     var split1FundingTx = getBobFundingTx();
     var aliceWitnessFundingTx = getAliceFundingTx();
     var changeWitnessFundingTx = getBobFundingTx();
 
-    var split1Tx = service.createFungibleSplitTxn(
-      mintWitnessTx, mintTx, bobPub, aliceAddress, 700,
+    var splitTx = service.createFungibleSplitTxn(
+      mintWitnessTx, mintTx, bobPub, aliceAddress, 600,
       split1FundingTx, bobFundingSigner, bobPub,
       aliceWitnessFundingTx.hash, changeWitnessFundingTx.hash,
       tokenId, 1000,
     );
 
-    // Step 4: Witnesses for first split
+    // Step 4: Witnesses for split
     var recipientWitnessTx = service.createFungibleWitnessTxn(
-      aliceFundingSigner, aliceWitnessFundingTx, split1Tx,
+      aliceFundingSigner, aliceWitnessFundingTx, splitTx,
       alicePubKey, bobPubkeyHash,
       FungibleTokenAction.SPLIT_TRANSFER,
       parentTokenTxBytes: hex.decode(mintTx.serialize()),
@@ -74,53 +74,78 @@ void main() {
     );
 
     var changeWitnessTx = service.createFungibleWitnessTxn(
-      bobFundingSigner, changeWitnessFundingTx, split1Tx, bobPub, bobPubkeyHash,
+      bobFundingSigner, changeWitnessFundingTx, splitTx, bobPub, bobPubkeyHash,
       FungibleTokenAction.SPLIT_TRANSFER,
       parentTokenTxBytes: hex.decode(mintTx.serialize()),
       parentOutputCount: 5,
       tripletBaseIndex: 4,
     );
 
-    // Step 5: Second split from change triplet (parentPP5Index=4)
-    var split2FundingTx = getBobFundingTx();
-    var alice2WitnessFundingTx = getAliceFundingTx();
-    var change2WitnessFundingTx = getBobFundingTx();
+    // Step 5: Merge
+    var mergeFundingTx = getBobFundingTx();
+    var mergeWitnessFundingTx = getBobFundingTx();
 
-    var split2Tx = service.createFungibleSplitTxn(
-      changeWitnessTx, split1Tx, bobPub, aliceAddress, 200,
-      split2FundingTx, bobFundingSigner, bobPub,
-      alice2WitnessFundingTx.hash, change2WitnessFundingTx.hash,
-      tokenId, 300,
-      prevTripletBaseIndex: 4,
+    var mergeTx = service.createFungibleMergeTxn(
+      recipientWitnessTx, splitTx, changeWitnessTx, splitTx,
+      bobPub, bobFundingSigner, mergeFundingTx, bobFundingSigner, bobPub,
+      mergeWitnessFundingTx.hash, tokenId, 1000,
+      prevTripletBaseIndexA: 1, prevTripletBaseIndexB: 4,
     );
 
-    print('split2Tx outputs: ${split2Tx.outputs.length}');
-    print('split2Tx inputs: ${split2Tx.inputs.length}');
+    print('mergeTx outputs: ${mergeTx.outputs.length}');
+    print('mergeTx inputs: ${mergeTx.inputs.length}');
+    for (int i = 0; i < mergeTx.outputs.length; i++) {
+      print('  mergeTx output[$i]: script=${mergeTx.outputs[i].script.buffer.length}B, sats=${mergeTx.outputs[i].satoshis}');
+    }
 
-    // Step 6: Witness for second split recipient
-    var alice2WitnessTx = service.createFungibleWitnessTxn(
-      aliceFundingSigner, alice2WitnessFundingTx, split2Tx,
-      alicePubKey, bobPubkeyHash,
-      FungibleTokenAction.SPLIT_TRANSFER,
-      parentTokenTxBytes: hex.decode(split1Tx.serialize()),
+    // Step 6: Merge witness (uses mergeToken placeholder — just OP_1)
+    var mergeWitnessTx = service.createFungibleWitnessTxn(
+      bobFundingSigner, mergeWitnessFundingTx, mergeTx, bobPub, bobPubkeyHash,
+      FungibleTokenAction.MERGE,
+      parentTokenTxBytes: hex.decode(splitTx.serialize()),
+      parentTokenTxBytesB: hex.decode(splitTx.serialize()),
       parentOutputCount: 8,
+      parentOutputCountB: 8,
+      parentPP1FtIndexA: 1,
+      parentPP1FtIndexB: 4,
       tripletBaseIndex: 1,
-      parentPP5IndexA: 4,
     );
 
-    // Step 7: Verify with trace
+    // Step 7: Transfer merged tokens to Alice
+    var transferFundingTx = getBobFundingTx();
+    var aliceTransferWitnessFundingTx = getAliceFundingTx();
+
+    var transferTx = service.createFungibleTransferTxn(
+      mergeWitnessTx, mergeTx, bobPub, aliceAddress,
+      transferFundingTx, bobFundingSigner, bobPub,
+      aliceTransferWitnessFundingTx.hash, tokenId, 1000,
+    );
+
+    print('transferTx outputs: ${transferTx.outputs.length}');
+    print('transferTx inputs: ${transferTx.inputs.length}');
+
+    // Step 8: Transfer witness
+    var aliceTransferWitnessTx = service.createFungibleWitnessTxn(
+      aliceFundingSigner, aliceTransferWitnessFundingTx, transferTx,
+      alicePubKey, bobPubkeyHash,
+      FungibleTokenAction.TRANSFER,
+      parentTokenTxBytes: hex.decode(mergeTx.serialize()),
+      parentOutputCount: 5,
+    );
+
+    // Step 9: Verify with trace
     var interp = Interpreter();
-    var tracer = ScriptTracer(capacity: 200);
+    var tracer = ScriptTracer(capacity: 50);
     interp.traceCallback = tracer.record;
     var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
     try {
       interp.correctlySpends(
-          alice2WitnessTx.inputs[1].script!, split2Tx.outputs[1].script,
-          alice2WitnessTx, 1, verifyFlags, Coin.valueOf(split2Tx.outputs[1].satoshis));
-      print('PP5 splitTransfer (recipient, parentPP5Index=4) PASSED');
+          aliceTransferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+          aliceTransferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis));
+      print('PP1_FT transferToken after merge PASSED');
     } catch (e) {
-      print('PP5 splitTransfer (recipient, parentPP5Index=4) FAILED: $e');
+      print('PP1_FT transferToken after merge FAILED: $e');
       tracer.dump();
     }
   });

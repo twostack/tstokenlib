@@ -33,11 +33,11 @@ enum FungibleTokenAction {
   BURN
 }
 
-/// Builds the unlocking script (scriptSig) for spending the PP5 fungible token output.
+/// Builds the unlocking script (scriptSig) for spending the PP1_FT fungible token output.
 ///
 /// Supports five modes: MINT (OP_0), TRANSFER (OP_1), SPLIT_TRANSFER (OP_2),
 /// MERGE (OP_3), and BURN (OP_4).
-class PP5UnlockBuilder extends UnlockingScriptBuilder {
+class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _preImage;
   List<int>? _pp2Output;
@@ -58,18 +58,18 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
   // Merge-specific fields
   List<int>? _prevTokenTxB;
   int? _parentOutputCountB;
-  int? _parentPP5IndexA;
-  int? _parentPP5IndexB;
+  int? _parentPP1FtIndexA;
+  int? _parentPP1FtIndexB;
 
   //these are populated upon parsing/reconstruction
   List<int>? _sigBytes;
 
-  /// Creates a PP5 unlock builder for minting new tokens.
+  /// Creates a PP1_FT unlock builder for minting new tokens.
   ///
   /// [preImage] - The sighash preimage.
   /// [witnessFundingTxId] - The funding transaction ID.
   /// [witnessPadding] - Padding bytes for SHA256 calculation.
-  PP5UnlockBuilder.forMint(
+  PP1FtUnlockBuilder.forMint(
     List<int> preImage,
     List<int> witnessFundingTxId,
     List<int> witnessPadding,
@@ -78,8 +78,8 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _witnessPadding = witnessPadding,
       _action = FungibleTokenAction.MINT;
 
-  /// Creates a PP5 unlock builder for a token transfer.
-  PP5UnlockBuilder.forTransfer(
+  /// Creates a PP1_FT unlock builder for a token transfer.
+  PP1FtUnlockBuilder.forTransfer(
     List<int> preImage,
     List<int> pp2Output,
     SVPublicKey ownerPubKey,
@@ -89,7 +89,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     List<int> prevTokenTx,
     List<int> witnessPadding,
     int parentOutputCount,
-    int parentPP5Index,
+    int parentPP1FtIndex,
   ) : _preImage = preImage,
       _pp2Output = pp2Output,
       _ownerPubKey = ownerPubKey,
@@ -99,11 +99,11 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _prevTokenTx = prevTokenTx,
       _witnessPadding = witnessPadding,
       _parentOutputCount = parentOutputCount,
-      _parentPP5IndexA = parentPP5Index,
+      _parentPP1FtIndexA = parentPP1FtIndex,
       _action = FungibleTokenAction.TRANSFER;
 
-  /// Creates a PP5 unlock builder for a split transfer.
-  PP5UnlockBuilder.forSplitTransfer(
+  /// Creates a PP1_FT unlock builder for a split transfer.
+  PP1FtUnlockBuilder.forSplitTransfer(
     List<int> preImage,
     List<int> pp2RecipientOutput,
     List<int> pp2ChangeOutput,
@@ -118,7 +118,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     List<int> recipientPKH,
     int myOutputIndex,
     int parentOutputCount,
-    int parentPP5Index,
+    int parentPP1FtIndex,
   ) : _preImage = preImage,
       _pp2Output = pp2RecipientOutput,
       _pp2ChangeOutput = pp2ChangeOutput,
@@ -133,18 +133,18 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _recipientPKH = recipientPKH,
       _myOutputIndex = myOutputIndex,
       _parentOutputCount = parentOutputCount,
-      _parentPP5IndexA = parentPP5Index,
+      _parentPP1FtIndexA = parentPP1FtIndex,
       _action = FungibleTokenAction.SPLIT_TRANSFER;
 
   List<int>? _pp2ChangeOutput;
 
-  /// Creates a PP5 unlock builder for burning tokens.
-  PP5UnlockBuilder.forBurn(SVPublicKey ownerPubKey)
+  /// Creates a PP1_FT unlock builder for burning tokens.
+  PP1FtUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
       : _ownerPubKey = ownerPubKey,
         _action = FungibleTokenAction.BURN;
 
-  /// Creates a PP5 unlock builder for merging two token UTXOs.
-  PP5UnlockBuilder.forMerge(
+  /// Creates a PP1_FT unlock builder for merging two token UTXOs.
+  PP1FtUnlockBuilder.forMerge(
     List<int> preImage,
     List<int> pp2Output,
     SVPublicKey ownerPubKey,
@@ -156,8 +156,8 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     List<int> witnessPadding,
     int parentOutputCountA,
     int parentOutputCountB,
-    int parentPP5IndexA,
-    int parentPP5IndexB,
+    int parentPP1FtIndexA,
+    int parentPP1FtIndexB,
   ) : _preImage = preImage,
       _pp2Output = pp2Output,
       _ownerPubKey = ownerPubKey,
@@ -169,12 +169,12 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       _witnessPadding = witnessPadding,
       _parentOutputCount = parentOutputCountA,
       _parentOutputCountB = parentOutputCountB,
-      _parentPP5IndexA = parentPP5IndexA,
-      _parentPP5IndexB = parentPP5IndexB,
+      _parentPP1FtIndexA = parentPP1FtIndexA,
+      _parentPP1FtIndexB = parentPP1FtIndexB,
       _action = FungibleTokenAction.MERGE;
 
-  /// Reconstructs a [PP5UnlockBuilder] by parsing an existing script.
-  PP5UnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
+  /// Reconstructs a [PP1FtUnlockBuilder] by parsing an existing script.
+  PP1FtUnlockBuilder.fromScript(SVScript script) : super.fromScript(script);
 
   /// The sighash preimage.
   List<int>? get preImage => _preImage;
@@ -218,7 +218,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
   /// The recipient's pubkey hash (split transfer).
   List<int>? get recipientPKH => _recipientPKH;
 
-  /// The output index of this PP5 output (split transfer).
+  /// The output index of this PP1_FT output (split transfer).
   int? get myOutputIndex => _myOutputIndex;
 
   /// The number of outputs in the parent transaction.
@@ -257,7 +257,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._prevTokenTx!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.number(this._parentOutputCount!);
-      result.number(this._parentPP5IndexA!);
+      result.number(this._parentPP1FtIndexA!);
 
     } else if (_action == FungibleTokenAction.SPLIT_TRANSFER) {
 
@@ -277,7 +277,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._recipientPKH!));
       result.number(this._myOutputIndex!);
       result.number(this._parentOutputCount!);
-      result.number(this._parentPP5IndexA!);
+      result.number(this._parentPP1FtIndexA!);
 
     } else if (_action == FungibleTokenAction.MERGE) {
 
@@ -294,8 +294,8 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.number(this._parentOutputCount!);
       result.number(this._parentOutputCountB!);
-      result.number(this._parentPP5IndexA!);
-      result.number(this._parentPP5IndexB!);
+      result.number(this._parentPP1FtIndexA!);
+      result.number(this._parentPP1FtIndexB!);
 
     } else if (_action == FungibleTokenAction.BURN) {
 
@@ -331,7 +331,7 @@ class PP5UnlockBuilder extends UnlockingScriptBuilder {
     var chunkList = script.chunks;
 
     if (chunkList.isEmpty) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Empty PP5 ScriptSig");
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Empty PP1_FT ScriptSig");
     }
 
     _preImage = chunkList[0].buf;

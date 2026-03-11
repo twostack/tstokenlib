@@ -19,7 +19,7 @@ Goal: Clean up the existing codebase so it is safe, predictable, and ready for f
 - [x] Document magic numbers (SHA256 block size constant in `utils.dart`)
 
 ### 1.3 Input Validation
-- [x] Validate `PP1LockBuilder` constructor (recipient address required, token ID must be 32 bytes)
+- [x] Validate `PP1NftLockBuilder` constructor (recipient address required, token ID must be 32 bytes)
 - [x] Validate `PP2LockBuilder` constructor (outpoint 36 bytes, PKH 20 bytes, non-negative amount)
 - [x] Fail fast with descriptive `ScriptException` errors rather than producing invalid scripts silently
 
@@ -89,7 +89,7 @@ Goal: Build confidence that the protocol implementation is correct and handles e
 - [x] Empty or oversized metadata
 
 ### 3.3 Builder Tests
-- [x] PP1LockBuilder — lock/parse round-trip
+- [x] PP1NftLockBuilder — lock/parse round-trip
 - [x] PP2LockBuilder — lock/parse round-trip
 - [x] PartialWitnessLockBuilder — lock/parse round-trip
 - [x] ModP2PKHLockBuilder — lock/parse round-trip, verify swapped sig/pubkey order

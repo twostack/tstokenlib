@@ -30,7 +30,7 @@ Each `.json` file is a descriptor containing:
 
 ## Parameter Encodings
 
-### `hex` (fixed-size, Category A scripts: PP1, PP5, PP3, ModP2PKH)
+### `hex` (fixed-size, Category A scripts: PP1_NFT, PP1_FT, PP3, ModP2PKH)
 
 The pushdata length prefix (e.g., `0x14` for 20 bytes, `0x20` for 32 bytes) is already part of the static hex surrounding the placeholder. You only need to substitute the **raw hex bytes** of the parameter value.
 
@@ -41,7 +41,7 @@ Static hex: 14{{ownerPKH}}20{{tokenId}}14{{rabinPubKeyHash}}6e6e6e...
 Substitute:  14<40 hex chars>20<64 hex chars>14<40 hex chars>6e6e6e...
 ```
 
-### `le_uint56` (PP5 amount)
+### `le_uint56` (PP1_FT amount)
 
 8-byte little-endian encoding with bit 63 always clear:
 ```
@@ -81,11 +81,11 @@ See `encoding/scriptnum.md` for full specification.
 ```
 templates/
   nft/
-    pp1.json            # NFT inductive proof
+    pp1_nft.json            # NFT inductive proof
     pp2.json            # NFT witness bridge
     pp3_witness.json    # NFT partial SHA256 witness
   ft/
-    pp5.json            # Fungible token proof
+    pp1_ft.json            # Fungible token proof
     pp2_ft.json         # FT witness bridge
     pp3_ft_witness.json # FT partial SHA256 witness
   utility/
@@ -101,7 +101,7 @@ templates/
 import json
 
 # Load template
-with open("templates/nft/pp1.json") as f:
+with open("templates/nft/pp1_nft.json") as f:
     tpl = json.load(f)
 
 # Substitute parameters (raw hex bytes, no pushdata prefix needed)

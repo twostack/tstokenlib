@@ -18,7 +18,7 @@ import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import 'opcode_helpers.dart';
 import 'check_preimage_ocs.dart';
-import 'pp5_script_gen.dart';
+import 'pp1_ft_script_gen.dart';
 
 /// Generates the complete PP1 (NFT inductive proof) locking script dynamically.
 ///
@@ -36,7 +36,7 @@ import 'pp5_script_gen.dart';
 /// Bytes 55-74: rabinPubKeyHash (hash160 of Rabin public key n)
 /// Byte 75+:   Script body
 /// ```
-class PP1ScriptGen {
+class PP1NftScriptGen {
 
   static const int pkhDataStart = 1;
   static const int pkhDataEnd = 21;
@@ -314,27 +314,27 @@ class PP1ScriptGen {
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTx
 
     // Skip past inputs to reach outputs section
-    PP5ScriptGen.emitSkipInputs(b);
+    PP1FtScriptGen.emitSkipInputs(b);
     // Stack: [..., ownerPKH, txFromOutputCount]
 
     // Read output count varint (and drop it)
-    PP5ScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
     // Stack: [..., ownerPKH, txFromFirstOutput]
 
     // Skip output 0 (change output)
     b.opCode(OpCodes.OP_1);
-    PP5ScriptGen.emitSkipNOutputs(b);
+    PP1FtScriptGen.emitSkipNOutputs(b);
     // Stack: [..., ownerPKH, txFromPP1Output]
 
     // Read 4 consecutive output scripts: PP1, PP2, PP3, metadata
-    PP5ScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP1Script → alt
-    PP5ScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP2Script → alt
-    PP5ScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentPP3Script → alt
-    PP5ScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b);
     b.opCode(OpCodes.OP_TOALTSTACK);     // parentMetadataScript → alt
     b.opCode(OpCodes.OP_DROP);           // drop remaining tx bytes
     // Stack (9): [pp2Out, ownerPK, changePkh, changeAmt, ownerSig, scriptLHS,
@@ -381,7 +381,7 @@ class PP1ScriptGen {
 
     // --- Phase 9: Build PP1 output (rebuiltPP1Script, 1 sat) ---
     b.opCode(OpCodes.OP_1);
-    PP5ScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b);
     // Stack (16): [..., pp1S, nLocktime, currentTxId, pp1OutputBytes]
 
     // --- Phase 10: Rebuild PP3 from parent template ---
@@ -390,19 +390,19 @@ class PP1ScriptGen {
     b.opCode(OpCodes.OP_PICK);            // copy pp3S
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_PICK);            // copy ownerPKH (shifted)
-    PP5ScriptGen.emitRebuildPP3(b);
+    PP1FtScriptGen.emitRebuildPP3(b);
     // Stack (17): [..., pp1S, nLocktime, currentTxId, pp1Out, rebuiltPP3Script]
 
     // Build PP3 output (1 sat)
     b.opCode(OpCodes.OP_1);
-    PP5ScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b);
     // Stack (17): [..., pp1S, nLocktime, currentTxId, pp1Out, pp3Out]
 
     // --- Phase 11: Build metadata output (0 sats) ---
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);            // copy metadataScript
     b.opCode(OpCodes.OP_0);
-    PP5ScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b);
     // Stack (18): [..., pp1S, nLocktime, currentTxId, pp1Out, pp3Out, metaOut]
 
     // --- Phase 12: Build change output ---
@@ -416,10 +416,10 @@ class PP1ScriptGen {
     //   ownerPK=16, pp2Out=17
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);            // copy changePkh
-    PP5ScriptGen.emitBuildP2PKHScript(b);
+    PP1FtScriptGen.emitBuildP2PKHScript(b);
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);            // copy changeAmt (shifted +1)
-    PP5ScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b);
     // Stack (19): [..., pp1Out, pp3Out, metaOut, changeOut]
 
     // --- Phase 13: Reconstruct fullTx ---
@@ -503,7 +503,7 @@ class PP1ScriptGen {
     // Extract pp2OutputScript from pp2OutputBytes (skip 8-byte satoshis + varint)
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    PP5ScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b);
     // [pp2S, scriptLen, rest]
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
@@ -530,7 +530,7 @@ class PP1ScriptGen {
     // Read outpoint at input index 2 from scriptLHS
     b.opCode(OpCodes.OP_DROP);            // drop parentRawTx
     // Top: lhs=0, sig=1, ...
-    PP5ScriptGen.emitReadOutpoint(b, 2);
+    PP1FtScriptGen.emitReadOutpoint(b, 2);
     // Stack: [..., outpoint36]
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);

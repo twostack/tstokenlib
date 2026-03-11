@@ -84,7 +84,7 @@ Transaction getTokenTxWithPP1andPP2(Transaction witnessFundingTx, Address ownerA
   tokenTxBuilder.withFeePerKb(1);
 
   //create PP1 Outpoint
-  var pp1Locker = PP1LockBuilder(
+  var pp1Locker = PP1NftLockBuilder(
       ownerAddress, hex.decode(witnessFundingTx.id).reversed.toList(), rabinPubKeyHash); //tokenId is incorrect. issuance vs transfer !
   tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
@@ -132,7 +132,7 @@ Transaction getTokenTxWithPP1andPP2andPP3(Transaction witnessFundingTx, Address 
   }
 
   //create PP1 Outpoint
-  var pp1Locker = PP1LockBuilder(ownerAddress, tokenId, rabinPubKeyHash);
+  var pp1Locker = PP1NftLockBuilder(ownerAddress, tokenId, rabinPubKeyHash);
   tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
   var outputWriter = ByteDataWriter();
@@ -315,7 +315,7 @@ void main() {
     );
 
     // 3. Extract tokenId from the issuance
-    var pp1Unlocker = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var pp1Unlocker = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
     var tokenId = pp1Unlocker.tokenId ?? [];
     print("TokenID : ${hex.encode(tokenId)}");
 
@@ -396,7 +396,7 @@ void main() {
     );
 
     // 3. Transfer token from Bob to Alice
-    var pp1Unlocker = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var pp1Unlocker = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
     var tokenId = pp1Unlocker.tokenId ?? [];
 
     // Bob funds and signs the transfer to Alice
@@ -482,7 +482,7 @@ void main() {
     );
 
     // 3. Extract tokenId from issuance PP1
-    var pp1Unlocker = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var pp1Unlocker = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
     var tokenId = pp1Unlocker.tokenId ?? [];
     print("TokenID : ${hex.encode(tokenId)}");
 
@@ -741,7 +741,7 @@ void main() {
     );
 
     // 4. Transfer token from Bob to Alice
-    var pp1 = PP1LockBuilder.fromScript(issuanceTx.outputs[1].script);
+    var pp1 = PP1NftLockBuilder.fromScript(issuanceTx.outputs[1].script);
     var tokenId = pp1.tokenId ?? [];
     var transferFundingTx = getBobFundingTx();
     var aliceFundingTx = getAliceFundingTx();

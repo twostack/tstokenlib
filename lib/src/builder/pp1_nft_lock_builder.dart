@@ -17,7 +17,7 @@
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
-import '../script_gen/pp1_script_gen.dart';
+import '../script_gen/pp1_nft_script_gen.dart';
 
 /// Builds the locking script for the PP1 output (index 1) of a token transaction.
 ///
@@ -29,7 +29,7 @@ import '../script_gen/pp1_script_gen.dart';
 ///   recipientPKH - Address (pubkey hash) the token is locked to
 ///   tokenId - 32-byte unique token identifier
 ///   rabinPubKeyHash - 20-byte hash160 of the Rabin public key (identity anchor)
-class PP1LockBuilder extends LockingScriptBuilder{
+class PP1NftLockBuilder extends LockingScriptBuilder{
 
   Address? _recipientPKH;
   List<int>? _tokenId;
@@ -37,15 +37,15 @@ class PP1LockBuilder extends LockingScriptBuilder{
 
   NetworkType? networkType;
 
-  /// Reconstructs a [PP1LockBuilder] by parsing an existing script.
-  PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
+  /// Reconstructs a [PP1NftLockBuilder] by parsing an existing script.
+  PP1NftLockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
 
   /// Creates a PP1 locking script builder.
   ///
   /// [_recipientPKH] - Address (pubkey hash) the token is locked to.
   /// [_tokenId] - 32-byte unique token ID (the TxID of the initial issuance funding input).
   /// [_rabinPubKeyHash] - 20-byte hash160 of the Rabin public key for identity anchoring.
-  PP1LockBuilder(this._recipientPKH, this._tokenId, this._rabinPubKeyHash) {
+  PP1NftLockBuilder(this._recipientPKH, this._tokenId, this._rabinPubKeyHash) {
     if (_recipientPKH == null) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient address is required for PP1 locking script");
     }
@@ -61,7 +61,7 @@ class PP1LockBuilder extends LockingScriptBuilder{
   SVScript getScriptPubkey() {
     var recipientPKH = hex.decode(_recipientPKH?.address ?? "00");
 
-    return PP1ScriptGen.generate(
+    return PP1NftScriptGen.generate(
       ownerPKH: recipientPKH,
       tokenId: _tokenId!,
       rabinPubKeyHash: _rabinPubKeyHash!,

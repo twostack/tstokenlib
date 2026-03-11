@@ -23,14 +23,14 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
-import 'package:tstokenlib/src/script_gen/pp1_script_gen.dart';
-import 'package:tstokenlib/src/script_gen/pp5_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_nft_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 
 void main() {
   group('Template sync guard', () {
     test('PP1 template round-trips correctly', () {
-      var templateJson = jsonDecode(File('templates/nft/pp1.json').readAsStringSync());
+      var templateJson = jsonDecode(File('templates/nft/pp1_nft.json').readAsStringSync());
       var templateHex = templateJson['hex'] as String;
 
       // Substitute known values
@@ -44,7 +44,7 @@ void main() {
           .replaceFirst('{{rabinPubKeyHash}}', hex.encode(rabinPKH));
 
       // Generate from Dart code with the same values
-      var script = PP1ScriptGen.generate(
+      var script = PP1NftScriptGen.generate(
         ownerPKH: ownerPKH,
         tokenId: tokenId,
         rabinPubKeyHash: rabinPKH,
@@ -52,18 +52,18 @@ void main() {
       var generatedHex = hex.encode(script.buffer!);
 
       expect(substituted, equals(generatedHex),
-          reason: 'PP1 template output must match PP1ScriptGen.generate() output');
+          reason: 'PP1 template output must match PP1NftScriptGen.generate() output');
     });
 
-    test('PP5 template round-trips correctly', () {
-      var templateJson = jsonDecode(File('templates/ft/pp5.json').readAsStringSync());
+    test('PP1_FT template round-trips correctly', () {
+      var templateJson = jsonDecode(File('templates/ft/pp1_ft.json').readAsStringSync());
       var templateHex = templateJson['hex'] as String;
 
       var ownerPKH = List.generate(20, (i) => i + 1);
       var tokenId = List.generate(32, (i) => i + 0x20);
       var amount = 1000000; // 1M satoshis
 
-      // Encode amount as 8-byte LE (same as PP5ScriptGen)
+      // Encode amount as 8-byte LE (same as PP1FtScriptGen)
       var amountBytes = Uint8List(8);
       var val = amount;
       for (var i = 0; i < 7; i++) {
@@ -77,7 +77,7 @@ void main() {
           .replaceFirst('{{tokenId}}', hex.encode(tokenId))
           .replaceFirst('{{amount}}', hex.encode(amountBytes));
 
-      var script = PP5ScriptGen.generate(
+      var script = PP1FtScriptGen.generate(
         ownerPKH: ownerPKH,
         tokenId: tokenId,
         amount: amount,
@@ -85,7 +85,7 @@ void main() {
       var generatedHex = hex.encode(script.buffer!);
 
       expect(substituted, equals(generatedHex),
-          reason: 'PP5 template output must match PP5ScriptGen.generate() output');
+          reason: 'PP1_FT template output must match PP1FtScriptGen.generate() output');
     });
 
     test('PP3 NFT witness template round-trips correctly', () {
@@ -168,7 +168,7 @@ void main() {
       expect(templateHex, contains('{{witnessChangePKH}}'));
       expect(templateHex, contains('{{witnessChangeAmount}}'));
       expect(templateHex, contains('{{ownerPKH}}'));
-      expect(templateHex, contains('{{pp5OutputIndex}}'));
+      expect(templateHex, contains('{{pp1FtOutputIndex}}'));
       expect(templateHex, contains('{{pp2OutputIndex}}'));
       expect(templateHex, isNot(contains('<outpoint>')));
     });
@@ -185,10 +185,10 @@ void main() {
 
     test('All template files exist', () {
       var expectedFiles = [
-        'templates/nft/pp1.json',
+        'templates/nft/pp1_nft.json',
         'templates/nft/pp2.json',
         'templates/nft/pp3_witness.json',
-        'templates/ft/pp5.json',
+        'templates/ft/pp1_ft.json',
         'templates/ft/pp2_ft.json',
         'templates/ft/pp3_ft_witness.json',
         'templates/utility/mod_p2pkh.json',

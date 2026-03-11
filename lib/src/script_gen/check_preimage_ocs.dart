@@ -22,7 +22,7 @@ import 'opcode_helpers.dart';
 /// Shared checkPreimageOCS implementation for hand-optimized Bitcoin Script contracts.
 ///
 /// Contains the ECDSA signature trick constants and script emission methods
-/// used by both PP3-FT (WitnessCheckScriptGen) and PP5 (PP5ScriptGen).
+/// used by both PP3-FT (WitnessCheckScriptGen) and PP1_FT (PP1FtScriptGen).
 class CheckPreimageOCS {
 
   /// Private key (LE with sign byte) for OCS signature construction.
@@ -68,7 +68,7 @@ class CheckPreimageOCS {
   ///
   /// When false, no OP_CODESEPARATOR is emitted. The preimage's scriptCode
   /// field contains the FULL locking script, which allows Util.scriptCode()
-  /// to extract it for inductive proof checks (e.g. PP5).
+  /// to extract it for inductive proof checks (e.g. PP1_FT).
   static void emitCheckPreimageOCS(ScriptBuilder b, {bool useCodeSeparator = true}) {
     // Step 1: hash256(preImage) → sighash (32 bytes)
     b.opCode(OpCodes.OP_HASH256);

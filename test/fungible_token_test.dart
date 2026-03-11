@@ -48,7 +48,7 @@ void main() {
       expect(mintTx.outputs[0].satoshis > BigInt.zero, true,
           reason: 'Change output should have satoshis');
 
-      // Output[1]: PP5 (1 sat)
+      // Output[1]: PP1_FT (1 sat)
       expect(mintTx.outputs[1].satoshis, BigInt.one);
 
       // Output[2]: PP2-FT (1 sat)
@@ -61,7 +61,7 @@ void main() {
       expect(mintTx.outputs[4].satoshis, BigInt.zero);
     });
 
-    test('PP5 output contains correct amount and tokenId', () async {
+    test('PP1_FT output contains correct amount and tokenId', () async {
       var service = FungibleTokenTool();
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
 
@@ -71,11 +71,11 @@ void main() {
         bobFundingTx.hash, 5000,
       );
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      expect(pp5Lock.amount, 5000, reason: 'PP5 amount should be 5000');
-      expect(pp5Lock.tokenId, bobFundingTx.hash,
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      expect(pp1FtLock.amount, 5000, reason: 'PP1_FT amount should be 5000');
+      expect(pp1FtLock.tokenId, bobFundingTx.hash,
           reason: 'tokenId should be funding tx hash');
-      expect(hex.encode(pp5Lock.recipientPKH), bobPubkeyHash,
+      expect(hex.encode(pp1FtLock.recipientPKH), bobPubkeyHash,
           reason: 'recipientPKH should be Bob');
     });
 
@@ -90,7 +90,7 @@ void main() {
       );
 
       var pp2Lock = PP2FtLockBuilder.fromScript(mintTx.outputs[2].script);
-      expect(pp2Lock.pp5OutputIndex, 1);
+      expect(pp2Lock.pp1FtOutputIndex, 1);
       expect(pp2Lock.pp2OutputIndex, 2);
     });
   });
@@ -110,8 +110,8 @@ void main() {
       );
       expect(mintTx.outputs.length, 5);
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // --- Step 2: Create mint witness for Bob ---
       var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -141,10 +141,10 @@ void main() {
       );
       expect(transferTx.outputs.length, 5);
 
-      // Verify PP5 in transfer has correct recipient and amount
-      var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
-      expect(transferPP5.amount, 1000);
-      expect(hex.encode(transferPP5.recipientPKH), alicePubkeyHash);
+      // Verify PP1_FT in transfer has correct recipient and amount
+      var transferPP1_FT = PP1FtLockBuilder.fromScript(transferTx.outputs[1].script);
+      expect(transferPP1_FT.amount, 1000);
+      expect(hex.encode(transferPP1_FT.recipientPKH), alicePubkeyHash);
 
       // --- Step 4: Create transfer witness for Alice ---
       var aliceWitnessTx = service.createFungibleWitnessTxn(
@@ -171,7 +171,7 @@ void main() {
       );
 
       expect(burnTx.outputs.length, 1);
-      expect(burnTx.inputs.length, 4); // funding, PP5, PP2-FT, PP3-FT
+      expect(burnTx.inputs.length, 4); // funding, PP1_FT, PP2-FT, PP3-FT
 
       // --- Step 6: Verify burn spending with interpreter ---
       var interp = Interpreter();
@@ -180,13 +180,13 @@ void main() {
       verifyFlags.add(VerifyFlag.LOW_S);
       verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
 
-      // Verify PP5 burn spending (input[1] spends transferTx output[1])
+      // Verify PP1_FT burn spending (input[1] spends transferTx output[1])
       expect(
           () => interp.correctlySpends(
               burnTx.inputs[1].script!, transferTx.outputs[1].script,
               burnTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
           returnsNormally,
-          reason: 'PP5 burn spending should verify');
+          reason: 'PP1_FT burn spending should verify');
 
       // Verify PP2-FT burn spending (input[2] spends transferTx output[2])
       expect(
@@ -276,8 +276,8 @@ void main() {
         bobFundingTx.hash, 1000,
       );
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // Create mint witness
       var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -316,30 +316,30 @@ void main() {
       // [0] Change (P2PKH)
       expect(splitTx.outputs[0].satoshis > BigInt.zero, true);
 
-      // [1] PP5 recipient (700 tokens to Alice)
-      var recipientPP5 = PP5LockBuilder.fromScript(splitTx.outputs[1].script);
-      expect(recipientPP5.amount, 700, reason: 'Recipient should get 700');
-      expect(hex.encode(recipientPP5.recipientPKH), alicePubkeyHash);
+      // [1] PP1_FT recipient (700 tokens to Alice)
+      var recipientPP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[1].script);
+      expect(recipientPP1_FT.amount, 700, reason: 'Recipient should get 700');
+      expect(hex.encode(recipientPP1_FT.recipientPKH), alicePubkeyHash);
       expect(splitTx.outputs[1].satoshis, BigInt.one);
 
       // [2] PP2-FT recipient (indices 1,2)
       var recipientPP2 = PP2FtLockBuilder.fromScript(splitTx.outputs[2].script);
-      expect(recipientPP2.pp5OutputIndex, 1);
+      expect(recipientPP2.pp1FtOutputIndex, 1);
       expect(recipientPP2.pp2OutputIndex, 2);
       expect(splitTx.outputs[2].satoshis, BigInt.one);
 
       // [3] PP3-FT recipient
       expect(splitTx.outputs[3].satoshis, BigInt.one);
 
-      // [4] PP5 change (300 tokens to Bob)
-      var changePP5 = PP5LockBuilder.fromScript(splitTx.outputs[4].script);
-      expect(changePP5.amount, 300, reason: 'Change should be 300');
-      expect(hex.encode(changePP5.recipientPKH), bobPubkeyHash);
+      // [4] PP1_FT change (300 tokens to Bob)
+      var changePP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[4].script);
+      expect(changePP1_FT.amount, 300, reason: 'Change should be 300');
+      expect(hex.encode(changePP1_FT.recipientPKH), bobPubkeyHash);
       expect(splitTx.outputs[4].satoshis, BigInt.one);
 
       // [5] PP2-FT change (indices 4,5)
       var changePP2 = PP2FtLockBuilder.fromScript(splitTx.outputs[5].script);
-      expect(changePP2.pp5OutputIndex, 4);
+      expect(changePP2.pp1FtOutputIndex, 4);
       expect(changePP2.pp2OutputIndex, 5);
       expect(splitTx.outputs[5].satoshis, BigInt.one);
 
@@ -350,7 +350,7 @@ void main() {
       expect(splitTx.outputs[7].satoshis, BigInt.zero);
 
       // Verify balance conservation
-      expect(recipientPP5.amount + changePP5.amount, 1000,
+      expect(recipientPP1_FT.amount + changePP1_FT.amount, 1000,
           reason: 'Total should equal original amount');
 
       // Verify PP3-FT spending in the split tx (input[2] spends mintTx output[3])
@@ -383,8 +383,8 @@ void main() {
         bobFundingTx.hash, 1000,
       );
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       var mintWitnessTx = service.createFungibleWitnessTxn(
         bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
@@ -401,11 +401,11 @@ void main() {
         aliceFundingTx.hash, changeFundingTx.hash, tokenId, 1000,
       );
 
-      var recipientPP5 = PP5LockBuilder.fromScript(splitTx.outputs[1].script);
-      var changePP5 = PP5LockBuilder.fromScript(splitTx.outputs[4].script);
-      expect(recipientPP5.amount, 1);
-      expect(changePP5.amount, 999);
-      expect(recipientPP5.amount + changePP5.amount, 1000);
+      var recipientPP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[1].script);
+      var changePP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[4].script);
+      expect(recipientPP1_FT.amount, 1);
+      expect(changePP1_FT.amount, 999);
+      expect(recipientPP1_FT.amount + changePP1_FT.amount, 1000);
     });
   });
 
@@ -422,8 +422,8 @@ void main() {
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
         bobFundingTx.hash, 1000,
       );
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       var mintWitnessTx = service.createFungibleWitnessTxn(
         bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
@@ -474,8 +474,8 @@ void main() {
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
         bobFundingTx.hash, 1000,
       );
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       var mintWitnessTx = service.createFungibleWitnessTxn(
         bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
@@ -529,8 +529,8 @@ void main() {
         bobFundingTx.hash, 1000,
       );
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // --- Step 2: Mint witness ---
       var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -553,10 +553,10 @@ void main() {
       expect(splitTx.outputs.length, 8);
 
       // Verify split amounts
-      var recipientPP5 = PP5LockBuilder.fromScript(splitTx.outputs[1].script);
-      var changePP5 = PP5LockBuilder.fromScript(splitTx.outputs[4].script);
-      expect(recipientPP5.amount, 600);
-      expect(changePP5.amount, 400);
+      var recipientPP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[1].script);
+      var changePP1_FT = PP1FtLockBuilder.fromScript(splitTx.outputs[4].script);
+      expect(recipientPP1_FT.amount, 600);
+      expect(changePP1_FT.amount, 400);
 
       // --- Step 4: Witness for recipient triplet (base index 1) ---
       var recipientWitnessTx = service.createFungibleWitnessTxn(
@@ -596,18 +596,18 @@ void main() {
       expect(mergeTx.outputs.length, 5, reason: 'Merge should create 5 outputs');
       expect(mergeTx.inputs.length, 5, reason: 'Merge should have 5 inputs');
 
-      // Verify merged PP5 amount
-      var mergedPP5 = PP5LockBuilder.fromScript(mergeTx.outputs[1].script);
-      expect(mergedPP5.amount, 1000, reason: 'Merged amount should be 1000');
-      expect(hex.encode(mergedPP5.recipientPKH), bobPubkeyHash);
+      // Verify merged PP1_FT amount
+      var mergedPP1_FT = PP1FtLockBuilder.fromScript(mergeTx.outputs[1].script);
+      expect(mergedPP1_FT.amount, 1000, reason: 'Merged amount should be 1000');
+      expect(hex.encode(mergedPP1_FT.recipientPKH), bobPubkeyHash);
 
       // Verify PP2-FT indices
       var mergedPP2 = PP2FtLockBuilder.fromScript(mergeTx.outputs[2].script);
-      expect(mergedPP2.pp5OutputIndex, 1);
+      expect(mergedPP2.pp1FtOutputIndex, 1);
       expect(mergedPP2.pp2OutputIndex, 2);
 
       // Verify output satoshi values
-      expect(mergeTx.outputs[1].satoshis, BigInt.one); // PP5
+      expect(mergeTx.outputs[1].satoshis, BigInt.one); // PP1_FT
       expect(mergeTx.outputs[2].satoshis, BigInt.one); // PP2-FT
       expect(mergeTx.outputs[3].satoshis, BigInt.one); // PP3-FT
       expect(mergeTx.outputs[4].satoshis, BigInt.zero); // Metadata
@@ -649,7 +649,7 @@ void main() {
           returnsNormally,
           reason: 'PP3-FT-B burn spending in merge should verify');
 
-      // --- Step 8: Create merge witness (exercises PP5.mergeToken) ---
+      // --- Step 8: Create merge witness (exercises PP1_FT.mergeToken) ---
       var splitTxBytes = hex.decode(splitTx.serialize());
       var mergeWitnessTx = service.createFungibleWitnessTxn(
         bobFundingSigner, mergeWitnessFundingTx, mergeTx, bobPub, bobPubkeyHash,
@@ -658,19 +658,19 @@ void main() {
         parentTokenTxBytesB: splitTxBytes,
         parentOutputCount: 8,
         parentOutputCountB: 8,
-        parentPP5IndexA: 1,
-        parentPP5IndexB: 4,
+        parentPP1FtIndexA: 1,
+        parentPP1FtIndexB: 4,
         tripletBaseIndex: 1,
       );
       expect(mergeWitnessTx.outputs.length, 1);
 
-      // Verify PP5 spending in merge witness (input[1] spends mergeTx output[1])
+      // Verify PP1_FT spending in merge witness (input[1] spends mergeTx output[1])
       expect(
           () => interp.correctlySpends(
               mergeWitnessTx.inputs[1].script!, mergeTx.outputs[1].script,
               mergeWitnessTx, 1, verifyFlags, Coin.valueOf(mergeTx.outputs[1].satoshis)),
           returnsNormally,
-          reason: 'PP5 mergeToken spending in witness should verify');
+          reason: 'PP1_FT mergeToken spending in witness should verify');
 
       // --- Step 9: Transfer merged tokens to Alice (proves merged UTXOs are spendable) ---
       var transferFundingTx = getBobFundingTx();
@@ -684,10 +684,10 @@ void main() {
 
       expect(transferTx.outputs.length, 5);
 
-      // Verify transferred PP5 has correct amount and recipient
-      var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
-      expect(transferPP5.amount, 1000, reason: 'Transferred amount should be 1000');
-      expect(hex.encode(transferPP5.recipientPKH), alicePubkeyHash,
+      // Verify transferred PP1_FT has correct amount and recipient
+      var transferPP1_FT = PP1FtLockBuilder.fromScript(transferTx.outputs[1].script);
+      expect(transferPP1_FT.amount, 1000, reason: 'Transferred amount should be 1000');
+      expect(hex.encode(transferPP1_FT.recipientPKH), alicePubkeyHash,
           reason: 'Recipient should be Alice');
 
       // Verify PP3-FT spending in transfer (input[2] spends mergeTx output[3])
@@ -706,7 +706,7 @@ void main() {
           returnsNormally,
           reason: 'ModP2PKH spending in post-merge transfer should verify');
 
-      // --- Step 10: Witness for Alice's transfer (exercises PP5.transferToken on merged output) ---
+      // --- Step 10: Witness for Alice's transfer (exercises PP1_FT.transferToken on merged output) ---
       // tokenChangePKH must be Bob's PKH because the transfer tx's satoshi change goes to Bob (the sender)
       var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
       var aliceWitnessTx = service.createFungibleWitnessTxn(
@@ -718,18 +718,18 @@ void main() {
       );
       expect(aliceWitnessTx.outputs.length, 1);
 
-      // Verify PP5 spending in Alice's witness (input[1] spends transferTx output[1])
+      // Verify PP1_FT spending in Alice's witness (input[1] spends transferTx output[1])
       expect(
           () => interp.correctlySpends(
               aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
               aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
           returnsNormally,
-          reason: 'PP5 transferToken spending after merge should verify');
+          reason: 'PP1_FT transferToken spending after merge should verify');
     });
   });
 
   group('Split after split: spending change triplet', () {
-    test('split change triplet (parentPP5Index=4) then verify witnesses',
+    test('split change triplet (parentPP1FtIndex=4) then verify witnesses',
         timeout: Timeout(Duration(minutes: 3)), () async {
       var service = FungibleTokenTool();
       var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
@@ -742,8 +742,8 @@ void main() {
         bobFundingTx.hash, 1000,
       );
 
-      var pp5Lock = PP5LockBuilder.fromScript(mintTx.outputs[1].script);
-      var tokenId = pp5Lock.tokenId;
+      var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1FtLock.tokenId;
 
       // --- Step 2: Mint witness ---
       var mintWitnessTx = service.createFungibleWitnessTxn(
@@ -764,12 +764,12 @@ void main() {
       );
 
       expect(split1Tx.outputs.length, 8);
-      var recipientPP5 = PP5LockBuilder.fromScript(split1Tx.outputs[1].script);
-      var changePP5 = PP5LockBuilder.fromScript(split1Tx.outputs[4].script);
-      expect(recipientPP5.amount, 700);
-      expect(changePP5.amount, 300);
-      expect(hex.encode(recipientPP5.recipientPKH), alicePubkeyHash);
-      expect(hex.encode(changePP5.recipientPKH), bobPubkeyHash);
+      var recipientPP1_FT = PP1FtLockBuilder.fromScript(split1Tx.outputs[1].script);
+      var changePP1_FT = PP1FtLockBuilder.fromScript(split1Tx.outputs[4].script);
+      expect(recipientPP1_FT.amount, 700);
+      expect(changePP1_FT.amount, 300);
+      expect(hex.encode(recipientPP1_FT.recipientPKH), alicePubkeyHash);
+      expect(hex.encode(changePP1_FT.recipientPKH), bobPubkeyHash);
 
       // --- Step 4: Witness for change triplet (base index 4) ---
       var changeWitnessTx = service.createFungibleWitnessTxn(
@@ -798,15 +798,15 @@ void main() {
       expect(split2Tx.inputs.length, 3);
 
       // Verify second split amounts
-      var split2RecipientPP5 = PP5LockBuilder.fromScript(split2Tx.outputs[1].script);
-      var split2ChangePP5 = PP5LockBuilder.fromScript(split2Tx.outputs[4].script);
-      expect(split2RecipientPP5.amount, 200, reason: 'Recipient should get 200');
-      expect(split2ChangePP5.amount, 100, reason: 'Change should be 100');
-      expect(hex.encode(split2RecipientPP5.recipientPKH), alicePubkeyHash);
-      expect(hex.encode(split2ChangePP5.recipientPKH), bobPubkeyHash);
+      var split2RecipientPP1_FT = PP1FtLockBuilder.fromScript(split2Tx.outputs[1].script);
+      var split2ChangePP1_FT = PP1FtLockBuilder.fromScript(split2Tx.outputs[4].script);
+      expect(split2RecipientPP1_FT.amount, 200, reason: 'Recipient should get 200');
+      expect(split2ChangePP1_FT.amount, 100, reason: 'Change should be 100');
+      expect(hex.encode(split2RecipientPP1_FT.recipientPKH), alicePubkeyHash);
+      expect(hex.encode(split2ChangePP1_FT.recipientPKH), bobPubkeyHash);
 
       // Verify balance conservation
-      expect(split2RecipientPP5.amount + split2ChangePP5.amount, 300,
+      expect(split2RecipientPP1_FT.amount + split2ChangePP1_FT.amount, 300,
           reason: 'Total should equal change amount from first split');
 
       var interp = Interpreter();
@@ -828,8 +828,8 @@ void main() {
           returnsNormally,
           reason: 'ModP2PKH witness spending in second split should verify');
 
-      // --- Step 6: Witness for second split recipient (base=1, parentPP5Index=4) ---
-      // Parent is split1Tx (8 outputs), PP5 was at index 4 (change triplet)
+      // --- Step 6: Witness for second split recipient (base=1, parentPP1FtIndex=4) ---
+      // Parent is split1Tx (8 outputs), PP1_FT was at index 4 (change triplet)
       var alice2WitnessTx = service.createFungibleWitnessTxn(
         aliceFundingSigner, alice2WitnessFundingTx, split2Tx,
         alicePubKey, bobPubkeyHash,
@@ -837,19 +837,19 @@ void main() {
         parentTokenTxBytes: hex.decode(split1Tx.serialize()),
         parentOutputCount: 8,
         tripletBaseIndex: 1,
-        parentPP5IndexA: 4,
+        parentPP1FtIndexA: 4,
       );
       expect(alice2WitnessTx.outputs.length, 1);
 
-      // Verify PP5 splitTransfer spending in recipient witness
+      // Verify PP1_FT splitTransfer spending in recipient witness
       expect(
           () => interp.correctlySpends(
               alice2WitnessTx.inputs[1].script!, split2Tx.outputs[1].script,
               alice2WitnessTx, 1, verifyFlags, Coin.valueOf(split2Tx.outputs[1].satoshis)),
           returnsNormally,
-          reason: 'PP5 splitTransfer (recipient) with parentPP5Index=4 should verify');
+          reason: 'PP1_FT splitTransfer (recipient) with parentPP1FtIndex=4 should verify');
 
-      // --- Step 7: Witness for second split change (base=4, parentPP5Index=4) ---
+      // --- Step 7: Witness for second split change (base=4, parentPP1FtIndex=4) ---
       var change2WitnessTx = service.createFungibleWitnessTxn(
         bobFundingSigner, change2WitnessFundingTx, split2Tx,
         bobPub, bobPubkeyHash,
@@ -857,21 +857,21 @@ void main() {
         parentTokenTxBytes: hex.decode(split1Tx.serialize()),
         parentOutputCount: 8,
         tripletBaseIndex: 4,
-        parentPP5IndexA: 4,
+        parentPP1FtIndexA: 4,
       );
       expect(change2WitnessTx.outputs.length, 1);
 
-      // Verify PP5 splitTransfer spending in change witness
+      // Verify PP1_FT splitTransfer spending in change witness
       expect(
           () => interp.correctlySpends(
               change2WitnessTx.inputs[1].script!, split2Tx.outputs[4].script,
               change2WitnessTx, 1, verifyFlags, Coin.valueOf(split2Tx.outputs[4].satoshis)),
           returnsNormally,
-          reason: 'PP5 splitTransfer (change) with parentPP5Index=4 should verify');
+          reason: 'PP1_FT splitTransfer (change) with parentPP1FtIndex=4 should verify');
 
-      // --- Step 8: Transfer Alice's 200 tokens to Bob (exercises transferToken with parentPP5Index=4) ---
+      // --- Step 8: Transfer Alice's 200 tokens to Bob (exercises transferToken with parentPP1FtIndex=4) ---
       // Alice's 200-token recipient triplet came from split2Tx (base=1)
-      // But the parent of that triplet is split1Tx where PP5 was at index 4
+      // But the parent of that triplet is split1Tx where PP1_FT was at index 4
       var transferFundingTx = getAliceFundingTx();
       var bobTransferWitnessFundingTx = getBobFundingTx();
 
@@ -882,9 +882,9 @@ void main() {
       );
 
       expect(transferTx.outputs.length, 5);
-      var transferPP5 = PP5LockBuilder.fromScript(transferTx.outputs[1].script);
-      expect(transferPP5.amount, 200, reason: 'Transferred amount should be 200');
-      expect(hex.encode(transferPP5.recipientPKH), bobPubkeyHash,
+      var transferPP1_FT = PP1FtLockBuilder.fromScript(transferTx.outputs[1].script);
+      expect(transferPP1_FT.amount, 200, reason: 'Transferred amount should be 200');
+      expect(hex.encode(transferPP1_FT.recipientPKH), bobPubkeyHash,
           reason: 'Recipient should be Bob');
 
       // Verify PP3-FT spending in transfer (input[2] spends split2Tx output[3])
@@ -905,13 +905,13 @@ void main() {
       );
       expect(bobTransferWitnessTx.outputs.length, 1);
 
-      // Verify PP5 transferToken spending in witness
+      // Verify PP1_FT transferToken spending in witness
       expect(
           () => interp.correctlySpends(
               bobTransferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
               bobTransferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
           returnsNormally,
-          reason: 'PP5 transferToken after split-change transfer should verify');
+          reason: 'PP1_FT transferToken after split-change transfer should verify');
     });
   });
 
