@@ -1,0 +1,350 @@
+/*
+  Copyright 2024 - Stephan M. February
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
+import 'dart:typed_data';
+import 'dart:convert';
+import 'package:buffer/buffer.dart';
+import 'package:convert/convert.dart';
+import 'package:cryptography/cryptography.dart';
+import 'package:dartsv/dartsv.dart';
+import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
+import '../builder/map_lockbuilder.dart';
+import '../builder/partial_witness_lock_builder.dart';
+import '../builder/partial_witness_unlock_builder.dart';
+import '../builder/pp1_rnft_lock_builder.dart';
+import '../builder/pp1_rnft_unlock_builder.dart';
+import '../builder/metadata_lock_builder.dart';
+import '../builder/pp2_lock_builder.dart';
+import '../builder/pp2_unlock_builder.dart';
+import 'utils.dart';
+
+/// High-level API for creating Restricted NFT (RNFT) token transactions.
+///
+/// Supports issuance, transfer, witness, redeem, and burn operations.
+/// Transfer policy is enforced by the flags parameter in the locking script.
+class RestrictedTokenTool {
+  final NetworkType networkType;
+  final BigInt defaultFee;
+
+  RestrictedTokenTool({this.networkType = NetworkType.TEST, BigInt? defaultFee})
+      : defaultFee = defaultFee ?? BigInt.from(135);
+
+  var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
+
+  /// Creates a witness transaction for an RNFT token.
+  ///
+  /// Produces a 1-output transaction: Witness (locked to current token holder).
+  /// Spends: FundingUTXO (output[1]), PP1_RNFT, PP2 from [tokenTx].
+  ///
+  /// [fundingSigner] signs both the funding input and PP1 (assumes same private key).
+  /// [fundingTx] provides the funding UTXO at output[1].
+  /// [tokenTx] is the token transaction to witness.
+  /// [parentTokenTxBytes] is the raw serialized bytes of the parent token transaction.
+  /// [tokenChangePKH] is the pubkey hash for the token's change output.
+  /// [action] specifies the token action (e.g., issue or transfer).
+  Transaction createWitnessTxn(
+      TransactionSigner fundingSigner,
+      Transaction fundingTx,
+      Transaction tokenTx,
+      List<int> parentTokenTxBytes,
+      SVPublicKey ownerPubkey,
+      String tokenChangePKH,
+      RestrictedTokenAction action,
+      {List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}) {
+
+    var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
+    var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash); //PP2 unlocker only needs token transaction's txid
+    var witnessLocker = ModP2PKHLockBuilder.fromAddress(ownerAddress);  //witness is locked to current token holder
+    var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
+    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+    var preImageTxnForPP1 = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker) //PP1_RNFT
+        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker) //PP2
+        .spendToLockBuilder(witnessLocker, BigInt.one)
+        .withFee(BigInt.from(100))
+        .build(false);
+
+    var subscript1 = tokenTx.outputs[1].script;
+    var preImagePP1 = Sighash().createSighashPreImage(preImageTxnForPP1, sigHashAll, 1, subscript1, BigInt.one);
+
+    var tsl1 = TransactionUtils();
+    var tokenTxLHS = tsl1.getTxLHS(tokenTx); //everything up to and excluding the first output
+    var paddingBytes = Uint8List(1); //1 Byte
+    var pp2Output = tokenTx.outputs[2].serialize();
+    var tokenChangeAmount = tokenTx.outputs[0].satoshis;
+
+    var pp1UnlockBuilder = PP1RnftUnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
+    var witnessTx = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
+        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
+        .spendToLockBuilder(witnessLocker, BigInt.one)
+        .build(false);
+
+    //updated padding bytes
+    paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
+
+    pp1UnlockBuilder = PP1RnftUnlockBuilder(preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
+
+    witnessTx = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
+        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
+        .spendToLockBuilder(witnessLocker, BigInt.one)
+        .build(false);
+
+    return witnessTx;
+  }
+
+  /// Constructs a 36-byte outpoint (txid + output index 1) from a transaction ID.
+  List<int> getOutpoint(List<int> txId) {
+    var outputWriter = ByteDataWriter();
+    outputWriter.write(txId); //32 byte txid
+    outputWriter.writeUint32(1, Endian.little);
+    return outputWriter.toBytes();
+  }
+
+  /// Creates an RNFT issuance transaction with 5-output structure:
+  /// Change, PP1_RNFT, PP2, PartialWitness, Metadata.
+  ///
+  /// All proof outputs and the expected witness output are locked to [recipientAddress].
+  /// The tokenId is set to the txid of [tokenFundingTx].
+  ///
+  /// [tokenFundingTx] funds the issuance; its txid becomes the initial tokenId.
+  /// [witnessFundingTxId] is the txid of the transaction that will fund the first witness.
+  /// [rabinPubKeyHash] is the 20-byte hash160 of the Rabin public key for identity anchoring.
+  /// [flags] is the 1-byte transfer policy flags.
+  /// [companionTokenId] is an optional 32-byte companion token ID for composition.
+  /// [metadataBytes] optional raw metadata to embed in the OP_RETURN output.
+  /// [identityTxId] optional identity anchor txid for issuer identity linking.
+  /// [issuerWand] optional ED25519 signing wand; required when [identityTxId] is provided.
+  Future<Transaction> createTokenIssuanceTxn(
+      Transaction tokenFundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey,
+      Address recipientAddress,
+      List<int> witnessFundingTxId,
+      List<int> rabinPubKeyHash,
+      int flags,
+      {List<int>? companionTokenId,
+       List<int>? metadataBytes,
+       List<int>? identityTxId,
+       SignatureWand? issuerWand}) async {
+
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var tokenTxBuilder = TransactionBuilder();
+    var tokenId = tokenFundingTx.hash; //set initial tokenId to fundingTxId
+
+    //fund the txn
+    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    tokenTxBuilder.withFeePerKb(1);
+
+    //create PP1_RNFT Outpoint
+    var pp1Locker = PP1RnftLockBuilder(recipientAddress, tokenId, rabinPubKeyHash, flags, companionTokenId: companionTokenId);
+    tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
+
+    var outputWriter = ByteDataWriter();
+    outputWriter.write(witnessFundingTxId); //32 byte txid in txFormat
+    outputWriter.writeUint32(1, Endian.little);
+    var fundingOutpoint = outputWriter.toBytes();
+
+    var pp2Locker = PP2LockBuilder(fundingOutpoint, hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
+    tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
+
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
+    tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
+
+    //metadata OP_RETURN output (output[4]) - required by PP1 transferToken validation
+    LockingScriptBuilder metadataLocker;
+    if (identityTxId != null && issuerWand != null) {
+      // Sign the identity txid with the issuer's ED25519 key
+      var identityTxIdHex = hex.encode(identityTxId);
+      var signature = await issuerWand.sign(identityTxId);
+      SimplePublicKey pubkey = (await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey);
+      var b64Sig = base64Encode(signature.bytes);
+
+      var mapData = <String, String>{
+        'identityTxId': identityTxIdHex,
+        'identitySig': b64Sig,
+      };
+      metadataLocker = MapLockBuilder.fromMap(mapData);
+    } else {
+      metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
+    }
+    tokenTxBuilder.spendToLockBuilder(metadataLocker, BigInt.zero);
+
+    tokenTxBuilder.sendChangeToPKH(recipientAddress);
+
+    return tokenTxBuilder.build(false);
+  }
+
+  /// Creates an RNFT transfer transaction with 5-output structure:
+  /// Change, PP1_RNFT, PP2, PartialWitness, Metadata.
+  ///
+  /// Transfer policy is enforced by the PP1_RNFT locking script via the flags byte.
+  /// Spends: FundingUTXO, previous Witness output, and PartialWitness (output[3])
+  /// from [prevTokenTx]. Metadata is carried forward from the parent token transaction.
+  ///
+  /// [prevWitnessTx] is the previous witness transaction whose output is spent.
+  /// [prevTokenTx] is the parent token transaction being transferred from.
+  /// [currentOwnerPubkey] is the public key of the current token holder.
+  /// [recipientAddress] is the address of the new token recipient.
+  /// [recipientWitnessFundingTxId] txid of the recipient's witness funding transaction.
+  /// [tokenId] is the persistent token identifier carried across transfers.
+  Transaction createTokenTransferTxn(
+      Transaction prevWitnessTx,
+      Transaction prevTokenTx,
+      SVPublicKey currentOwnerPubkey,
+      Address recipientAddress,
+      Transaction fundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey,
+      List<int> recipientWitnessFundingTxId,
+      List<int> tokenId) {
+
+    var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
+
+    // Parse previous PP1_RNFT to carry forward all params (rabinPubKeyHash, flags, companionTokenId)
+    var prevPP1 = PP1RnftLockBuilder.fromScript(prevTokenTx.outputs[1].script);
+    var pp1LockBuilder = PP1RnftLockBuilder(recipientAddress, tokenId, prevPP1.rabinPubKeyHash!, prevPP1.flags, companionTokenId: prevPP1.companionTokenId);
+
+    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
+
+    //carry forward metadata from parent token tx (output[4])
+    var metadataScript = prevTokenTx.outputs[4].script;
+    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
+
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
+    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+    var childPreImageTxn = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker) //one output only in witness
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
+        .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1_RNFT
+        .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
+        .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
+        .spendToLockBuilder(metadataLocker, BigInt.zero) //metadata OP_RETURN
+        .sendChangeToPKH(currentOwnerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    var pp3Subscript = prevTokenTx.outputs[3].script;
+    var sigPreImageChildTx = Sighash().createSighashPreImage(childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
+
+    var tsl1 = TransactionUtils();
+    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
+
+    var sha256Unlocker = PartialWitnessUnlockBuilder(
+        sigPreImageChildTx!,
+        partialHash,
+        witnessPartialPreImage,
+        fundingTx.hash);
+
+    var childTxn = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
+        .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1_RNFT
+        .spendToLockBuilder(pp2Locker, BigInt.one) //PP2
+        .spendToLockBuilder(shaLocker, BigInt.one) //PartialShaLocker
+        .spendToLockBuilder(metadataLocker, BigInt.zero) //metadata OP_RETURN
+        .sendChangeToPKH(currentOwnerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return childTxn;
+  }
+
+  /// Creates a burn transaction that destroys an RNFT token by spending all its proof outputs.
+  ///
+  /// Spends PP1_RNFT (output[1]), PP2 (output[2]), and PartialWitness (output[3])
+  /// from [tokenTx] using burn-mode unlockers. Change is sent back to the owner.
+  ///
+  /// [tokenTx] is the token transaction to burn.
+  /// [ownerSigner] signs the token proof inputs (PP1_RNFT, PP2, PartialWitness).
+  /// [ownerPubkey] is the public key of the current token holder.
+  Transaction createBurnTokenTxn(
+      Transaction tokenTx,
+      TransactionSigner ownerSigner,
+      SVPublicKey ownerPubkey,
+      Transaction fundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey) {
+
+    var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var pp1BurnUnlocker = PP1RnftUnlockBuilder.forBurn(ownerPubkey);
+    var pp2BurnUnlocker = PP2UnlockBuilder.forBurn(ownerPubkey);
+    var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
+
+    var burnTx = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1BurnUnlocker) //PP1_RNFT
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker) //PP2
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)  //PartialWitness
+        .sendChangeToPKH(ownerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return burnTx;
+  }
+
+  /// Creates a redeem transaction for an RNFT token.
+  ///
+  /// If the token has a one-time-use flag, the token is destroyed on redeem.
+  /// Otherwise, the token survives with the same owner.
+  ///
+  /// Spends PP1_RNFT (output[1]), PP2 (output[2]), and PartialWitness (output[3])
+  /// from [tokenTx] using redeem/burn-mode unlockers. Change is sent back to the owner.
+  ///
+  /// [tokenTx] is the token transaction to redeem.
+  /// [ownerSigner] signs the token proof inputs.
+  /// [ownerPubkey] is the public key of the current token holder.
+  Transaction createRedeemTokenTxn(
+      Transaction tokenTx,
+      TransactionSigner ownerSigner,
+      SVPublicKey ownerPubkey,
+      Transaction fundingTx,
+      TransactionSigner fundingTxSigner,
+      SVPublicKey fundingPubKey) {
+
+    var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var pp1RedeemUnlocker = PP1RnftUnlockBuilder.forRedeem(ownerPubkey);
+    var pp2BurnUnlocker = PP2UnlockBuilder.forBurn(ownerPubkey);
+    var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
+
+    var redeemTx = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1RedeemUnlocker) //PP1_RNFT (redeem)
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker) //PP2
+        .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)  //PartialWitness
+        .sendChangeToPKH(ownerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return redeemTx;
+  }
+}

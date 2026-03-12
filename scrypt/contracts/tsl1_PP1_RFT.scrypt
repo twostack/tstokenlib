@@ -1,0 +1,806 @@
+/*
+Copyright 2024 - Stephan M. February
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+import "util.scrypt";
+import "txUtil_ft.scrypt";
+
+
+/*
+*  PP1_RFT - Restricted Fungible Token variant of PlugPointOne.
+*
+*  Extends the PP1_FT (FungiblePlugPoint) pattern with transfer policy flags
+*  and Merkle tree whitelist verification, mirroring the restriction model
+*  from PP1_RNFT but applied to fungible token mechanics (amounts, splits, merges).
+*
+*  Constructor param layout (98-byte header):
+*    Byte 0:       0x14 (pushdata 20)
+*    Bytes 1-20:   ownerPKH (20 bytes)
+*    Byte 21:      0x20 (pushdata 32)
+*    Bytes 22-53:  tokenId (32 bytes)
+*    Byte 54:      0x14 (pushdata 20)
+*    Bytes 55-74:  rabinPubKeyHash (20 bytes)
+*    Byte 75:      0x04 (pushdata 4)
+*    Bytes 76-79:  flags (4-byte LE)
+*    Byte 80:      0x08 (pushdata 8)
+*    Bytes 81-88:  amount (8-byte LE)
+*    Byte 89:      0x04 (pushdata 4)
+*    Bytes 90-93:  tokenSupply (4-byte LE)
+*    Byte 94:      0x04 (pushdata 4)
+*    Bytes 95-98:  merkleRoot (optional, 32 bytes pushed separately if whitelist enabled)
+*
+*  Compiled script byte offsets (prefix = compiled code before constructor params):
+*    Prefix:                  0 - (prefixLen-1)
+*    PKH pushdata:            prefixLen       (0x14)
+*    PKH data:                prefixLen+1     (20 bytes)
+*    tokenId pushdata:        prefixLen+21    (0x20)
+*    tokenId data:            prefixLen+22    (32 bytes)
+*    rabinPubKeyHash pushdata:prefixLen+54    (0x14)
+*    rabinPubKeyHash data:    prefixLen+55    (20 bytes)
+*    flags pushdata:          prefixLen+75    (0x04)
+*    flags data:              prefixLen+76    (4 bytes)
+*    amount pushdata:         prefixLen+80    (0x08)
+*    amount data:             prefixLen+81    (8 bytes)
+*    tokenSupply pushdata:    prefixLen+89    (0x04)
+*    tokenSupply data:        prefixLen+90    (4 bytes)
+*    merkleRoot pushdata:     prefixLen+94    (0x20)
+*    merkleRoot data:         prefixLen+95    (32 bytes)
+*    suffix:                  prefixLen+127+
+*
+*  Flags bit layout (same as PP1_RNFT):
+*    bits 0-1: transfer policy
+*      00 = free transfer (anyone on whitelist, or unrestricted if no whitelist)
+*      01 = self-only (token can only be transferred to the same owner)
+*      10 = non-transferable (transfer/split always fails)
+*    bit 2: one-time-use redeem (1 = destroy on redeem, 0 = token persists)
+*    bit 3: composition required (1 = companion token must be present in inputs)
+*
+*  Six operations:
+*    mintToken      - Create fresh token issuance with Rabin identity binding
+*    transferToken  - Transfer full balance to new owner (whitelist enforced)
+*    splitTransfer  - Split balance: partial to recipient, change to owner (whitelist enforced)
+*    mergeTokens    - Merge two RFT UTXOs into one (same tokenId required)
+*    burnToken      - Destroy token and reclaim locked satoshis
+*    redeemToken    - Redeem token; behavior depends on one-time-use flag (bit 2)
+*/
+contract RestrictedFungiblePlugPoint {
+
+Ripemd160 ownerPKH;          // current owner's pubkey hash
+bytes tokenId;                // 32-byte token ID
+Ripemd160 rabinPubKeyHash;   // hash160 of Rabin public key n (identity anchor)
+int flags;                    // 4-byte transfer policy flags
+int amount;                   // 8-byte token amount
+int tokenSupply;              // 4-byte max supply cap
+bytes merkleRoot;             // 32-byte Merkle root of address whitelist (all zeros if disabled)
+
+constructor(Ripemd160 recipientPKH, bytes tokenId, Ripemd160 rabinPubKeyHash, int flags, int amount, int tokenSupply, bytes merkleRoot) {
+    this.ownerPKH = recipientPKH;
+    this.tokenId = tokenId;
+    this.rabinPubKeyHash = rabinPubKeyHash;
+    this.flags = flags;
+    this.amount = amount;
+    this.tokenSupply = tokenSupply;
+    this.merkleRoot = merkleRoot;
+}
+
+
+/*
+  Mint fresh restricted fungible tokens with Rabin identity binding.
+
+  preImage        - Witness Transaction's SigHashPreimage (ALL | FORKID)
+  fundingTxId     - Witness-Funding Transaction's TxId
+  padding         - Alignment padding bytes
+  rabinN          - Rabin public key n
+  rabinS          - Rabin signature s
+  rabinPadding    - Rabin signature padding
+  identityTxId    - 32-byte identity anchor transaction ID
+  ed25519PubKey   - 32-byte ED25519 public key for identity verification
+*/
+public function mintToken(
+    SigHashPreimage preImage,
+    bytes fundingTxId,
+    bytes padding,
+    int rabinN,
+    int rabinS,
+    int rabinPadding,
+    bytes identityTxId,
+    bytes ed25519PubKey
+    ) {
+
+    // assert preimage
+    require(Tx.checkPreimageOCS(preImage));
+
+    require(len(padding) > 0);
+    require(this.amount > 0);
+
+    // enforce supply cap: minted amount must not exceed tokenSupply
+    require(this.amount <= this.tokenSupply);
+
+    // Rabin identity binding: verify hash160(rabinN) matches the stored identity anchor
+    bytes rabinNBytes = Utils.toLEUnsigned(rabinN, 256);
+    require(hash160(rabinNBytes) == this.rabinPubKeyHash);
+
+    // Rabin signature verification:
+    // The signed message is the concatenation of identityTxId + ed25519PubKey
+    bytes rabinMessage = identityTxId + ed25519PubKey;
+    int h = Utils.fromLEUnsigned(sha256(rabinMessage));
+    int paddedH = h + rabinPadding;
+    require((rabinS * rabinS) % rabinN == paddedH % rabinN);
+
+    // assert that the stated tokenId is same as current transactionId
+    bytes currentTxId = Util.outpoint(preImage)[:32];
+
+    bytes fundingOutpoint = fundingTxId + Utils.toLEUnsigned(1, 4);
+    bytes prevOutpoint2 = currentTxId + Utils.toLEUnsigned(1, 4);  // PP1_RFT output #1
+    bytes prevOutpoint3 = currentTxId + Utils.toLEUnsigned(2, 4);  // PP2-FT output #2
+
+    bytes prevHashPreImage = fundingOutpoint + prevOutpoint2 + prevOutpoint3;
+    bytes calcHashPrevOut = sha256(sha256(prevHashPreImage));
+
+    bytes givenHashPrevOuts = Util.hashPrevouts(preImage);
+    require(givenHashPrevOuts == calcHashPrevOut);
+}
+
+
+/*
+  Transfer full token balance to a new owner, subject to transfer policy flags
+  and Merkle whitelist verification.
+
+  preImage         - Witness Tx SigHashPreimage
+  pp2OutputBytes   - Serialized PP2-FT output
+  ownerPubKey      - Current owner's public key
+  changePkh        - Satoshi change PKH
+  changeAmount     - Satoshi change amount
+  ownerSig         - Owner's signature
+  scriptLHS        - Version + inputs of the current token transaction
+  parentRawTx      - Raw bytes of the parent token transaction
+  padding          - Alignment padding
+  parentOutputCount - Number of outputs in parent tx (5 or 8)
+  parentPP1Index   - Index of PP1_RFT in parent tx (1=standard, 4=change triplet)
+  recipientPKH     - New owner's pubkey hash (for whitelist check)
+  merkleProof      - Merkle proof path for recipientPKH (empty if whitelist disabled)
+  merkleSides      - Left/right indicators for Merkle proof (empty if whitelist disabled)
+*/
+public function transferToken(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          ownerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             ownerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding,
+    int             parentOutputCount,
+    int             parentPP1Index,
+    Ripemd160       recipientPKH,
+    bytes           merkleProof,
+    bytes           merkleSides
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimageOCS(preImage));
+
+    // assert P2PKH unlock conditions
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // enforce transfer policy from flags bits 0-1
+    int transferPolicy = this.flags & 3;
+
+    if (transferPolicy == 2) {
+        // 10 = non-transferable: always fails
+        require(false);
+    }
+
+    if (transferPolicy == 1) {
+        // 01 = self-only: recipient must be the same owner
+        require(recipientPKH == this.ownerPKH);
+    }
+
+    // If whitelist is enabled (merkleRoot is not all zeros), verify recipient is whitelisted
+    if (this.merkleRoot != b'0000000000000000000000000000000000000000000000000000000000000000') {
+        require(this.verifyMerkleProof(recipientPKH, merkleProof, merkleSides, this.merkleRoot));
+    }
+
+    // read parent outputs
+    FTOutput parentPP1Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index);
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index + 2);
+
+    int metadataIndex = parentOutputCount - 1;
+    FTOutput parentMetadataOutput = TxUtil_FT.readOutput(parentRawTx, metadataIndex);
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // rebuild current token tx
+    bytes scriptPubKey = Util.scriptCode(preImage);
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes satoshiChangeOutput = Util.buildOutput(pkhScript, changeAmount);
+    bytes pp1Output = Util.buildOutput(scriptPubKey, 1);
+
+    // rebuild PP3-FT with current owner's PKH
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + satoshiChangeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // inductive check: rebuild PP1_RFT from parent template with PKH+amount substitution
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes rebuiltPP1Script = this.rebuildRFTScript(parentPP1Script, recipientPKH, this.amount);
+    require(sha256(rebuiltPP1Script) == sha256(scriptPubKey));
+
+    // validate PP2-FT output structure
+    bytes pp2OutputScript = TxUtil_FT.getScriptCodeFromOutput(pp2OutputBytes);
+    this.validatePP2FT(pp2OutputScript, parentPP2Output.script, 1, 2);
+
+    // check that input[2] spends from parent's PP3-FT
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  Split token balance: send partial amount to recipient, keep change (8 outputs).
+  Subject to transfer policy flags and Merkle whitelist verification.
+
+  preImage              - Witness Tx SigHashPreimage
+  pp2RecipientOutBytes  - Serialized PP2-FT output for recipient triplet
+  pp2ChangeOutBytes     - Serialized PP2-FT output for change triplet
+  ownerPubKey           - Current owner's public key
+  changePkh             - Satoshi change PKH
+  changeAmount          - Satoshi change amount
+  ownerSig              - Owner's signature
+  scriptLHS             - Version + inputs of the current token transaction
+  parentRawTx           - Raw bytes of the parent token transaction
+  padding               - Alignment padding
+  recipientAmount       - Tokens to send to recipient
+  tokenChangeAmount     - Tokens to keep as change
+  recipientPKH          - Recipient's pubkey hash
+  myOutputIndex         - Which PP1_RFT output am I? (1=recipient, 4=change)
+  parentOutputCount     - Number of outputs in parent tx (5 or 8)
+  parentPP1Index        - Index of PP1_RFT in parent tx (1=standard, 4=change triplet)
+  merkleProof           - Merkle proof path for recipientPKH (empty if whitelist disabled)
+  merkleSides           - Left/right indicators for Merkle proof (empty if whitelist disabled)
+*/
+public function splitTransfer(
+    SigHashPreimage preImage,
+    bytes           pp2RecipientOutBytes,
+    bytes           pp2ChangeOutBytes,
+    PubKey          ownerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             ownerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding,
+    int             recipientAmount,
+    int             tokenChangeAmount,
+    Ripemd160       recipientPKH,
+    int             myOutputIndex,
+    int             parentOutputCount,
+    int             parentPP1Index,
+    bytes           merkleProof,
+    bytes           merkleSides
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimageOCS(preImage));
+
+    // assert P2PKH unlock conditions
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // enforce transfer policy from flags bits 0-1
+    int transferPolicy = this.flags & 3;
+
+    if (transferPolicy == 2) {
+        // 10 = non-transferable: always fails
+        require(false);
+    }
+
+    if (transferPolicy == 1) {
+        // 01 = self-only: recipient must be the same owner
+        require(recipientPKH == this.ownerPKH);
+    }
+
+    // If whitelist is enabled, verify recipient is whitelisted
+    if (this.merkleRoot != b'0000000000000000000000000000000000000000000000000000000000000000') {
+        require(this.verifyMerkleProof(recipientPKH, merkleProof, merkleSides, this.merkleRoot));
+    }
+
+    // balance conservation
+    require(recipientAmount > 0);
+    require(tokenChangeAmount > 0);
+
+    // read parent PP1_RFT to get total amount and template
+    FTOutput parentPP1Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index);
+    bytes parentPP1Script = parentPP1Output.script;
+
+    // extract parent amount from compiled script (8 bytes at amount data offset)
+    // amount is at offset prefixLen+81 in compiled script; use known offset pattern
+    int parentAmount = this.extractAmount(parentPP1Script);
+    require(recipientAmount + tokenChangeAmount == parentAmount);
+
+    // extract parent's ownerPKH (20 bytes after first pushdata byte in constructor params)
+    Ripemd160 parentOwnerPKH = this.extractOwnerPKH(parentPP1Script);
+
+    // read other parent outputs
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTx, parentPP1Index + 2);
+
+    int metadataIndex = parentOutputCount - 1;
+    FTOutput parentMetadataOutput = TxUtil_FT.readOutput(parentRawTx, metadataIndex);
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // rebuild PP1_RFT scripts for recipient and change from parent template
+    bytes recipientPP1Script = this.rebuildRFTScript(parentPP1Script, recipientPKH, recipientAmount);
+    bytes changePP1Script = this.rebuildRFTScript(parentPP1Script, parentOwnerPKH, tokenChangeAmount);
+
+    // verify my script matches the correct output
+    bytes myScriptPubKey = Util.scriptCode(preImage);
+    if (myOutputIndex == 1) {
+        require(sha256(recipientPP1Script) == sha256(myScriptPubKey));
+    } else {
+        require(sha256(changePP1Script) == sha256(myScriptPubKey));
+    }
+
+    // rebuild PP3-FT scripts
+    bytes parentPP3Script = parentPP3Output.script;
+    // Recipient PP3-FT: ownerPKH=recipientPKH, pp2OutputIndex=2
+    bytes recipientPP3Script = parentPP3Script[:1] + recipientPKH + parentPP3Script[21:61348]
+                                + Utils.toLEUnsigned(2, 1) + parentPP3Script[61349:];
+    // Change PP3-FT: ownerPKH=parentOwnerPKH, pp2OutputIndex=5
+    bytes changePP3Script = parentPP3Script[:1] + parentOwnerPKH + parentPP3Script[21:61348]
+                                + Utils.toLEUnsigned(5, 1) + parentPP3Script[61349:];
+
+    // build all 8 outputs
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes satoshiChangeOutput = Util.buildOutput(pkhScript, changeAmount);
+    bytes pp1RecipientOutput = Util.buildOutput(recipientPP1Script, 1);
+    bytes pp3RecipientOutput = Util.buildOutput(recipientPP3Script, 1);
+    bytes pp1ChangeOutput = Util.buildOutput(changePP1Script, 1);
+    bytes pp3ChangeOutput = Util.buildOutput(changePP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(8)
+                   + satoshiChangeOutput
+                   + pp1RecipientOutput + pp2RecipientOutBytes + pp3RecipientOutput
+                   + pp1ChangeOutput + pp2ChangeOutBytes + pp3ChangeOutput
+                   + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // validate both PP2-FT outputs
+    bytes pp2RecipientScript = TxUtil_FT.getScriptCodeFromOutput(pp2RecipientOutBytes);
+    this.validatePP2FT(pp2RecipientScript, parentPP2Output.script, 1, 2);
+
+    bytes pp2ChangeScript = TxUtil_FT.getScriptCodeFromOutput(pp2ChangeOutBytes);
+    this.validatePP2FT(pp2ChangeScript, parentPP2Output.script, 4, 5);
+
+    // check that input[2] spends from parent's PP3-FT
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  Merge two restricted fungible token UTXOs into one (5 outputs).
+
+  Combines amountA + amountB into this.amount. Both parents must share the same tokenId.
+  The merge tx has 5 inputs: [funding, witnessA, PP3-FT-A, witnessB, PP3-FT-B]
+  and 5 outputs: [Change, PP1_RFT_merged, PP2-FT, PP3-FT, Metadata].
+
+  No whitelist check is required for merge since no new party is introduced;
+  the owner is consolidating their own token UTXOs.
+
+  parentRawTxA/B       - Raw bytes of the two parent token transactions being merged
+  parentOutputCountA/B - Number of outputs in each parent tx (5 or 8)
+  parentPP1IndexA/B    - PP1_RFT output index in each parent (1=standard, 4=change triplet)
+*/
+public function mergeTokens(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          ownerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             ownerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTxA,
+    bytes           parentRawTxB,
+    bytes           padding,
+    int             parentOutputCountA,
+    int             parentOutputCountB,
+    int             parentPP1IndexA,
+    int             parentPP1IndexB
+    ) {
+
+    require(len(parentRawTxA) > 0);
+    require(len(parentRawTxB) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimageOCS(preImage));
+
+    // assert P2PKH unlock conditions
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // read PP1_RFT outputs from both parents at their respective indices
+    FTOutput parentPP1OutputA = TxUtil_FT.readOutput(parentRawTxA, parentPP1IndexA);
+    FTOutput parentPP1OutputB = TxUtil_FT.readOutput(parentRawTxB, parentPP1IndexB);
+
+    bytes parentPP1ScriptA = parentPP1OutputA.script;
+    bytes parentPP1ScriptB = parentPP1OutputB.script;
+
+    // extract amounts from both parents
+    int amountA = this.extractAmount(parentPP1ScriptA);
+    int amountB = this.extractAmount(parentPP1ScriptB);
+
+    // balance conservation: merged amount must equal sum of parents
+    require(amountA + amountB == this.amount);
+
+    // verify both parents are the same token (tokenId at same offset in both scripts)
+    bytes tokenIdA = this.extractTokenId(parentPP1ScriptA);
+    bytes tokenIdB = this.extractTokenId(parentPP1ScriptB);
+    require(tokenIdA == tokenIdB);
+
+    // verify both parents have the same flags and merkleRoot (restriction consistency)
+    int flagsA = this.extractFlags(parentPP1ScriptA);
+    int flagsB = this.extractFlags(parentPP1ScriptB);
+    require(flagsA == flagsB);
+
+    // read PP2, PP3 and metadata from parent A (template source)
+    FTOutput parentPP2Output = TxUtil_FT.readOutput(parentRawTxA, parentPP1IndexA + 1);
+    FTOutput parentPP3Output = TxUtil_FT.readOutput(parentRawTxA, parentPP1IndexA + 2);
+
+    int metadataIndexA = parentOutputCountA - 1;
+    FTOutput parentMetadataOutput = TxUtil_FT.readOutput(parentRawTxA, metadataIndexA);
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // rebuild current token tx (5 outputs, same shape as transfer)
+    bytes scriptPubKey = Util.scriptCode(preImage);
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes satoshiChangeOutput = Util.buildOutput(pkhScript, changeAmount);
+    bytes pp1Output = Util.buildOutput(scriptPubKey, 1);
+
+    // rebuild PP3-FT with current owner's PKH (pp2OutputIndex stays at 2)
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + satoshiChangeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // inductive proof: rebuild PP1_RFT from parent A template with merged PKH+amount
+    bytes rebuiltPP1Script = this.rebuildRFTScript(parentPP1ScriptA, this.ownerPKH, this.amount);
+    require(sha256(rebuiltPP1Script) == sha256(scriptPubKey));
+
+    // validate PP2-FT output structure
+    bytes pp2OutputScript = TxUtil_FT.getScriptCodeFromOutput(pp2OutputBytes);
+    this.validatePP2FT(pp2OutputScript, parentPP2Output.script, 1, 2);
+
+    // check that input[3] spends from parent A's PP3-FT
+    bytes outpointA = this.readOutpoint(fullTx, 3);
+    bytes parentTxIdA = sha256(sha256(parentRawTxA));
+    require(outpointA[:32] == parentTxIdA);
+
+    // check that input[4] spends from parent B's PP3-FT
+    bytes outpointB = this.readOutpoint(fullTx, 4);
+    bytes parentTxIdB = sha256(sha256(parentRawTxB));
+    require(outpointB[:32] == parentTxIdB);
+}
+
+
+/*
+  Burn tokens. Reclaim locked satoshis.
+  Simple P2PKH authentication - only the current owner can burn.
+*/
+public function burnToken(PubKey ownerPubKey, Sig ownerSig) {
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+}
+
+
+/*
+  Redeem the token. Owner redeems; behavior depends on flags bit 2 (one-time-use).
+
+  If bit 2 = 1: one-time-use redeem. Token is destroyed after redemption (no continuation output).
+  If bit 2 = 0: persistent redeem. Token survives; spending tx must carry forward the same token output.
+
+  preImage    - Witness Transaction's SigHashPreimage
+  ownerPubKey - Owner's public key
+  ownerSig    - Owner's signature
+*/
+public function redeemToken(
+    SigHashPreimage preImage,
+    PubKey ownerPubKey,
+    Sig ownerSig
+    ) {
+
+    // assert preimage
+    require(Tx.checkPreimageOCS(preImage));
+
+    // assert P2PKH unlock conditions are met
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // Check flags bit 2: one-time-use redeem
+    int oneTimeUse = (this.flags >> 2) & 1;
+
+    if (oneTimeUse == 1) {
+        // Burn: one-time-use token is destroyed on redeem.
+        // No continuation output required. The token is consumed.
+        require(true);
+    } else {
+        // Persist: token survives redemption via self-transfer.
+        // The spending tx must carry forward the same token output (same owner).
+        bytes scriptPubKey = Util.scriptCode(preImage);
+        bytes pp1Output = Util.buildOutput(scriptPubKey, 1);
+        bytes hashOutputs = sha256(sha256(pp1Output));
+        require(hashOutputs == Util.hashOutputs(preImage));
+    }
+}
+
+
+/*
+  Verify a Merkle proof that a given leaf (address hash) is included in the whitelist tree.
+
+  leaf        - The hash160 of the address to verify (20 bytes, will be sha256'd)
+  proof       - Concatenated 32-byte sibling hashes along the path (N * 32 bytes)
+  sides       - One byte per proof level: 0x00 = sibling on right, 0x01 = sibling on left
+  root        - Expected Merkle root (32 bytes)
+
+  Returns true if the proof is valid.
+*/
+private function verifyMerkleProof(Ripemd160 leaf, bytes proof, bytes sides, bytes root) : bool {
+    // Hash the leaf to get the initial 32-byte node
+    bytes currentHash = sha256(leaf);
+
+    int proofLen = len(proof) / 32;
+    require(len(sides) == proofLen);
+
+    // Walk up the Merkle tree
+    loop(20) : i {
+        if (i < proofLen) {
+            bytes sibling = proof[i * 32 : (i + 1) * 32];
+            int side = unpack(sides[i : i + 1]);
+
+            if (side == 0) {
+                // sibling is on the right
+                currentHash = sha256(currentHash + sibling);
+            } else {
+                // sibling is on the left
+                currentHash = sha256(sibling + currentHash);
+            }
+        }
+    }
+
+    require(currentHash == root);
+    return true;
+}
+
+
+/*
+  Rebuild a PP1_RFT script from a parent template by substituting ownerPKH and amount.
+  TokenId, rabinPubKeyHash, flags, tokenSupply, and merkleRoot are preserved (immutable).
+
+  The constructor param layout in the compiled script follows the PP5 pattern but with
+  additional fields. We use the same relative offset approach:
+    - ownerPKH is the first constructor param (after prefix + pushdata byte)
+    - amount is at a fixed offset within the constructor param block
+    - All other fields (tokenId, rabinPubKeyHash, flags, tokenSupply, merkleRoot) are
+      between PKH and amount or after amount, and are copied verbatim from the parent.
+
+  Compiled PP1_RFT constructor param offsets (relative to prefix end):
+    PKH pushdata + data:         21 bytes (1 + 20)
+    tokenId pushdata + data:     33 bytes (1 + 32)
+    rabinPubKeyHash pushdata + data: 21 bytes (1 + 20)
+    flags pushdata + data:       5 bytes (1 + 4)
+    amount pushdata + data:      9 bytes (1 + 8)
+    tokenSupply pushdata + data: 5 bytes (1 + 4)
+    merkleRoot pushdata + data:  33 bytes (1 + 32)
+    Total constructor block:     127 bytes
+
+  For script rebuilding (following PP5 pattern where [:N] includes pushdata):
+    [:prefixLen+1]                       = prefix + PKH pushdata byte
+    [prefixLen+21 : prefixLen+80]        = tokenId..flags (preserved, 59 bytes)
+    [prefixLen+89 :]                     = tokenSupply + merkleRoot + suffix (preserved)
+
+  NOTE: The exact byte offsets depend on the compiled script prefix length, which is
+  determined at compilation time. These offsets mirror the PP5 pattern (prefix=114 bytes).
+  Adjust if the compiled prefix differs.
+
+  Using PP5-equivalent offsets (prefix=114):
+    [:115]       = prefix + PKH pushdata (115 bytes)
+    [135:169]    = tokenId pushdata+data + rabinPubKeyHash pushdata+data = not applicable here
+
+  For RFT with prefix=114:
+    PKH data ends at:     114 + 21 = 135
+    amount pushdata at:   114 + 80 = 194
+    amount data ends at:  114 + 89 = 203
+*/
+function rebuildRFTScript(bytes parentScript, Ripemd160 newPKH, int newAmount) : bytes {
+    // The PKH is the first constructor param.
+    // We preserve everything before the PKH data, substitute PKH (20 bytes),
+    // preserve the middle block (tokenId + rabinPubKeyHash + flags + amount pushdata byte),
+    // substitute amount (8 bytes), and preserve the rest (tokenSupply + merkleRoot + suffix).
+    //
+    // Using the same offset convention as PP5 (prefix = 114 bytes):
+    //   Byte 114: PKH pushdata (0x14)
+    //   Bytes 115-134: PKH data (20 bytes)
+    //   Bytes 135-193: tokenId(33) + rabinPubKeyHash(21) + flags(5) + amount pushdata(1) = 60 bytes
+    //   Bytes 194-201: amount data (8 bytes)
+    //   Bytes 202+: tokenSupply(5) + merkleRoot(33) + suffix
+    return parentScript[:115]
+        + newPKH
+        + parentScript[135 : 194]
+        + num2bin(newAmount, 8)
+        + parentScript[202 :];
+}
+
+
+/*
+  Extract the token amount from a compiled PP1_RFT script.
+  Amount is 8 bytes at offset 194 (prefix 114 + constructor offset 80 + pushdata 1).
+  Appends 0x00 sign byte for unsigned interpretation.
+*/
+function extractAmount(bytes script) : int {
+    return unpack(script[194 : 202] + b'00');
+}
+
+
+/*
+  Extract the ownerPKH from a compiled PP1_RFT script.
+  PKH is 20 bytes at offset 115 (prefix 114 + pushdata 1).
+*/
+function extractOwnerPKH(bytes script) : Ripemd160 {
+    return Ripemd160(script[115 : 135]);
+}
+
+
+/*
+  Extract the tokenId from a compiled PP1_RFT script.
+  TokenId is 32 bytes at offset 136 (prefix 114 + 21 PKH block + pushdata 1).
+*/
+function extractTokenId(bytes script) : bytes {
+    return script[136 : 168];
+}
+
+
+/*
+  Extract the flags from a compiled PP1_RFT script.
+  Flags are 4 bytes at offset 190 (prefix 114 + 21 PKH + 33 tokenId + 21 rabinPKH + pushdata 1).
+*/
+function extractFlags(bytes script) : int {
+    return unpack(script[190 : 194] + b'00');
+}
+
+
+/*
+  Validate a PP2-FT output script against the parent template.
+  Extracts and validates constructor params at known byte offsets.
+  (Same as FungiblePlugPoint.validatePP2FT)
+*/
+function validatePP2FT(bytes pp2Script, bytes parentPP2Script, int expectedPP1Idx, int expectedPP2Idx) : bool {
+    // PP2-FT compiled byte offsets
+    int fundingOutpointStart = 119;
+    int witnessChangePKHStart = 156;
+    int changeAmountStart = 177;
+    int ownerPKHStart = 178;
+    int pp1OutputIndexStart = 199;
+    int pp2OutputIndexStart = 200;
+    int scriptCodeStart = 201;
+
+    // extract pushdata-encoded constructor params
+    bytes witnessFundingOutpoint = pp2Script[fundingOutpointStart : witnessChangePKHStart];
+    bytes witnessChangePKH = pp2Script[witnessChangePKHStart : changeAmountStart];
+    bytes witnessChangeAmount = pp2Script[changeAmountStart : ownerPKHStart];
+    bytes ownerPKH = pp2Script[ownerPKHStart : pp1OutputIndexStart];
+    bytes pp1Idx = pp2Script[pp1OutputIndexStart : pp2OutputIndexStart];
+    bytes pp2Idx = pp2Script[pp2OutputIndexStart : scriptCodeStart];
+
+    // validate pushdata lengths
+    bytes fundingPushData = pp2Script[fundingOutpointStart : fundingOutpointStart + 1];
+    require(unpack(fundingPushData) == 36);
+
+    bytes changePKHPushData = pp2Script[witnessChangePKHStart : witnessChangePKHStart + 1];
+    require(unpack(changePKHPushData) == 20);
+
+    require(witnessChangeAmount == b'51'); // OP_1 = 1 satoshi
+
+    bytes ownerPKHPushData = pp2Script[ownerPKHStart : ownerPKHStart + 1];
+    require(unpack(ownerPKHPushData) == 20);
+
+    // validate output indices
+    require(pp1Idx == Utils.toLEUnsigned(0x50 + expectedPP1Idx, 1));
+    require(pp2Idx == Utils.toLEUnsigned(0x50 + expectedPP2Idx, 1));
+
+    // rebuild PP2-FT from parent template + extracted params and verify match
+    bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointStart]
+                             + witnessFundingOutpoint
+                             + witnessChangePKH
+                             + witnessChangeAmount
+                             + ownerPKH
+                             + pp1Idx
+                             + pp2Idx
+                             + parentPP2Script[scriptCodeStart:];
+
+    require(sha256(rebuiltPP2Script) == sha256(pp2Script));
+
+    return true;
+}
+
+
+/*
+  Read an outpoint (36 bytes: txid + output index) from a raw tx at the given input index.
+  Supports up to 6 inputs (merge tx has 5 inputs: funding, witnessA, PP3-A, witnessB, PP3-B).
+*/
+function readOutpoint(bytes tx, int inputIndex) : bytes {
+    bytes outpoint = b'';
+    int pos = 4;
+    int ninputs = Utils.fromLEUnsigned(tx[pos : pos + 1]);
+    pos = pos + 1;
+    require(ninputs <= 6);
+    loop(6) : i {
+      if (i < ninputs) {
+        if (i == inputIndex) {
+          outpoint = tx[pos : pos + 36];
+        }
+        pos = pos + 36;
+        int varLen = Utils.fromLEUnsigned(tx[pos : pos + 1]);
+        if (varLen < 253) {
+          int scriptLen = varLen;
+          pos = pos + 1 + scriptLen + 4;
+        } else if (varLen == 253) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1 : pos + 3]);
+          pos = pos + 3 + scriptLen + 4;
+        } else if (varLen == 254) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1 : pos + 5]);
+          pos = pos + 5 + scriptLen + 4;
+        } else {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1 : pos + 9]);
+          pos = pos + 9 + scriptLen + 4;
+        }
+      }
+    }
+    return outpoint;
+}
+
+
+}

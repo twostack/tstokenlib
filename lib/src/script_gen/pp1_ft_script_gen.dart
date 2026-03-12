@@ -564,7 +564,7 @@ class PP1FtScriptGen {
     // Stack: [..., pp2S, pp2Script]
     b.opCode(OpCodes.OP_SWAP);
     // Stack: [..., pp2Script, parentPP2Script]
-    _emitValidatePP2FT(b, 1, 2);
+    emitValidatePP2FT(b, 1, 2);
     // Stack: [...]
 
     // --- Phase 16: Verify outpoint[2][:32] == sha256(sha256(parentRawTx)) ---
@@ -613,21 +613,21 @@ class PP1FtScriptGen {
   /// Altstack: [amount(bottom), tokenId, ownerPKH(top)]
   static void _emitSplitTransfer(ScriptBuilder b) {
     _emitSplitAuth(b);
-    _emitSplitValidateInputLengths(b);
-    _emitSplitExtractPreimageFields(b);
-    _emitSplitCheckPreimage(b);
-    _emitSplitParseParentOutputs(b);
-    _emitSplitValidateMetadata(b);
+    emitSplitValidateInputLengths(b);
+    emitSplitExtractPreimageFields(b);
+    emitSplitCheckPreimage(b);
+    emitSplitParseParentOutputs(b);
+    emitSplitValidateMetadata(b);
     _emitSplitBalanceConservation(b);
-    _emitSplitDrainAltstack(b);
+    emitSplitDrainAltstack(b);
     _emitSplitRebuildPP1_FTs(b);
-    _emitSplitVerifyMyOutputIdx(b);
-    _emitSplitRebuildPP3s(b);
-    _emitSplitBuildOutputs(b);
-    _emitSplitReconstructFullTx(b);
-    _emitSplitVerifyTxId(b);
-    _emitSplitValidatePP2s(b);
-    _emitSplitVerifyParentOutpoint(b);
+    emitSplitVerifyMyOutputIdx(b);
+    emitSplitRebuildPP3s(b);
+    emitSplitBuildOutputs(b);
+    emitSplitReconstructFullTx(b);
+    emitSplitVerifyTxId(b);
+    emitSplitValidatePP2s(b);
+    emitSplitVerifyParentOutpoint(b);
   }
 
   /// P2PKH auth.
@@ -658,7 +658,7 @@ class PP1FtScriptGen {
 
   /// Validate padding and parentRawTx lengths.
   /// Stack unchanged (17 items).
-  static void _emitSplitValidateInputLengths(ScriptBuilder b) {
+  static void emitSplitValidateInputLengths(ScriptBuilder b) {
     // padding at idx 7
     b.opCode(OpCodes.OP_7);
     b.opCode(OpCodes.OP_PICK);
@@ -676,7 +676,7 @@ class PP1FtScriptGen {
   /// Entry stack (17): [..., ownerPKH]  preImage at idx 16
   /// Exit stack  (18): [..., ownerPKH, sha256sc]
   /// Alt: [amount, tokenId, currentTxId, nLocktime]
-  static void _emitSplitExtractPreimageFields(ScriptBuilder b) {
+  static void emitSplitExtractPreimageFields(ScriptBuilder b) {
     // Extract currentTxId = preImage[68:100]
     OpcodeHelpers.pushInt(b, 16);
     b.opCode(OpCodes.OP_PICK);           // copy preImage
@@ -721,7 +721,7 @@ class PP1FtScriptGen {
   ///   recipientPKH=5, tokenChangeAmt=6, recipientAmt=7, padding=8,
   ///   parentRawTx=9, scriptLHS=10, ownerSig=11, changeAmt=12, changePkh=13,
   ///   ownerPK=14, pp2ChangeOut=15, pp2RecipOut=16
-  static void _emitSplitCheckPreimage(ScriptBuilder b) {
+  static void emitSplitCheckPreimage(ScriptBuilder b) {
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_ROLL);
     CheckPreimageOCS.emitCheckPreimageOCS(b, useCodeSeparator: false);
@@ -732,7 +732,7 @@ class PP1FtScriptGen {
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (17): [..., ownerPKH, sha256sc]  (same size, rawTx consumed)
   /// Alt: [amount, tokenId, currentTxId, nLocktime, PP1_FT, PP2, PP3, metadata]
-  static void _emitSplitParseParentOutputs(ScriptBuilder b) {
+  static void emitSplitParseParentOutputs(ScriptBuilder b) {
     // parentRawTx at idx 9, pp1FtIdx at idx 2
     b.opCode(OpCodes.OP_9);
     b.opCode(OpCodes.OP_PICK);           // copy parentRawTx
@@ -775,7 +775,7 @@ class PP1FtScriptGen {
   /// Entry stack (17): [..., ownerPKH, sha256sc]
   /// Exit stack  (18): [..., ownerPKH, sha256sc, metadata]
   /// Alt: [..., PP1_FT, PP2, PP3]  (metadata popped)
-  static void _emitSplitValidateMetadata(ScriptBuilder b) {
+  static void emitSplitValidateMetadata(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // metadata
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_2);
@@ -838,7 +838,7 @@ class PP1FtScriptGen {
   ///   tokenChangeAmt=12, recipientAmt=13, padding=14, parentRawTx=15,
   ///   scriptLHS=16, ownerSig=17, changeAmt=18, changePkh=19, ownerPK=20,
   ///   pp2ChangeOut=21, pp2RecipOut=22
-  static void _emitSplitDrainAltstack(ScriptBuilder b) {
+  static void emitSplitDrainAltstack(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // nLocktime
     b.opCode(OpCodes.OP_FROMALTSTACK);   // currentTxId
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
@@ -893,7 +893,7 @@ class PP1FtScriptGen {
   /// Entry stack (25): [..., recipientPP1_FT, changePP1_FT]
   /// Exit stack  (25): [..., recipientPP1_FT, changePP1_FT]  (unchanged)
   /// idx: changePP1_FT=0, recipPP1_FT=1, ..., myOutIdx=10, ..., sha256sc=6
-  static void _emitSplitVerifyMyOutputIdx(ScriptBuilder b) {
+  static void emitSplitVerifyMyOutputIdx(ScriptBuilder b) {
     // myOutIdx at idx 12 (was 10 in Phase 8, +2 from Phase 9 adding recipPP1_FT+changePP1_FT)
     OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // copy myOutIdx → stack 26
@@ -924,7 +924,7 @@ class PP1FtScriptGen {
   /// Change PP3: ownerPKH=parentOwnerPKH (from PP1_FT[1:21]), pp2OutputIndex=5
   /// Entry stack (25): [..., PP3, PP2, PP1_FT, nLocktime, currentTxId, recipPP1_FT, changePP1_FT]
   /// Exit stack  (27): [..., recipPP1_FT, changePP1_FT, recipPP3, changePP3]
-  static void _emitSplitRebuildPP3s(ScriptBuilder b) {
+  static void emitSplitRebuildPP3s(ScriptBuilder b) {
     // --- Rebuild recipient PP3 ---
     // _emitRebuildPP3WithPP2Idx expects: [parentPP3Script, newOwnerPKH]
     // PP3 at idx: changePP1_FT=0, recipPP1_FT=1, curTxId=2, nLock=3, PP1_FT=4, PP2=5, PP3=6
@@ -962,7 +962,7 @@ class PP1FtScriptGen {
   ///   recipPP1_FT, changePP1_FT, recipPP3, changePP3]
   /// Exit stack  (29): [..., currentTxId, pp1FtRecipOut, pp1FtChangeOut,
   ///   pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
-  static void _emitSplitBuildOutputs(ScriptBuilder b) {
+  static void emitSplitBuildOutputs(ScriptBuilder b) {
     // --- Build PP1_FT recipient output (1 sat) ---
     // recipPP1_FT at idx: changePP3=0, recipPP3=1, changePP1_FT=2, recipPP1_FT=3
     b.opCode(OpCodes.OP_3);
@@ -1032,7 +1032,7 @@ class PP1FtScriptGen {
   /// Entry stack (33): [..., nLocktime, currentTxId, recipPP1_FT, changePP1_FT, recipPP3, changePP3,
   ///   pp1FtRecipOut, pp1FtChangeOut, pp3RecipOut, pp3ChangeOut, metaOut, changeOut]
   /// Exit stack: [..., nLocktime, currentTxId, fullTx]
-  static void _emitSplitReconstructFullTx(ScriptBuilder b) {
+  static void emitSplitReconstructFullTx(ScriptBuilder b) {
     // Stack top (12 items from Phase 12):
     //   changeOut=0, metaOut=1, pp3ChangeOut=2, pp3RecipOut=3,
     //   pp1FtChangeOut=4, pp1FtRecipOut=5, changePP3=6, recipPP3=7,
@@ -1190,7 +1190,7 @@ class PP1FtScriptGen {
   ///   outCnt=7, myOutIdx=8, recipientPKH=9, tokenChangeAmt=10, recipientAmt=11,
   ///   padding=12, parentRawTx=13, scriptLHS=14, ownerSig=15, changeAmt=16,
   ///   changePkh=17, ownerPK=18, pp2ChangeOut=19, pp2RecipOut=20
-  static void _emitSplitVerifyTxId(ScriptBuilder b) {
+  static void emitSplitVerifyTxId(ScriptBuilder b) {
     // Stack: [..., nLocktime, currentTxId, fullTx]
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_SHA256);
@@ -1221,7 +1221,7 @@ class PP1FtScriptGen {
   /// Entry stack (21): top = PP1_FT=0, PP2=1, PP3=2, metadata=3, sha256sc=4, ownerPKH=5, ...
   ///   pp2ChangeOut=19, pp2RecipOut=20
   /// Exit: PP1_FT, PP2 consumed; PP3, metadata, sha256sc, ownerPKH remain + cleanup items.
-  static void _emitSplitValidatePP2s(ScriptBuilder b) {
+  static void emitSplitValidatePP2s(ScriptBuilder b) {
     b.opCode(OpCodes.OP_DROP);           // drop PP1_FT (no longer needed)
     // Stack (20): PP2=0, PP3=1, metadata=2, sha256sc=3, ownerPKH=4, ...
     //   pp2ChangeOut=18, pp2RecipOut=19
@@ -1242,7 +1242,7 @@ class PP1FtScriptGen {
     // Stack (21): [..., PP2, pp2RecipScript]
     b.opCode(OpCodes.OP_SWAP);
     // Stack: [..., pp2RecipScript, parentPP2Script]
-    _emitValidatePP2FT(b, 1, 2);
+    emitValidatePP2FT(b, 1, 2);
     // PP2 and pp2RecipScript consumed. Stack (18).
     // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, ...
     //   pp2ChangeOut=16, pp2RecipOut=17
@@ -1261,7 +1261,7 @@ class PP1FtScriptGen {
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     // Stack (20): [..., PP2copy, pp2ChangeScript]
     b.opCode(OpCodes.OP_SWAP);
-    _emitValidatePP2FT(b, 4, 5);
+    emitValidatePP2FT(b, 4, 5);
     // PP2copy and pp2ChangeScript consumed. Stack (17).
     // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp1FtIdx=4, outCnt=5,
     //   myOutIdx=6, recipientPKH=7, tokenChangeAmt=8, recipientAmt=9,
@@ -1269,17 +1269,17 @@ class PP1FtScriptGen {
     //   changePkh=15, ownerPK=16, pp2ChangeOut=17 ... wait, that's 18.
     // Let me recount: started at 21 after Phase 14 drop.
     // Phase 15: -1 (drop PP1_FT) = 20, validate recip (-2) = 18, validate change (-2) = 16? No.
-    // _emitValidatePP2FT consumes [pp2Script, parentPP2] = 2 items each time.
+    // emitValidatePP2FT consumes [pp2Script, parentPP2] = 2 items each time.
     // Start: 20, DUP PP2 → 21 (but TOALTSTACK → 20), PICK pp2Recip → 21, extract → 21,
     // SWAP → 21, validate → 19. Then FROMALTSTACK → 20, PICK pp2Change → 21,
     // extract → 21, SWAP → 21, validate → 19.
-    // Hmm, _emitValidatePP2FT takes [pp2Script, parentPP2Script] and both are consumed.
+    // Hmm, emitValidatePP2FT takes [pp2Script, parentPP2Script] and both are consumed.
     // That's -2 items. So: 20 → PICK(+1)=21 → extract(net 0)=21 → SWAP(0)=21 → validate(-2)=19.
     // Then: FROMALTSTACK(+1)=20 → PICK(+1)=21 → extract(0)=21 → SWAP(0)=21 → validate(-2)=19.
     // Wait that gives 19. But we started with 20 (after dropping PP1_FT) and consumed
     // PP2 + PP2copy + pp2RecipScript + pp2ChangeScript = conceptually 4, but PICK doesn't remove.
     // Actually: 20 items. DUP(+1)→21, TOALTSTACK(-1)→20. First validate: PICK(+1)→21,
-    // then net effect of _emitValidatePP2FT is -2 (consumes pp2Script and parentPP2) → 19.
+    // then net effect of emitValidatePP2FT is -2 (consumes pp2Script and parentPP2) → 19.
     // FROMALTSTACK(+1)→20. PICK(+1)→21. validate(-2)→19.
     // So final: 19 items.
     // Top: PP3=0, metadata=1, sha256sc=2, ownerPKH=3, pp1FtIdx=4, outCnt=5,
@@ -1294,7 +1294,7 @@ class PP1FtScriptGen {
   ///   padding=10, parentRawTx=11, scriptLHS=12, ownerSig=13, changeAmt=14,
   ///   changePkh=15, ownerPK=16, pp2ChangeOut=17, pp2RecipOut=18
   /// Exit: leaves TRUE on stack.
-  static void _emitSplitVerifyParentOutpoint(ScriptBuilder b) {
+  static void emitSplitVerifyParentOutpoint(ScriptBuilder b) {
     // Drop unneeded items: PP3, metadata, sha256sc, ownerPKH, pp1FtIdx, outCnt,
     //   myOutIdx, recipientPKH, tokenChangeAmt, recipientAmt, padding (11 items)
     for (int i = 0; i < 11; i++) {
@@ -1679,7 +1679,7 @@ class PP1FtScriptGen {
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     // Stack: [..., PP2, pp2Script]
     b.opCode(OpCodes.OP_SWAP);
-    _emitValidatePP2FT(b, 1, 2);
+    emitValidatePP2FT(b, 1, 2);
 
     // --- Phase 16: Verify outpoints against parent tx hashes ---
     // Stack after Phase 15: [..., PP3, meta, PP1_FTB, ownerPKH, pp1FtIdxB, pp1FtIdxA,
@@ -2030,7 +2030,7 @@ class PP1FtScriptGen {
 
   /// Validate PP2-FT output script structure against parent template.
   /// Pre: [pp2Script, parentPP2Script] (parent on top). Post: [].
-  static void _emitValidatePP2FT(ScriptBuilder b, int expectedPP1_FTIdx, int expectedPP2Idx) {
+  static void emitValidatePP2FT(ScriptBuilder b, int expectedPP1_FTIdx, int expectedPP2Idx) {
     // Extract constructor params from pp2Script at known byte offsets
     // pp2Script is below parentPP2Script on stack
     b.opCode(OpCodes.OP_SWAP);

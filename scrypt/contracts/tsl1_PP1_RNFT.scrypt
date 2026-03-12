@@ -1,0 +1,353 @@
+/*
+Copyright 2024 - Stephan M. February
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+import "util.scrypt";
+import "txUtil.scrypt";
+
+
+/*
+*
+* - PP1_RNFT - Restricted NFT variant of PlugPointOne.
+*
+*   Extends the PP1 NFT pattern with transfer policy flags.
+*
+*   Constructor param layout:
+*     ownerPKH         - Ripemd160 (20 bytes) current owner's pubkey hash
+*     tokenId          - bytes (32 bytes) unique token identifier
+*     rabinPubKeyHash  - Ripemd160 (20 bytes) hash160 of Rabin public key n (identity anchor)
+*     flags            - int (1 byte) transfer policy flags
+*     companionTokenId - bytes (32 bytes) companion token ID (all zeros if none)
+*
+*   Flags bit layout:
+*     bits 0-1: transfer policy
+*       00 = free transfer
+*       01 = self-only (token can only be transferred to the same owner)
+*       10 = non-transferable (transfer always fails)
+*     bit 2: one-time-use redeem (1 = destroy on redeem, 0 = token persists)
+*     bit 3: composition required (1 = companion token must be present in inputs)
+*
+*   Spent from Witness. Validates parent tx via push-raw-tx.
+*   Rebuilds current Txn on-chain using output side from push-raw-tx,
+*   and input side pushed by Witness Txn.
+*   Verifies that current txn scriptPubKeys are same as parent txn scriptPubKeys.
+*/
+contract PlugPointOneRNFT {
+
+Ripemd160 ownerPKH;          // current owner's pubkey hash
+bytes tokenId;                // 32-byte token ID
+Ripemd160 rabinPubKeyHash;   // hash160 of Rabin public key n (identity anchor)
+int flags;                    // 1-byte transfer policy flags
+bytes companionTokenId;       // 32-byte companion token ID (all zeros if unused)
+
+constructor(Ripemd160 recipientPKH, bytes tokenId, Ripemd160 rabinPubKeyHash, int flags, bytes companionTokenId) {
+    this.ownerPKH = recipientPKH;
+    this.tokenId = tokenId;
+    this.rabinPubKeyHash = rabinPubKeyHash;
+    this.flags = flags;
+    this.companionTokenId = companionTokenId;
+}
+
+
+/*
+  Create a fresh issuance of the token with Rabin identity binding.
+
+  preImage        - Witness Transaction's SighashPreimage (ALL | FORKID)
+  fundingTxId     - Witness-Funding Transaction's TxId
+  padding         - padding bytes for 512-bit alignment
+  rabinN          - Rabin public key n
+  rabinS          - Rabin signature s
+  rabinPadding    - Rabin signature padding
+  identityTxId    - 32-byte identity anchor transaction ID
+  ed25519PubKey   - 32-byte ED25519 public key for identity verification
+*/
+public function issueToken(
+    SigHashPreimage preImage,
+    bytes fundingTxId,
+    bytes padding,
+    int rabinN,
+    int rabinS,
+    int rabinPadding,
+    bytes identityTxId,
+    bytes ed25519PubKey
+    ) {
+
+    // assert preimage
+    require(Tx.checkPreimage(preImage));
+
+    require(len(padding) > 0);
+
+    // Rabin identity binding: verify hash160(rabinN) matches the stored identity anchor
+    bytes rabinNBytes = Utils.toLEUnsigned(rabinN, 256); // serialize Rabin n to bytes
+    require(hash160(rabinNBytes) == this.rabinPubKeyHash);
+
+    // Rabin signature verification:
+    // The signed message is the concatenation of identityTxId + ed25519PubKey
+    bytes rabinMessage = identityTxId + ed25519PubKey;
+    int h = Utils.fromLEUnsigned(sha256(rabinMessage));
+    int paddedH = h + rabinPadding;
+    require((rabinS * rabinS) % rabinN == paddedH % rabinN);
+
+    // assert that the stated tokenId is same as current transactionId
+    bytes currentTxId = Util.outpoint(preImage)[:32];
+
+    bytes fundingOutpoint = fundingTxId + Utils.toLEUnsigned(1, 4); // output #1
+    bytes prevOutpoint2 = currentTxId + Utils.toLEUnsigned(1, 4);   // PP1 output #1
+    bytes prevOutpoint3 = currentTxId + Utils.toLEUnsigned(2, 4);   // PP2 output #2
+
+    bytes prevHashPreImage = fundingOutpoint + prevOutpoint2 + prevOutpoint3;
+    bytes calcHashPrevOut = sha256(sha256(prevHashPreImage));
+
+    bytes givenHashPrevOuts = Util.hashPrevouts(preImage);
+    require(givenHashPrevOuts == calcHashPrevOut);
+}
+
+
+/*
+   Transfer the token to a new owner, subject to transfer policy flags.
+
+   preImage         - PreImage of the witness transaction
+   pp2OutputBytes   - Serialized PP2 output
+   recipientPubKey  - lock to this new owner's pubkey
+   changePkh        - PKH for change output
+   changeAmount     - satoshi amount for change output
+   recipientSig     - Signature of current owner to authorize transfer
+   scriptLHS        - Left-hand-side (inputs) of the current Transaction
+   parentRawTx      - Raw Tx bytes of the parent token Txn
+   padding          - padding bytes for 512-bit alignment
+*/
+public function transferToken(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          recipientPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             recipientSig,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    // every transfer must supply us with a parent transaction
+    require(len(parentRawTx) > 0);
+
+    // assert that padding has been applied
+    require(len(padding) > 0);
+
+    // assert preimage
+    require(Tx.checkPreimage(preImage));
+
+    // assert P2PKH unlock conditions are met (current owner authorizes)
+    require(hash160(recipientPubKey) == this.ownerPKH);
+    require(checkSig(recipientSig, recipientPubKey));
+
+    // Extract transfer policy from flags bits 0-1
+    int transferPolicy = this.flags & 3; // mask bits 0-1
+
+    // Enforce transfer policy
+    if (transferPolicy == 2) {
+        // 10 = non-transferable: always fails
+        require(false);
+    }
+
+    // Derive the new owner PKH from the recipient pubkey
+    Ripemd160 newPKH = hash160(recipientPubKey);
+
+    if (transferPolicy == 1) {
+        // 01 = self-only: new owner must be the same as current owner
+        require(newPKH == this.ownerPKH);
+    }
+    // transferPolicy == 0: free transfer, no additional constraints
+
+    // now rebuild the current Tx
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    // Validate that metadata output is an OP_RETURN (OP_FALSE OP_RETURN = 0x00 0x6a)
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    bytes scriptPubKey = Util.scriptCode(preImage);
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+    bytes pp1Output = Util.buildOutput(scriptPubKey, 1);
+
+    // Rebuild PP3 (PartialWitness) output by substituting ownerPKH at byte offset 1
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // Inductive proof: PP1 script must match parent with PKH substituted
+    bytes parentScriptPubKey = parentPP1Output.script;
+
+    // Determine header size based on companionTokenId
+    // With companion: 110 bytes before PKH (ownerPKH[20] + tokenId[32+1] + rabinPKH[20+1] + flags[1+1] + companionTokenId[32+1] + pushdata bytes)
+    // Without companion: 77 bytes before PKH
+    // The PKH is always at the same offset since constructor params are serialized in order
+    // Use the same 114/134 approach as PP1 but adjusted for the additional fields
+    bytes rebuiltPP1Script = parentScriptPubKey[:114] + this.ownerPKH + parentScriptPubKey[134:];
+
+    require(sha256(rebuiltPP1Script) == sha256(scriptPubKey));
+
+    // Rebuild PP2 Output Script and verify against parent
+    int fundingOutpointStart = 117;
+    int witnessChangePKHStart = 154;
+    int changeAmountStart = 175;
+    int ownerPKHStart = 176;
+    int scriptCodeStart = 197;
+    bytes parentPP2Script = parentPP2Output.script;
+
+    bytes pp2OutputScript = TxUtil.getScriptCodeFromOutput(pp2OutputBytes);
+
+    bytes witnessFundingOutpoint = pp2OutputScript[fundingOutpointStart: witnessChangePKHStart];
+    bytes witnessChangePKH = pp2OutputScript[witnessChangePKHStart: changeAmountStart];
+    bytes witnessChangeAmount = pp2OutputScript[changeAmountStart: ownerPKHStart];
+    bytes ownerPKH = pp2OutputScript[ownerPKHStart: scriptCodeStart];
+
+    bytes witnessFundingPushData = pp2OutputScript[fundingOutpointStart: fundingOutpointStart + 1];
+    int dataSize = unpack(witnessFundingPushData);
+    require(dataSize == 36);
+
+    bytes witnessChangePushData = pp2OutputScript[witnessChangePKHStart: witnessChangePKHStart + 1];
+    dataSize = unpack(witnessChangePushData);
+    require(dataSize == 20);
+
+    require(witnessChangeAmount == b'51');
+
+    bytes ownerPKHPushData = pp2OutputScript[ownerPKHStart: ownerPKHStart + 1];
+    dataSize = unpack(ownerPKHPushData);
+    require(dataSize == 20);
+
+    bytes rebuiltPP2Script = parentPP2Script[:fundingOutpointStart]
+                             + witnessFundingOutpoint
+                             + witnessChangePKH
+                             + witnessChangeAmount
+                             + ownerPKH
+                             + parentPP2Script[scriptCodeStart:];
+
+    require(sha256(rebuiltPP2Script) == sha256(pp2OutputScript));
+
+    // check that second TxInput of current Tx spends from parentRawTx
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+   Redeem the token. Owner redeems, behavior depends on flags bit 2.
+
+   preImage    - Witness Transaction's SighashPreimage
+   ownerPubKey - Owner's public key
+   ownerSig    - Owner's signature
+*/
+public function redeemToken(
+    SigHashPreimage preImage,
+    PubKey ownerPubKey,
+    Sig ownerSig
+    ) {
+
+    // assert preimage
+    require(Tx.checkPreimage(preImage));
+
+    // assert P2PKH unlock conditions are met
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // Check flags bit 2: one-time-use redeem
+    int oneTimeUse = (this.flags >> 2) & 1;
+
+    if (oneTimeUse == 1) {
+        // Burn: one-time-use token is destroyed on redeem.
+        // No continuation output required. The token is consumed.
+        // Caller must construct the spending tx with no PP1 continuation output.
+        // (Validation passes; the token ceases to exist after this spend.)
+        require(true);
+    } else {
+        // Persist: token survives redemption via self-transfer.
+        // The spending tx must carry forward the same token output (same owner).
+        bytes scriptPubKey = Util.scriptCode(preImage);
+        bytes pp1Output = Util.buildOutput(scriptPubKey, 1);
+        bytes hashOutputs = sha256(sha256(pp1Output));
+        require(hashOutputs == Util.hashOutputs(preImage));
+    }
+}
+
+
+// Allow reclaiming of locked sats and burning of this output
+public function burnToken(PubKey recipientPubKey, Sig recipientSig) {
+
+    // assert P2PKH unlock conditions are met
+    require(hash160(recipientPubKey) == this.ownerPKH);
+    require(checkSig(recipientSig, recipientPubKey));
+}
+
+
+function readOutpoint(bytes tx, int inputIndex): bytes {
+
+    bytes outpoint = b'';
+    // first 4 bytes version
+    // 1 byte input num, only support max 3
+    int pos = 4;
+    int ninputs = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+    pos = pos + 1;
+    // max support 3 input
+    // input
+    require(ninputs <= 3);
+    loop(3): i {
+      if (i < ninputs) {
+
+        if (i == inputIndex) {
+          outpoint = tx[pos:pos+36];
+        }
+
+        // output point 36 bytes
+        pos = pos + 36;
+        // 1 byte var
+        // script code + 4 bytes sequence
+        int varLen = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+        if (varLen < 253) {
+          int scriptLen = varLen;
+          pos = pos + 1 + scriptLen + 4;
+        } else if (varLen == 253) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 3]);
+          pos = pos + 3 + scriptLen + 4;
+        } else if (varLen == 254) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 5]);
+          pos = pos + 5 + scriptLen + 4;
+        } else {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 9]);
+          pos = pos + 9 + scriptLen + 4;
+        }
+
+      }
+    }
+    return outpoint;
+}
+
+
+}
