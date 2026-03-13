@@ -1,0 +1,328 @@
+/*
+Copyright 2024 - Stephan M. February
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+import "util.scrypt";
+import "txUtil.scrypt";
+
+
+/*
+*
+* - PP1_AT - Appendable Token (Loyalty Card / Stamp Card).
+*
+*   A new token type with an append-only state log and threshold-based
+*   redemption. Designed for loyalty programs where value accrues over
+*   time through repeated interactions.
+*
+*   Uses a dual-authority model:
+*     - Issuer (shop) signs: Issue, Stamp
+*     - Owner (customer) signs: Transfer, Redeem, Burn
+*
+*   Constructor param layout (118-byte header):
+*     ownerPKH     - Ripemd160 (20 bytes) current holder (customer)
+*     tokenId      - bytes (32 bytes) unique card identifier (immutable)
+*     issuerPKH    - Ripemd160 (20 bytes) shop's pubkey hash (immutable)
+*     stampCount   - int (4 bytes LE) current number of stamps (mutable)
+*     threshold    - int (4 bytes LE) stamps required for redemption (immutable)
+*     stampsHash   - bytes (32 bytes) rolling hash of all stamps (mutable)
+*
+*   Rolling stamp hash (computed from parent PP1 state):
+*     stamp_n = SHA256(metadata_n)
+*     stampsHash_n = SHA256(parentStampsHash || stamp_n)
+*
+*   Spent from Witness. Validates parent tx via push-raw-tx.
+*   Rebuilds current Txn on-chain using output side from push-raw-tx,
+*   and input side pushed by Witness Txn.
+*/
+contract PlugPointOneAT {
+
+Ripemd160 ownerPKH;        // current holder (customer)
+bytes tokenId;              // 32-byte unique card identifier
+Ripemd160 issuerPKH;       // shop's pubkey hash (immutable)
+int stampCount;             // current number of stamps
+int threshold;              // stamps required to unlock redemption
+bytes stampsHash;           // rolling SHA256 hash chain of all stamps
+
+constructor(Ripemd160 recipientPKH, bytes tokenId, Ripemd160 issuerPKH,
+            int stampCount, int threshold, bytes stampsHash) {
+    this.ownerPKH = recipientPKH;
+    this.tokenId = tokenId;
+    this.issuerPKH = issuerPKH;
+    this.stampCount = stampCount;
+    this.threshold = threshold;
+    this.stampsHash = stampsHash;
+}
+
+
+/*
+  Create a fresh issuance of the loyalty card.
+  Issuer (shop) creates the card for a customer.
+
+  preImage        - Witness Transaction's SighashPreimage (ALL | FORKID)
+  fundingTxId     - Witness-Funding Transaction's TxId
+  padding         - padding bytes for 512-bit alignment
+  issuerPubKey    - Issuer's public key
+  issuerSig       - Issuer's signature
+*/
+public function issueToken(
+    SigHashPreimage preImage,
+    bytes fundingTxId,
+    bytes padding,
+    PubKey issuerPubKey,
+    Sig issuerSig
+    ) {
+
+    // assert preimage
+    require(Tx.checkPreimage(preImage));
+
+    require(len(padding) > 0);
+
+    // Verify issuer identity
+    require(hash160(issuerPubKey) == this.issuerPKH);
+    require(checkSig(issuerSig, issuerPubKey));
+
+    // assert that the stated tokenId is same as current transactionId
+    bytes currentTxId = Util.outpoint(preImage)[:32];
+
+    bytes fundingOutpoint = fundingTxId + Utils.toLEUnsigned(1, 4);
+    bytes prevOutpoint2 = currentTxId + Utils.toLEUnsigned(1, 4);   // PP1 output #1
+    bytes prevOutpoint3 = currentTxId + Utils.toLEUnsigned(2, 4);   // PP2 output #2
+
+    bytes prevHashPreImage = fundingOutpoint + prevOutpoint2 + prevOutpoint3;
+    bytes calcHashPrevOut = sha256(sha256(prevHashPreImage));
+
+    bytes givenHashPrevOuts = Util.hashPrevouts(preImage);
+    require(givenHashPrevOuts == calcHashPrevOut);
+}
+
+
+/*
+   Add a stamp to the loyalty card. Issuer (shop) awards a stamp.
+
+   preImage         - PreImage of the witness transaction
+   pp2OutputBytes   - Serialized PP2 output
+   issuerPubKey     - Issuer's public key
+   changePkh        - PKH for change output
+   changeAmount     - satoshi amount for change output
+   issuerSig        - Signature of issuer to authorize stamp
+   scriptLHS        - Left-hand-side (inputs) of the current Transaction
+   parentRawTx      - Raw Tx bytes of the parent token Txn
+   padding          - padding bytes for 512-bit alignment
+   stampMetadata    - arbitrary data for this stamp (receipt hash, amount, etc.)
+*/
+public function stampToken(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          issuerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             issuerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding,
+    bytes           stampMetadata
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+
+    // assert preimage
+    require(Tx.checkPreimage(preImage));
+
+    // Verify issuer identity
+    require(hash160(issuerPubKey) == this.issuerPKH);
+    require(checkSig(issuerSig, issuerPubKey));
+
+    // Parse parent outputs (needed for rolling hash computation)
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Compute rolling hash from parent PP1 state (avoids circular sig dependency)
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes parentStampsHash = parentPP1Script[86:118];
+    bytes parentStampCount4LE = parentPP1Script[76:80];
+    bytes newStamp = sha256(stampMetadata);
+    bytes newStampsHash = sha256(parentStampsHash + newStamp);
+    int newStampCount = Utils.fromLEUnsigned(parentStampCount4LE) + 1;
+
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // Rebuild PP1_AT with updated stampCount and stampsHash
+    // Header: parent[0:76] + newStampCount(4LE) + parent[80:86] + newStampsHash + parent[118:]
+    bytes rebuiltPP1Script = parentPP1Script[:76]
+                             + Utils.toLEUnsigned(newStampCount, 4)
+                             + parentPP1Script[80:86]
+                             + newStampsHash
+                             + parentPP1Script[118:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 (PartialWitness) — ownerPKH does not change on stamp
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script; // no change for stamp
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // Verify parent chain
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+   Transfer the loyalty card to a new customer.
+
+   preImage         - PreImage of the witness transaction
+   pp2OutputBytes   - Serialized PP2 output
+   ownerPubKey      - Current owner's public key
+   changePkh        - PKH for change output
+   changeAmount     - satoshi amount for change output
+   ownerSig         - Signature of current owner
+   scriptLHS        - Left-hand-side (inputs) of the current Transaction
+   parentRawTx      - Raw Tx bytes of the parent token Txn
+   padding          - padding bytes for 512-bit alignment
+*/
+public function transferToken(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          ownerPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             ownerSig,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+
+    require(Tx.checkPreimage(preImage));
+
+    // Verify current owner
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    bytes scriptPubKey = Util.scriptCode(preImage);
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // PP1_AT: only ownerPKH changes on transfer
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes rebuiltPP1Script = parentPP1Script[:1] + this.ownerPKH + parentPP1Script[21:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.ownerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+   Redeem the loyalty card reward. Customer redeems after reaching threshold.
+   Burns the token (threshold must be met).
+
+   ownerPubKey - Owner's public key
+   ownerSig    - Owner's signature
+*/
+public function redeemToken(PubKey ownerPubKey, Sig ownerSig) {
+
+    // Verify current owner
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+
+    // Threshold check: stampCount must be >= threshold
+    require(this.stampCount >= this.threshold);
+}
+
+
+// Burn: unconditional destroy by owner (no threshold check)
+public function burnToken(PubKey ownerPubKey, Sig ownerSig) {
+
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+}
+
+
+function readOutpoint(bytes tx, int inputIndex): bytes {
+
+    bytes outpoint = b'';
+    int pos = 4;
+    int ninputs = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+    pos = pos + 1;
+    require(ninputs <= 3);
+    loop(3): i {
+      if (i < ninputs) {
+        if (i == inputIndex) {
+          outpoint = tx[pos:pos+36];
+        }
+        pos = pos + 36;
+        int varLen = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+        if (varLen < 253) {
+          int scriptLen = varLen;
+          pos = pos + 1 + scriptLen + 4;
+        } else if (varLen == 253) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 3]);
+          pos = pos + 3 + scriptLen + 4;
+        } else if (varLen == 254) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 5]);
+          pos = pos + 5 + scriptLen + 4;
+        } else {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 9]);
+          pos = pos + 9 + scriptLen + 4;
+        }
+      }
+    }
+    return outpoint;
+}
+
+
+}

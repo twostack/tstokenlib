@@ -34,3 +34,6 @@ export 'src/builder/pp1_rft_unlock_builder.dart';
 export 'src/transaction/restricted_fungible_token_tool.dart';
 export 'src/crypto/merkle_tree.dart';
 export 'src/crypto/rabin.dart';
+export 'src/builder/pp1_at_lock_builder.dart';
+export 'src/builder/pp1_at_unlock_builder.dart';
+export 'src/transaction/appendable_token_tool.dart';
