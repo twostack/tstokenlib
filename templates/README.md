@@ -1,125 +1,97 @@
 # TSL1 Bitcoin Script Templates
 
-Language-agnostic script templates for the TSL1 Token Protocol. These templates allow any language to construct valid Bitcoin locking scripts via simple variable substitution.
+Language-agnostic script templates for the TSL1 Token Protocol. These templates allow any language to construct valid Bitcoin locking scripts via simple variable substitution into JSON descriptors.
+
+## Templates
+
+### NFT (`nft/`)
+
+| Template | Description | Parameters |
+|----------|-------------|------------|
+| [pp1_nft.json](nft/README.md#pp1_nftjson--nft-inductive-proof) | NFT inductive proof | ownerPKH, tokenId, rabinPubKeyHash |
+| [pp1_rnft.json](nft/README.md#pp1_rnftjson--restricted-nft) | Restricted NFT with flags | ownerPKH, tokenId, rabinPubKeyHash, flags |
+| [pp1_at.json](nft/README.md#pp1_atjson--appendable-token-loyaltystamp-card) | Appendable token (loyalty card) | ownerPKH, tokenId, issuerPKH, stampCount, threshold, stampsHash |
+| [pp2.json](nft/README.md#pp2json--nft-witness-bridge) | NFT witness bridge | outpoint, witnessChangePKH, witnessChangeAmount, ownerPKH |
+| [pp3_witness.json](nft/README.md#pp3_witnessjson--nft-partial-sha256-witness) | NFT partial SHA256 witness | ownerPKH |
+
+### Fungible Tokens (`ft/`)
+
+| Template | Description | Parameters |
+|----------|-------------|------------|
+| [pp1_ft.json](ft/README.md#pp1_ftjson--fungible-token-inductive-proof) | Fungible token proof | ownerPKH, tokenId, amount |
+| [pp1_rft.json](ft/README.md#pp1_rftjson--restricted-fungible-token) | Restricted FT with flags | ownerPKH, tokenId, rabinPubKeyHash, flags, amount |
+| [pp2_ft.json](ft/README.md#pp2_ftjson--ft-witness-bridge) | FT witness bridge | outpoint, witnessChangePKH, witnessChangeAmount, ownerPKH, pp1FtOutputIndex, pp2OutputIndex |
+| [pp3_ft_witness.json](ft/README.md#pp3_ft_witnessjson--ft-partial-sha256-witness) | FT partial SHA256 witness | ownerPKH |
+
+### State Machine (`sm/`)
+
+| Template | Description | Parameters |
+|----------|-------------|------------|
+| [pp1_sm.json](sm/README.md) | State machine token (7 ops) | ownerPKH, tokenId, merchantPKH, customerPKH, currentState, milestoneCount, commitmentHash, transitionBitmask, timeoutDelta |
+
+### Utility (`utility/`)
+
+| Template | Description | Parameters |
+|----------|-------------|------------|
+| [mod_p2pkh.json](utility/README.md#mod_p2pkhjson--modified-p2pkh) | Modified P2PKH (token value output) | ownerPKH |
+| [hodl.json](utility/README.md#hodljson--time-lock-script-hodl) | Time-lock script | ownerPubkeyHash, lockHeight |
+
+### Encoding Reference (`encoding/`)
+
+| File | Description |
+|------|-------------|
+| [scriptnum.md](encoding/scriptnum.md) | Bitcoin script number and pushdata encoding spec |
 
 ## Template Format
 
-Each `.json` file is a descriptor containing:
+Each `.json` descriptor contains:
 
 ```json
 {
-  "name": "PP1",
+  "name": "PP1_NFT",
   "version": "1.3.0",
   "description": "...",
-  "parameters": [ ... ],
-  "hex": "14{{ownerPKH}}20{{tokenId}}..."
+  "parameters": [
+    { "name": "ownerPKH", "size": 20, "encoding": "hex", "description": "..." }
+  ],
+  "hex": "14{{ownerPKH}}20{{tokenId}}...",
+  "metadata": { "sourceFile": "...", "note": "..." }
 }
 ```
 
-### Fields
-
-| Field | Description |
-|-------|-------------|
-| `name` | Script identifier |
-| `version` | TSL1 protocol version |
-| `description` | What the script does |
-| `parameters` | Array of substitution parameters |
-| `hex` | Hex-encoded script with `{{param}}` placeholders |
-| `asm` | (HODL only) ASM-encoded script with placeholders |
-| `metadata` | Source file, generation notes |
-
 ## Parameter Encodings
 
-### `hex` (fixed-size, Category A scripts: PP1_NFT, PP1_FT, PP3, ModP2PKH)
+| Encoding | Used By | Description |
+|----------|---------|-------------|
+| `hex` | PP1_NFT, PP1_FT, PP1_RNFT, PP1_RFT, PP1_AT, PP1_SM, PP3, ModP2PKH | Raw hex bytes. Pushdata prefix is in the static hex. |
+| `hex_byte` | PP1_SM (currentState, milestoneCount, transitionBitmask) | Single byte as 2 hex chars. Prefix `0x01` is in static hex. |
+| `le_uint32` | PP1_RNFT/RFT flags, PP1_AT stampCount/threshold, PP1_SM timeoutDelta | 4-byte little-endian unsigned integer. |
+| `le_uint56` | PP1_FT/RFT amount | 8-byte LE, bit 63 clear. Max: 2^55 - 1. |
+| `script_pushdata` | PP2, PP2-FT, HODL | Includes Bitcoin pushdata length prefix. |
+| `script_number` | PP2, PP2-FT, HODL | Bitcoin script number encoding (OP_0..OP_16, or LE with sign bit). |
 
-The pushdata length prefix (e.g., `0x14` for 20 bytes, `0x20` for 32 bytes) is already part of the static hex surrounding the placeholder. You only need to substitute the **raw hex bytes** of the parameter value.
+See each subdirectory's README for detailed encoding examples and header layouts.
 
-Example for PP1:
-```
-Static hex: 14{{ownerPKH}}20{{tokenId}}14{{rabinPubKeyHash}}6e6e6e...
-                                                              ^^^^^^ script body
-Substitute:  14<40 hex chars>20<64 hex chars>14<40 hex chars>6e6e6e...
-```
-
-### `le_uint56` (PP1_FT amount)
-
-8-byte little-endian encoding with bit 63 always clear:
-```
-bytes[0..6] = value & 0x00FFFFFFFFFFFFFF (7 bytes LE)
-bytes[7]    = (value >> 56) & 0x7F
-```
-
-Maximum representable value: 2^55 - 1.
-
-### `script_pushdata` (Category B scripts: PP2, PP2-FT, HODL)
-
-The parameter value must include its Bitcoin pushdata prefix. This is what `ScriptBuilder.addData()` produces:
-
-| Data size | Prefix |
-|-----------|--------|
-| 1-75 bytes | Single byte = length |
-| 76-255 bytes | `0x4c` + 1-byte length |
-| 256-65535 bytes | `0x4d` + 2-byte LE length |
-
-Example: 20-byte pubkey hash → prefix `0x14` + 20 raw bytes = 21 bytes total, 42 hex chars.
-
-### `script_number` (Category B scripts: PP2, PP2-FT, HODL)
-
-Bitcoin script number encoding, as produced by `ScriptBuilder.number()`:
-
-| Value | Encoding |
-|-------|----------|
-| 0 | `00` (OP_0) |
-| 1-16 | `51`-`60` (OP_1 through OP_16) |
-| -1 | `4f` (OP_1NEGATE) |
-| Other | `<len><LE bytes>` with sign bit handling |
-
-See `encoding/scriptnum.md` for full specification.
-
-## Directory Structure
-
-```
-templates/
-  nft/
-    pp1_nft.json            # NFT inductive proof
-    pp2.json            # NFT witness bridge
-    pp3_witness.json    # NFT partial SHA256 witness
-  ft/
-    pp1_ft.json            # Fungible token proof
-    pp2_ft.json         # FT witness bridge
-    pp3_ft_witness.json # FT partial SHA256 witness
-  utility/
-    mod_p2pkh.json      # Modified P2PKH (token value output)
-    hodl.json           # Time-lock script
-  encoding/
-    scriptnum.md        # Bitcoin script number encoding spec
-```
-
-## Usage Example (pseudocode)
+## Quick Start
 
 ```python
 import json
 
-# Load template
 with open("templates/nft/pp1_nft.json") as f:
     tpl = json.load(f)
 
-# Substitute parameters (raw hex bytes, no pushdata prefix needed)
 script_hex = tpl["hex"]
-script_hex = script_hex.replace("{{ownerPKH}}", owner_pkh_hex)      # 40 hex chars
-script_hex = script_hex.replace("{{tokenId}}", token_id_hex)        # 64 hex chars
-script_hex = script_hex.replace("{{rabinPubKeyHash}}", rabin_hash)  # 40 hex chars
+script_hex = script_hex.replace("{{ownerPKH}}", owner_pkh_hex)
+script_hex = script_hex.replace("{{tokenId}}", token_id_hex)
+script_hex = script_hex.replace("{{rabinPubKeyHash}}", rabin_hash_hex)
 
-# script_hex is now a complete Bitcoin locking script
 raw_bytes = bytes.fromhex(script_hex)
 ```
 
 ## Regenerating Templates
 
-Templates are generated from the Dart source code:
-
 ```bash
 dart run tool/export_templates.dart
 ```
 
-This ensures templates stay in sync with the hand-optimized script generators.
+Templates are generated from the Dart script generators and stay in sync with the hand-optimized source code.

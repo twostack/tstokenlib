@@ -26,6 +26,10 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/script_gen/pp1_nft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_rnft_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_rft_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_at_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sm_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 
 const String version = '1.3.0';
@@ -40,6 +44,10 @@ void main() {
 
   exportPP1();
   exportPP1Ft();
+  exportPP1Rnft();
+  exportPP1Rft();
+  exportPP1At();
+  exportPP1Sm();
   exportPP3Nft();
   exportPP3Ft();
   exportModP2PKH();
@@ -234,6 +242,406 @@ void exportPP1Ft() {
       'generatedBy': 'PP1FtScriptGen',
       'sourceFile': 'lib/src/script_gen/pp1_ft_script_gen.dart',
       'note': 'Amount encoding: 8 bytes LE, byte[0..6] = value bits, byte[7] = (value >> 56) & 0x7F. Pushdata prefix 0x08 is in the static hex.',
+    },
+  });
+}
+
+void exportPP1Rnft() {
+  var ownerPKH = List.filled(20, 0xAA);
+  var tokenId = List.filled(32, 0xBB);
+  var rabinPubKeyHash = List.filled(20, 0xCC);
+  var flags = 0xDDDDDDDD;
+
+  // Without companion
+  var script = PP1RnftScriptGen.generate(
+    ownerPKH: ownerPKH,
+    tokenId: tokenId,
+    rabinPubKeyHash: rabinPubKeyHash,
+    flags: flags,
+  );
+
+  var fullHex = hex.encode(script.buffer!);
+
+  // Flags is encoded as 4-byte LE. Only low byte of each field in generate() is used,
+  // so the actual encoded value at flagsDataStart is [0xDD, 0x00, 0x00, 0x00].
+  // We use templatizeHex for uniform-byte sentinels and manual replacement for the rest.
+  var templateHex = templatizeHex(fullHex, {
+    'ownerPKH': _SentinelRegion(PP1RnftScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1RnftScriptGen.tokenIdDataStart, 32, 0xBB),
+    'rabinPubKeyHash': _SentinelRegion(PP1RnftScriptGen.rabinPKHDataStart, 20, 0xCC),
+  });
+
+  // Replace flags: extract the encoded hex from the original, then use surrounding
+  // context (pushdata prefix 0x04 before, script body after) for unique match.
+  var flagsEncodedHex = fullHex.substring(
+      PP1RnftScriptGen.flagsDataStart * 2, PP1RnftScriptGen.flagsDataEnd * 2);
+  // Context: "04" prefix + flagsHex + next opcode from script body
+  var flagsWithPrefix = '04$flagsEncodedHex';
+  var flagsIdx = templateHex.indexOf(flagsWithPrefix);
+  if (flagsIdx == -1) throw Exception('Could not find flags sentinel in template');
+  templateHex = templateHex.substring(0, flagsIdx + 2) + // keep "04"
+      '{{flags}}' +
+      templateHex.substring(flagsIdx + flagsWithPrefix.length);
+
+  writeTemplate('templates/nft/pp1_rnft.json', {
+    'name': 'PP1_RNFT',
+    'version': version,
+    'description': 'Restricted NFT locking script. Extends PP1_NFT with 4-byte flags for transfer/burn/companion restrictions.',
+    'category': 'nft',
+    'parameters': [
+      {
+        'name': 'ownerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the token owner',
+      },
+      {
+        'name': 'tokenId',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte unique token identifier (genesis txid)',
+      },
+      {
+        'name': 'rabinPubKeyHash',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte hash160 of the Rabin public key for identity anchoring',
+      },
+      {
+        'name': 'flags',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian flags bitfield controlling transfer/burn/companion restrictions',
+      },
+    ],
+    'hex': templateHex,
+    'metadata': {
+      'generatedBy': 'PP1RnftScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_rnft_script_gen.dart',
+      'note': 'Pushdata prefixes are part of the static hex. This is the no-companion variant. With-companion variant has an additional 32-byte companionTokenId field.',
+    },
+  });
+}
+
+void exportPP1Rft() {
+  var ownerPKH = List.filled(20, 0xAA);
+  var tokenId = List.filled(32, 0xBB);
+  var rabinPubKeyHash = List.filled(20, 0xCC);
+  var flags = 0xDDDDDDDD;
+  var amount = 0x0EEEEEEEEEEEEEEE; // bit 63 clear
+
+  var script = PP1RftScriptGen.generate(
+    ownerPKH: ownerPKH,
+    tokenId: tokenId,
+    rabinPubKeyHash: rabinPubKeyHash,
+    flags: flags,
+    amount: amount,
+  );
+
+  var fullHex = hex.encode(script.buffer!);
+
+  var templateHex = templatizeHex(fullHex, {
+    'ownerPKH': _SentinelRegion(PP1RftScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1RftScriptGen.tokenIdDataStart, 32, 0xBB),
+    'rabinPubKeyHash': _SentinelRegion(PP1RftScriptGen.rabinPKHDataStart, 20, 0xCC),
+  });
+
+  // Replace flags: pushdata prefix 0x04 + 4 bytes
+  var flagsEncodedHex = fullHex.substring(
+      PP1RftScriptGen.flagsDataStart * 2, PP1RftScriptGen.flagsDataEnd * 2);
+  var flagsWithPrefix = '04$flagsEncodedHex';
+  var flagsIdx = templateHex.indexOf(flagsWithPrefix);
+  if (flagsIdx == -1) throw Exception('Could not find flags sentinel');
+  templateHex = templateHex.substring(0, flagsIdx + 2) +
+      '{{flags}}' +
+      templateHex.substring(flagsIdx + flagsWithPrefix.length);
+
+  // Replace amount: pushdata prefix 0x08 + 8 bytes
+  var amountEncodedHex = fullHex.substring(
+      PP1RftScriptGen.amountDataStart * 2, PP1RftScriptGen.amountDataEnd * 2);
+  var amountWithPrefix = '08$amountEncodedHex';
+  var amountIdx = templateHex.indexOf(amountWithPrefix);
+  if (amountIdx == -1) throw Exception('Could not find amount sentinel');
+  templateHex = templateHex.substring(0, amountIdx + 2) +
+      '{{amount}}' +
+      templateHex.substring(amountIdx + amountWithPrefix.length);
+
+  writeTemplate('templates/ft/pp1_rft.json', {
+    'name': 'PP1_RFT',
+    'version': version,
+    'description': 'Restricted fungible token locking script. Extends PP1_FT with 4-byte flags for transfer/burn restrictions.',
+    'category': 'ft',
+    'parameters': [
+      {
+        'name': 'ownerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the token owner',
+      },
+      {
+        'name': 'tokenId',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte unique token identifier (genesis txid)',
+      },
+      {
+        'name': 'rabinPubKeyHash',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte hash160 of the Rabin public key for identity anchoring',
+      },
+      {
+        'name': 'flags',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian flags bitfield controlling transfer/burn restrictions',
+      },
+      {
+        'name': 'amount',
+        'size': 8,
+        'encoding': 'le_uint56',
+        'description': '8-byte little-endian amount (7 bytes value + high byte with bit 7 clear). Max value: 2^55 - 1.',
+      },
+    ],
+    'hex': templateHex,
+    'metadata': {
+      'generatedBy': 'PP1RftScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_rft_script_gen.dart',
+      'note': 'Pushdata prefixes are part of the static hex. Flags encoding: 4 bytes LE. Amount encoding: 8 bytes LE with bit 63 clear.',
+    },
+  });
+}
+
+void exportPP1At() {
+  var ownerPKH = List.filled(20, 0xAA);
+  var tokenId = List.filled(32, 0xBB);
+  var issuerPKH = List.filled(20, 0xCC);
+  var stampCount = 0xDDDDDDDD;
+  var threshold = 0xEEEEEEEE;
+  var stampsHash = List.filled(32, 0xFF);
+
+  var script = PP1AtScriptGen.generate(
+    ownerPKH: ownerPKH,
+    tokenId: tokenId,
+    issuerPKH: issuerPKH,
+    stampCount: stampCount,
+    threshold: threshold,
+    stampsHash: stampsHash,
+  );
+
+  var fullHex = hex.encode(script.buffer!);
+
+  var templateHex = templatizeHex(fullHex, {
+    'ownerPKH': _SentinelRegion(PP1AtScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1AtScriptGen.tokenIdDataStart, 32, 0xBB),
+    'issuerPKH': _SentinelRegion(PP1AtScriptGen.issuerPKHDataStart, 20, 0xCC),
+    'stampsHash': _SentinelRegion(PP1AtScriptGen.stampsHashDataStart, 32, 0xFF),
+  });
+
+  // Replace stampCount: pushdata prefix 0x04 + 4 bytes
+  var stampCountHex = fullHex.substring(
+      PP1AtScriptGen.stampCountDataStart * 2, PP1AtScriptGen.stampCountDataEnd * 2);
+  var scWithPrefix = '04$stampCountHex';
+  var scIdx = templateHex.indexOf(scWithPrefix);
+  if (scIdx == -1) throw Exception('Could not find stampCount sentinel');
+  templateHex = templateHex.substring(0, scIdx + 2) +
+      '{{stampCount}}' +
+      templateHex.substring(scIdx + scWithPrefix.length);
+
+  // Replace threshold: pushdata prefix 0x04 + 4 bytes
+  var thresholdHex = fullHex.substring(
+      PP1AtScriptGen.thresholdDataStart * 2, PP1AtScriptGen.thresholdDataEnd * 2);
+  var thWithPrefix = '04$thresholdHex';
+  var thIdx = templateHex.indexOf(thWithPrefix);
+  if (thIdx == -1) throw Exception('Could not find threshold sentinel');
+  templateHex = templateHex.substring(0, thIdx + 2) +
+      '{{threshold}}' +
+      templateHex.substring(thIdx + thWithPrefix.length);
+
+  writeTemplate('templates/nft/pp1_at.json', {
+    'name': 'PP1_AT',
+    'version': version,
+    'description': 'Appendable token (loyalty/stamp card) locking script. Tracks stamp count, threshold, and rolling stamps hash.',
+    'category': 'nft',
+    'parameters': [
+      {
+        'name': 'ownerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the token owner',
+      },
+      {
+        'name': 'tokenId',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte unique token identifier (genesis txid)',
+      },
+      {
+        'name': 'issuerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the stamp issuer',
+      },
+      {
+        'name': 'stampCount',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian stamp count (mutable, incremented on each stamp)',
+      },
+      {
+        'name': 'threshold',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian threshold (immutable, stamps needed for redemption)',
+      },
+      {
+        'name': 'stampsHash',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte rolling SHA256 hash of all stamp data (mutable)',
+      },
+    ],
+    'hex': templateHex,
+    'metadata': {
+      'generatedBy': 'PP1AtScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_at_script_gen.dart',
+      'note': 'Pushdata prefixes are part of the static hex. stampCount/threshold are 4-byte LE. stampsHash is raw 32 bytes.',
+    },
+  });
+}
+
+void exportPP1Sm() {
+  var ownerPKH = List.filled(20, 0xAA);
+  var tokenId = List.filled(32, 0xBB);
+  var merchantPKH = List.filled(20, 0xCC);
+  var customerPKH = List.filled(20, 0xDD);
+  var currentState = 0x11;
+  var milestoneCount = 0x22;
+  var commitmentHash = List.filled(32, 0xEE);
+  var transitionBitmask = 0x33;
+  var timeoutDelta = 0x44444444;
+
+  var script = PP1SmScriptGen.generate(
+    ownerPKH: ownerPKH,
+    tokenId: tokenId,
+    merchantPKH: merchantPKH,
+    customerPKH: customerPKH,
+    currentState: currentState,
+    milestoneCount: milestoneCount,
+    commitmentHash: commitmentHash,
+    transitionBitmask: transitionBitmask,
+    timeoutDelta: timeoutDelta,
+  );
+
+  var fullHex = hex.encode(script.buffer!);
+
+  // Replace multi-byte sentinel regions first
+  var templateHex = templatizeHex(fullHex, {
+    'ownerPKH': _SentinelRegion(PP1SmScriptGen.pkhDataStart, 20, 0xAA),
+    'tokenId': _SentinelRegion(PP1SmScriptGen.tokenIdDataStart, 32, 0xBB),
+    'merchantPKH': _SentinelRegion(PP1SmScriptGen.merchantPKHDataStart, 20, 0xCC),
+    'customerPKH': _SentinelRegion(PP1SmScriptGen.customerPKHDataStart, 20, 0xDD),
+    'commitmentHash': _SentinelRegion(PP1SmScriptGen.commitmentHashDataStart, 32, 0xEE),
+  });
+
+  // Replace 1-byte and 4-byte fields using context from adjacent placeholders.
+  // The header layout after multi-byte templatization:
+  //   ...{{customerPKH}} 01 <currentState> 01 <milestoneCount> 20 {{commitmentHash}} 01 <bitmask> 04 <timeoutDelta> ...
+
+  // currentState (1 byte, sentinel 0x11): after {{customerPKH}}, prefix 0x01
+  var stateHex = fullHex.substring(PP1SmScriptGen.currentStateDataStart * 2,
+      PP1SmScriptGen.currentStateDataEnd * 2);
+  templateHex = templateHex.replaceFirst(
+      '{{customerPKH}}01$stateHex',
+      '{{customerPKH}}01{{currentState}}');
+
+  // milestoneCount (1 byte, sentinel 0x22): after {{currentState}}, prefix 0x01
+  var mcHex = fullHex.substring(PP1SmScriptGen.milestoneCountDataStart * 2,
+      PP1SmScriptGen.milestoneCountDataEnd * 2);
+  templateHex = templateHex.replaceFirst(
+      '{{currentState}}01${mcHex}20',
+      '{{currentState}}01{{milestoneCount}}20');
+
+  // transitionBitmask (1 byte, sentinel 0x33): after {{commitmentHash}}, prefix 0x01
+  var bmHex = fullHex.substring(PP1SmScriptGen.transitionBitmaskDataStart * 2,
+      PP1SmScriptGen.transitionBitmaskDataEnd * 2);
+  templateHex = templateHex.replaceFirst(
+      '{{commitmentHash}}01$bmHex',
+      '{{commitmentHash}}01{{transitionBitmask}}');
+
+  // timeoutDelta (4 bytes, sentinel 0x44444444): after {{transitionBitmask}}, prefix 0x04
+  var tdHex = fullHex.substring(PP1SmScriptGen.timeoutDeltaDataStart * 2,
+      PP1SmScriptGen.timeoutDeltaDataEnd * 2);
+  templateHex = templateHex.replaceFirst(
+      '{{transitionBitmask}}04$tdHex',
+      '{{transitionBitmask}}04{{timeoutDelta}}');
+
+  writeTemplate('templates/sm/pp1_sm.json', {
+    'name': 'PP1_SM',
+    'version': version,
+    'description': 'State machine token locking script. Supports 7 operations: create, enroll, confirm, convert, settle, timeout, burn. 140-byte header with 9 fields.',
+    'category': 'sm',
+    'parameters': [
+      {
+        'name': 'ownerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the current owner/next expected actor (mutable)',
+      },
+      {
+        'name': 'tokenId',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte unique token identifier (genesis txid, immutable)',
+      },
+      {
+        'name': 'merchantPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the merchant (immutable)',
+      },
+      {
+        'name': 'customerPKH',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte pubkey hash of the customer (immutable)',
+      },
+      {
+        'name': 'currentState',
+        'size': 1,
+        'encoding': 'hex_byte',
+        'description': '1-byte state value: 0x00=created, 0x01=enrolled, 0x02=progressing, 0x03=converting, 0x04=settled, 0x05=expired (mutable)',
+      },
+      {
+        'name': 'milestoneCount',
+        'size': 1,
+        'encoding': 'hex_byte',
+        'description': '1-byte milestone counter (mutable, incremented on confirm)',
+      },
+      {
+        'name': 'commitmentHash',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte rolling SHA256 commitment hash (mutable)',
+      },
+      {
+        'name': 'transitionBitmask',
+        'size': 1,
+        'encoding': 'hex_byte',
+        'description': '1-byte bitmask enabling/disabling state transitions (immutable). Bit 0=enroll, 1/2=confirm, 3=convert, 4=settle, 5=timeout.',
+      },
+      {
+        'name': 'timeoutDelta',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian timeout delta in blocks/seconds for nLockTime (immutable)',
+      },
+    ],
+    'hex': templateHex,
+    'metadata': {
+      'generatedBy': 'PP1SmScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_sm_script_gen.dart',
+      'note': 'Pushdata prefixes (0x14, 0x20, 0x01, 0x04) are part of the static hex. 1-byte fields use hex_byte encoding (2 hex chars, no prefix). 4-byte fields use le_uint32 encoding.',
     },
   });
 }
