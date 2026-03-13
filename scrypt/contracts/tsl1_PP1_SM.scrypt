@@ -1,0 +1,688 @@
+/*
+Copyright 2024 - Stephan M. February
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+import "util.scrypt";
+import "txUtil.scrypt";
+
+
+/*
+*
+* - PP1_SM - State Machine Token (Funnel State Machine).
+*
+*   A UTXO state machine token implementing the customer-centric funnel.
+*   6 states (INIT, ACTIVE, PROGRESSING, CONVERTING, SETTLED, EXPIRED),
+*   7 operations with transition bitmask, dual-signature support,
+*   timeout mechanism, atomic settlement, and commitment hash chain.
+*
+*   Uses a dual-authority model:
+*     - Merchant signs: CreateFunnel, Enroll, Settle, Timeout
+*     - Merchant + Customer dual-sign: Confirm, Convert
+*     - Owner (next expected actor) signs: Burn
+*
+*   Constructor param layout (140-byte header):
+*     ownerPKH         - Ripemd160 (20 bytes) next expected actor (mutable)
+*     tokenId          - bytes (32 bytes) unique funnel identifier (immutable)
+*     merchantPKH      - Ripemd160 (20 bytes) merchant's pubkey hash (immutable)
+*     customerPKH      - Ripemd160 (20 bytes) customer's pubkey hash (immutable)
+*     currentState     - int (1 byte) current automaton state (mutable)
+*     milestoneCount   - int (1 byte) confirmed milestones (mutable)
+*     commitmentHash   - bytes (32 bytes) rolling SHA256 event log (mutable)
+*     transitionBitmask - int (1 byte) allowed transitions (immutable)
+*     timeoutDelta     - int (4 bytes LE) absolute deadline (immutable)
+*
+*   Commitment hash chain (computed from parent PP1 state):
+*     eventDigest_n = SHA256(merchantSig [|| customerSig] || eventData)
+*     commitmentHash_n = SHA256(parentCommitmentHash || eventDigest_n)
+*
+*   State encoding:
+*     0x00 = INIT        (funnel created, customer not enrolled)
+*     0x01 = ACTIVE      (customer enrolled, funnel live)
+*     0x02 = PROGRESSING (at least one milestone confirmed)
+*     0x03 = CONVERTING  (conversion triggered, awaiting settlement)
+*     0x04 = SETTLED     (terminal: rewards distributed)
+*     0x05 = EXPIRED     (terminal: timeout, merchant reclaimed)
+*
+*   Spent from Witness. Validates parent tx via push-raw-tx.
+*   Rebuilds current Txn on-chain using output side from push-raw-tx,
+*   and input side pushed by Witness Txn.
+*/
+contract PlugPointOneSM {
+
+Ripemd160 ownerPKH;         // next expected actor (merchant or customer)
+bytes tokenId;               // 32-byte unique funnel identifier
+Ripemd160 merchantPKH;      // merchant's pubkey hash (immutable)
+Ripemd160 customerPKH;      // customer's pubkey hash (immutable)
+int currentState;            // current automaton state (0x00-0x05)
+int milestoneCount;          // number of confirmed milestones
+bytes commitmentHash;        // rolling SHA256 hash chain of events
+int transitionBitmask;       // 1-byte bitmask controlling allowed transitions
+int timeoutDelta;            // absolute deadline (Unix timestamp or block height)
+
+constructor(Ripemd160 ownerPKH, bytes tokenId, Ripemd160 merchantPKH,
+            Ripemd160 customerPKH, int currentState, int milestoneCount,
+            bytes commitmentHash, int transitionBitmask, int timeoutDelta) {
+    this.ownerPKH = ownerPKH;
+    this.tokenId = tokenId;
+    this.merchantPKH = merchantPKH;
+    this.customerPKH = customerPKH;
+    this.currentState = currentState;
+    this.milestoneCount = milestoneCount;
+    this.commitmentHash = commitmentHash;
+    this.transitionBitmask = transitionBitmask;
+    this.timeoutDelta = timeoutDelta;
+}
+
+
+/*
+  OP_0: Create a new funnel instance.
+  No parent transaction. Merchant creates the funnel.
+  Authentication via funding UTXO (no explicit CHECKSIG).
+
+  preImage        - Witness Transaction's SighashPreimage (ALL | FORKID)
+  fundingTxId     - Witness-Funding Transaction's TxId
+  padding         - padding bytes for 512-bit alignment
+*/
+public function createFunnel(
+    SigHashPreimage preImage,
+    bytes fundingTxId,
+    bytes padding
+    ) {
+
+    require(Tx.checkPreimage(preImage));
+    require(len(padding) > 0);
+
+    // Validate initial state
+    require(this.currentState == 0);
+    require(this.milestoneCount == 0);
+    require(this.commitmentHash == b'0000000000000000000000000000000000000000000000000000000000000000');
+    require(this.ownerPKH == this.merchantPKH);
+
+    // hashPrevOuts verification (3 outpoints: funding, PP1_SM, PP2_SM)
+    bytes currentTxId = Util.outpoint(preImage)[:32];
+
+    bytes fundingOutpoint = fundingTxId + Utils.toLEUnsigned(1, 4);
+    bytes prevOutpoint2 = currentTxId + Utils.toLEUnsigned(1, 4);   // PP1 output #1
+    bytes prevOutpoint3 = currentTxId + Utils.toLEUnsigned(2, 4);   // PP2 output #2
+
+    bytes prevHashPreImage = fundingOutpoint + prevOutpoint2 + prevOutpoint3;
+    bytes calcHashPrevOut = sha256(sha256(prevHashPreImage));
+
+    bytes givenHashPrevOuts = Util.hashPrevouts(preImage);
+    require(givenHashPrevOuts == calcHashPrevOut);
+}
+
+
+/*
+  OP_1: Enroll a customer into the funnel.
+  INIT (0x00) -> ACTIVE (0x01). Merchant signs.
+
+  preImage         - PreImage of the witness transaction
+  pp2OutputBytes   - Serialized PP2 output
+  merchantPubKey   - Merchant's public key
+  changePkh        - PKH for change output
+  changeAmount     - satoshi amount for change output
+  merchantSig      - Merchant's signature
+  eventData        - enrollment event data
+  scriptLHS        - Left-hand-side (inputs) of the current Transaction
+  parentRawTx      - Raw Tx bytes of the parent token Txn
+  padding          - padding bytes for 512-bit alignment
+*/
+public function enroll(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          merchantPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             merchantSig,
+    bytes           eventData,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    // State guard: must be INIT
+    require(this.currentState == 0x00);
+
+    // Bitmask bit 0: Enroll allowed
+    require((this.transitionBitmask >> 0) & 1 == 1);
+
+    // Verify merchant identity
+    require(hash160(merchantPubKey) == this.merchantPKH);
+    require(checkSig(merchantSig, merchantPubKey));
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Commitment hash chain (from parent, avoids circular dependency)
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes parentCommitmentHash = parentPP1Script[101:133];
+    bytes eventDigest = sha256(merchantSig + eventData);
+    bytes newCommitmentHash = sha256(parentCommitmentHash + eventDigest);
+
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // Rebuild PP1_SM: ownerPKH=customerPKH, currentState=0x01, milestoneCount=0
+    bytes rebuiltPP1Script = parentPP1Script[:1]
+                             + this.customerPKH
+                             + parentPP1Script[21:97]
+                             + b'01'
+                             + parentPP1Script[98:99]
+                             + b'00'
+                             + parentPP1Script[100:101]
+                             + newCommitmentHash
+                             + parentPP1Script[133:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 — ownerPKH changes to customerPKH
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.customerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    // Verify parent chain
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  OP_2: Confirm a milestone. Dual signature (merchant + customer).
+  ACTIVE (0x01) -> PROGRESSING (0x02), or PROGRESSING (0x02) -> PROGRESSING (0x02).
+
+  preImage         - PreImage of the witness transaction
+  pp2OutputBytes   - Serialized PP2 output
+  merchantPubKey   - Merchant's public key
+  merchantSig      - Merchant's signature
+  customerPubKey   - Customer's public key
+  customerSig      - Customer's signature
+  changePkh        - PKH for change output
+  changeAmount     - satoshi amount for change output
+  milestoneData    - milestone event data
+  scriptLHS        - Left-hand-side (inputs) of the current Transaction
+  parentRawTx      - Raw Tx bytes of the parent token Txn
+  padding          - padding bytes for 512-bit alignment
+*/
+public function confirm(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          merchantPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             merchantSig,
+    PubKey          customerPubKey,
+    Sig             customerSig,
+    bytes           milestoneData,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    // State guard: ACTIVE or PROGRESSING
+    require(this.currentState == 0x01 || this.currentState == 0x02);
+
+    // Bitmask check: bit 1 if ACTIVE->PROGRESSING, bit 2 if PROGRESSING->PROGRESSING
+    if (this.currentState == 0x01) {
+        require((this.transitionBitmask >> 1) & 1 == 1);
+    } else {
+        require((this.transitionBitmask >> 2) & 1 == 1);
+    }
+
+    // Dual signature: merchant then customer (sequential CHECKSIG)
+    require(hash160(merchantPubKey) == this.merchantPKH);
+    require(checkSig(merchantSig, merchantPubKey));
+    require(hash160(customerPubKey) == this.customerPKH);
+    require(checkSig(customerSig, customerPubKey));
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Commitment hash (from parent, includes both sigs)
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes parentCommitmentHash = parentPP1Script[101:133];
+    bytes parentMilestoneCount1B = parentPP1Script[99:100];
+    bytes eventDigest = sha256(merchantSig + customerSig + milestoneData);
+    bytes newCommitmentHash = sha256(parentCommitmentHash + eventDigest);
+    int newMilestoneCount = Utils.fromLEUnsigned(parentMilestoneCount1B) + 1;
+
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // Rebuild PP1_SM: currentState=0x02, milestoneCount++, ownerPKH=customerPKH
+    bytes rebuiltPP1Script = parentPP1Script[:1]
+                             + this.customerPKH
+                             + parentPP1Script[21:97]
+                             + b'02'
+                             + parentPP1Script[98:99]
+                             + Utils.toLEUnsigned(newMilestoneCount, 1)
+                             + parentPP1Script[100:101]
+                             + newCommitmentHash
+                             + parentPP1Script[133:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 — ownerPKH = customerPKH (customer acts next)
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.customerPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  OP_3: Convert — trigger conversion event. Dual signature (merchant + customer).
+  PROGRESSING (0x02) -> CONVERTING (0x03). Requires milestoneCount > 0.
+
+  preImage         - PreImage of the witness transaction
+  pp2OutputBytes   - Serialized PP2 output
+  merchantPubKey   - Merchant's public key
+  merchantSig      - Merchant's signature
+  customerPubKey   - Customer's public key
+  customerSig      - Customer's signature
+  changePkh        - PKH for change output
+  changeAmount     - satoshi amount for change output
+  conversionData   - conversion event data
+  scriptLHS        - Left-hand-side (inputs) of the current Transaction
+  parentRawTx      - Raw Tx bytes of the parent token Txn
+  padding          - padding bytes for 512-bit alignment
+*/
+public function convert(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          merchantPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             merchantSig,
+    PubKey          customerPubKey,
+    Sig             customerSig,
+    bytes           conversionData,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    // State guard: must be PROGRESSING
+    require(this.currentState == 0x02);
+
+    // Must have at least one confirmed milestone
+    require(this.milestoneCount > 0);
+
+    // Bitmask bit 3: Convert allowed
+    require((this.transitionBitmask >> 3) & 1 == 1);
+
+    // Dual signature
+    require(hash160(merchantPubKey) == this.merchantPKH);
+    require(checkSig(merchantSig, merchantPubKey));
+    require(hash160(customerPubKey) == this.customerPKH);
+    require(checkSig(customerSig, customerPubKey));
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Commitment hash (from parent, includes both sigs)
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes parentCommitmentHash = parentPP1Script[101:133];
+    bytes eventDigest = sha256(merchantSig + customerSig + conversionData);
+    bytes newCommitmentHash = sha256(parentCommitmentHash + eventDigest);
+
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // Rebuild PP1_SM: currentState=0x03, milestoneCount unchanged, ownerPKH=merchantPKH
+    bytes rebuiltPP1Script = parentPP1Script[:1]
+                             + this.merchantPKH
+                             + parentPP1Script[21:97]
+                             + b'03'
+                             + parentPP1Script[98:100]
+                             + parentPP1Script[100:101]
+                             + newCommitmentHash
+                             + parentPP1Script[133:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 — ownerPKH = merchantPKH (merchant acts next for settle)
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.merchantPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(5)
+                   + changeOutput + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  OP_4: Settle — distribute rewards and finalize funnel. Merchant signs.
+  CONVERTING (0x03) -> SETTLED (0x04, terminal).
+  7-output topology: change, customerReward, merchantPayment, PP1_SM, PP2, PP3, metadata.
+
+  preImage             - PreImage of the witness transaction
+  pp2OutputBytes       - Serialized PP2 output
+  merchantPubKey       - Merchant's public key
+  changePkh            - PKH for change output
+  changeAmount         - satoshi amount for change output
+  merchantSig          - Merchant's signature
+  customerRewardAmount - satoshis for customer reward
+  merchantPaymentAmount - satoshis for merchant payment
+  settlementData       - settlement event data
+  scriptLHS            - Left-hand-side (inputs) of the current Transaction
+  parentRawTx          - Raw Tx bytes of the parent token Txn
+  padding              - padding bytes for 512-bit alignment
+*/
+public function settle(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          merchantPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             merchantSig,
+    int             customerRewardAmount,
+    int             merchantPaymentAmount,
+    bytes           settlementData,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    // State guard: must be CONVERTING
+    require(this.currentState == 0x03);
+
+    // Bitmask bit 4: Settle allowed
+    require((this.transitionBitmask >> 4) & 1 == 1);
+
+    // Verify merchant
+    require(hash160(merchantPubKey) == this.merchantPKH);
+    require(checkSig(merchantSig, merchantPubKey));
+
+    // Amount guards
+    require(customerRewardAmount > 0);
+    require(merchantPaymentAmount > 0);
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Commitment hash (from parent)
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes parentCommitmentHash = parentPP1Script[101:133];
+    bytes eventDigest = sha256(merchantSig + settlementData);
+    bytes newCommitmentHash = sha256(parentCommitmentHash + eventDigest);
+
+    bytes pkhScript = Util.buildPublicKeyHashScript(changePkh);
+    bytes changeOutput = Util.buildOutput(pkhScript, changeAmount);
+
+    // Build customer reward P2PKH output (uses immutable customerPKH)
+    bytes custRewardScript = Util.buildPublicKeyHashScript(this.customerPKH);
+    bytes custRewardOutput = Util.buildOutput(custRewardScript, customerRewardAmount);
+
+    // Build merchant payment P2PKH output (uses immutable merchantPKH)
+    bytes merchPayScript = Util.buildPublicKeyHashScript(this.merchantPKH);
+    bytes merchPayOutput = Util.buildOutput(merchPayScript, merchantPaymentAmount);
+
+    // Rebuild PP1_SM: currentState=0x04 (SETTLED), ownerPKH=merchantPKH
+    bytes rebuiltPP1Script = parentPP1Script[:1]
+                             + this.merchantPKH
+                             + parentPP1Script[21:97]
+                             + b'04'
+                             + parentPP1Script[98:100]
+                             + parentPP1Script[100:101]
+                             + newCommitmentHash
+                             + parentPP1Script[133:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 — ownerPKH = merchantPKH
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.merchantPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    // 7-output topology: change, custReward, merchPay, PP1, PP2, PP3, metadata
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(7)
+                   + changeOutput + custRewardOutput + merchPayOutput
+                   + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  OP_5: Timeout — merchant reclaims funds after deadline. Merchant signs.
+  Any non-terminal (< 0x04) -> EXPIRED (0x05, terminal).
+  6-output topology: change, merchantRefund, PP1_SM, PP2, PP3, metadata.
+  Requires nLockTime >= timeoutDelta.
+
+  preImage         - PreImage of the witness transaction
+  pp2OutputBytes   - Serialized PP2 output
+  merchantPubKey   - Merchant's public key
+  changePkh        - PKH for change output
+  changeAmount     - satoshi amount for change output
+  merchantSig      - Merchant's signature
+  refundAmount     - satoshis for merchant refund
+  scriptLHS        - Left-hand-side (inputs) of the current Transaction
+  parentRawTx      - Raw Tx bytes of the parent token Txn
+  padding          - padding bytes for 512-bit alignment
+*/
+public function timeout(
+    SigHashPreimage preImage,
+    bytes           pp2OutputBytes,
+    PubKey          merchantPubKey,
+    Ripemd160       changePkh,
+    int             changeAmount,
+    Sig             merchantSig,
+    int             refundAmount,
+    bytes           scriptLHS,
+    bytes           parentRawTx,
+    bytes           padding
+    ) {
+
+    require(len(parentRawTx) > 0);
+    require(len(padding) > 0);
+    require(Tx.checkPreimage(preImage));
+
+    // State guard: must not be terminal
+    require(this.currentState < 0x04);
+
+    // Bitmask bit 5: Timeout allowed
+    require((this.transitionBitmask >> 5) & 1 == 1);
+
+    // Verify merchant
+    require(hash160(merchantPubKey) == this.merchantPKH);
+    require(checkSig(merchantSig, merchantPubKey));
+
+    // nLockTime gate: extract from preimage[len-8:len-4]
+    int preImageLen = len(preImage);
+    bytes nLockTimeBytes = preImage[preImageLen - 8 : preImageLen - 4];
+    int nLockTime = Utils.fromLEUnsigned(nLockTimeBytes);
+    require(this.timeoutDelta <= nLockTime);
+
+    // nSequence check: preimage[len-44:len-40] must be < 0xFFFFFFFF
+    bytes nSequenceBytes = preImage[preImageLen - 44 : preImageLen - 40];
+    int nSequence = Utils.fromLEUnsigned(nSequenceBytes);
+    require(nSequence < 0xFFFFFFFF);
+
+    require(refundAmount > 0);
+
+    // Parse parent outputs
+    Output parentPP1Output = TxUtil.readOutput(parentRawTx, 1);
+    Output parentPP2Output = TxUtil.readOutput(parentRawTx, 2);
+    Output parentPP3Output = TxUtil.readOutput(parentRawTx, 3);
+    Output parentMetadataOutput = TxUtil.readOutput(parentRawTx, 4);
+
+    require(parentMetadataOutput.script[:2] == b'006a');
+
+    // Build merchant refund P2PKH output
+    bytes refundScript = Util.buildPublicKeyHashScript(this.merchantPKH);
+    bytes refundOutput = Util.buildOutput(refundScript, refundAmount);
+
+    // Rebuild PP1_SM: currentState=0x05 (EXPIRED), ownerPKH=merchantPKH
+    bytes parentPP1Script = parentPP1Output.script;
+    bytes rebuiltPP1Script = parentPP1Script[:1]
+                             + this.merchantPKH
+                             + parentPP1Script[21:97]
+                             + b'05'
+                             + parentPP1Script[98:100]
+                             + parentPP1Script[100:133]
+                             + parentPP1Script[133:];
+    bytes pp1Output = Util.buildOutput(rebuiltPP1Script, 1);
+
+    // Rebuild PP3 — ownerPKH = merchantPKH
+    bytes parentPP3Script = parentPP3Output.script;
+    bytes rebuiltPP3Script = parentPP3Script[:1] + this.merchantPKH + parentPP3Script[21:];
+    bytes pp3Output = Util.buildOutput(rebuiltPP3Script, 1);
+    bytes metadataOutput = Util.buildOutput(parentMetadataOutput.script, 0);
+
+    // 6-output topology: change, merchantRefund, PP1, PP2, PP3, metadata
+    bytes fullTx = scriptLHS
+                   + Util.writeVarintNum(6)
+                   + changeOutput + refundOutput
+                   + pp1Output + pp2OutputBytes + pp3Output + metadataOutput
+                   + Util.toLEUnsigned(Util.nLocktime(preImage), 4);
+
+    bytes currTxId = sha256(sha256(fullTx));
+    bytes outpointTxId = Util.outpoint(preImage)[:32];
+    require(currTxId == outpointTxId);
+
+    bytes outpoint3 = this.readOutpoint(fullTx, 2);
+    bytes parentTxId = sha256(sha256(parentRawTx));
+    require(outpoint3[:32] == parentTxId);
+}
+
+
+/*
+  OP_6: Burn — destroy a terminal-state token. Owner signs.
+  SETTLED (0x04) or EXPIRED (0x05) -> destroyed.
+
+  ownerPubKey - Owner's public key (merchantPKH or customerPKH)
+  ownerSig    - Owner's signature
+*/
+public function burn(PubKey ownerPubKey, Sig ownerSig) {
+
+    // Must be in terminal state
+    require(this.currentState >= 0x04);
+
+    require(hash160(ownerPubKey) == this.ownerPKH);
+    require(checkSig(ownerSig, ownerPubKey));
+}
+
+
+function readOutpoint(bytes tx, int inputIndex): bytes {
+
+    bytes outpoint = b'';
+    int pos = 4;
+    int ninputs = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+    pos = pos + 1;
+    require(ninputs <= 3);
+    loop(3): i {
+      if (i < ninputs) {
+        if (i == inputIndex) {
+          outpoint = tx[pos:pos+36];
+        }
+        pos = pos + 36;
+        int varLen = Utils.fromLEUnsigned(tx[pos: pos + 1]);
+        if (varLen < 253) {
+          int scriptLen = varLen;
+          pos = pos + 1 + scriptLen + 4;
+        } else if (varLen == 253) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 3]);
+          pos = pos + 3 + scriptLen + 4;
+        } else if (varLen == 254) {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 5]);
+          pos = pos + 5 + scriptLen + 4;
+        } else {
+          int scriptLen = Utils.fromLEUnsigned(tx[pos + 1: pos + 9]);
+          pos = pos + 9 + scriptLen + 4;
+        }
+      }
+    }
+    return outpoint;
+}
+
+
+}

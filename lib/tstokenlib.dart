@@ -37,3 +37,6 @@ export 'src/crypto/rabin.dart';
 export 'src/builder/pp1_at_lock_builder.dart';
 export 'src/builder/pp1_at_unlock_builder.dart';
 export 'src/transaction/appendable_token_tool.dart';
+export 'src/builder/pp1_sm_lock_builder.dart';
+export 'src/builder/pp1_sm_unlock_builder.dart';
+export 'src/transaction/state_machine_tool.dart';
