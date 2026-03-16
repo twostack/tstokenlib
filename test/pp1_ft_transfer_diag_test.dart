@@ -107,8 +107,8 @@ void main() {
   test('Diagnostic: standard transfer + interpreter verify with trace',
       timeout: Timeout(Duration(minutes: 2)), () async {
     var service = FungibleTokenTool();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+    var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
     // Step 1: Mint
     var bobFundingTx = getBobFundingTx();

@@ -78,7 +78,7 @@ void main() {
   group('AT issuance transaction', () {
     test('creates 5-output issuance', () {
       var service = AppendableTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -98,7 +98,7 @@ void main() {
 
     test('PP1_AT output contains correct initial fields', () {
       var service = AppendableTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -119,7 +119,7 @@ void main() {
   group('AT burn', () {
     test('burn succeeds with owner signature', () {
       var service = AppendableTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -129,7 +129,7 @@ void main() {
       );
 
       var aliceFundingTx = getAliceFundingTx();
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var burnTx = service.createBurnTokenTxn(
         issuanceTx, bobFundingSigner, bobPub,
         aliceFundingTx, aliceSigner, alicePubKey,
@@ -146,7 +146,7 @@ void main() {
   group('AT redeem', () {
     test('redeem fails with 0 stamps and threshold 10', () {
       var service = AppendableTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -156,7 +156,7 @@ void main() {
       );
 
       var aliceFundingTx = getAliceFundingTx();
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var redeemTx = service.createRedeemTokenTxn(
         issuanceTx, bobFundingSigner, bobPub,
         aliceFundingTx, aliceSigner, alicePubKey,
@@ -186,7 +186,7 @@ void main() {
         stampsHash: stampsHash,
       );
 
-      var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(bobSigner, getBobFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(bobPub))
@@ -197,7 +197,7 @@ void main() {
       // Spend PP1_AT (output[1]) with redeem
       var redeemUnlocker = PP1AtUnlockBuilder.forRedeem(bobPub);
       var aliceFundingTx = getAliceFundingTx();
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var redeemTx = TransactionBuilder()
           .spendFromTxnWithSigner(aliceSigner, aliceFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(alicePubKey))
           .spendFromTxnWithSigner(bobSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, redeemUnlocker)
@@ -224,7 +224,7 @@ void main() {
         stampsHash: stampsHash,
       );
 
-      var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(bobSigner, getBobFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(bobPub))
@@ -234,7 +234,7 @@ void main() {
 
       var redeemUnlocker = PP1AtUnlockBuilder.forRedeem(bobPub);
       var aliceFundingTx = getAliceFundingTx();
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var redeemTx = TransactionBuilder()
           .spendFromTxnWithSigner(aliceSigner, aliceFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(alicePubKey))
           .spendFromTxnWithSigner(bobSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, redeemUnlocker)
@@ -255,7 +255,7 @@ void main() {
 
       // Create issuance transaction (Bob is customer, Alice is issuer)
       var bobFundingTx = getBobFundingTx();
-      var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var aliceFundingTx = getAliceFundingTx();
 
       var issuanceTx = service.createTokenIssuanceTxn(
@@ -264,7 +264,7 @@ void main() {
       );
 
       // Create witness with issuer (Alice) signing
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var witnessTx = service.createWitnessTxn(
         aliceSigner,
         aliceFundingTx,
@@ -286,8 +286,8 @@ void main() {
   group('AT transfer witness', () {
     test('full issue → witness → transfer → witness → burn cycle', () {
       var service = AppendableTokenTool();
-      var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var interp = Interpreter();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -371,8 +371,8 @@ void main() {
   group('AT stamp witness', () {
     test('issue → witness → stamp → stamp witness verifies', () {
       var service = AppendableTokenTool();
-      var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var interp = Interpreter();
       var issuerPKH = hex.decode(alicePubkeyHash);
 

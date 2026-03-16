@@ -76,7 +76,7 @@ Transaction getTokenTxWithPP1andPP2(Transaction witnessFundingTx, Address ownerA
   var fundingTx = getBobFundingTx();
   var fundingUnlocker = P2PKHUnlockBuilder(bobPrivateKey.publicKey);
   var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-  var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+  var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
   var tokenTxBuilder = TransactionBuilder();
 
   //fund the txn
@@ -115,7 +115,7 @@ Transaction getTokenTxWithPP1andPP2andPP3(Transaction witnessFundingTx, Address 
   var fundingTx = getBobFundingTx();
   var fundingUnlocker = P2PKHUnlockBuilder(bobPrivateKey.publicKey);
   var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-  var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+  var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
   var tokenTxBuilder = TransactionBuilder();
 
   //fund the txn
@@ -218,7 +218,7 @@ void main() {
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     var fundingTx = getBobFundingTx();
-    var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var fundingTxSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
     var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
 
@@ -232,7 +232,7 @@ void main() {
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
     var fundingTx = getBobFundingTx();
-    var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var fundingTxSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var issuanceTxn = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
     //weak tests for now. stronger ones follow
     expect(issuanceTxn.outputs.length, 5);
@@ -294,7 +294,7 @@ void main() {
 
     // 1. Dynamically create the issuance transaction (Bob issues token)
     var bobFundingTx = getBobFundingTx();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
@@ -376,7 +376,7 @@ void main() {
 
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
     // 2. Create witness for the issuance
@@ -415,7 +415,7 @@ void main() {
     );
 
     // 4. Create witness for Alice's token (transfer witness)
-    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
     var witnessTx = service.createWitnessTxn(
       aliceFundingSigner,
       aliceFundingTx,
@@ -461,7 +461,7 @@ void main() {
 
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
@@ -504,7 +504,7 @@ void main() {
     print("Transfer Bob→Alice TxId: ${transferTxBobToAlice.id}");
 
     // 5. Create witness for Alice's token (transfer witness)
-    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
     var aliceWitnessTx = service.createWitnessTxn(
       aliceFundingSigner,
       aliceFundingTx,
@@ -569,7 +569,7 @@ void main() {
 
     // 1. Issue token to Bob
     var bobFundingTx = getBobFundingTx();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var issuanceTx = await service.createTokenIssuanceTxn(bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
     expect(issuanceTx.outputs.length, 5);
 
@@ -633,7 +633,7 @@ void main() {
 
     var fundingTx = getBobFundingTx();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-    var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
     var identityTx = await builder.buildTransaction(
       fundingTx, fundingSigner, bobPub, bobAddress, wand,
@@ -674,7 +674,7 @@ void main() {
 
     var bobFundingTx = getBobFundingTx();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
     var identityTx = await identityBuilder.buildTransaction(
       bobFundingTx, bobFundingSigner, bobPub, bobAddress, wand,
@@ -714,7 +714,7 @@ void main() {
     // 1. Create identity anchor
     var identityBuilder = IdentityAnchorBuilder({'name': 'Issuer'});
     var identityFundingTx = getBobFundingTx();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var identityTx = await identityBuilder.buildTransaction(
       identityFundingTx, bobFundingSigner, bobPub, bobAddress, wand,
     );

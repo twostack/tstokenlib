@@ -53,7 +53,7 @@ void main() {
   group('RNFT issuance transaction', () {
     test('creates 5-output issuance with flags=0x00 (free transfer)', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -83,7 +83,7 @@ void main() {
 
     test('PP1_RNFT output contains correct fields', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -100,7 +100,7 @@ void main() {
 
     test('PP1_RNFT with companion token', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var companionId = List<int>.filled(32, 0xCC);
 
@@ -156,7 +156,7 @@ void main() {
   group('RNFT burn transaction', () {
     test('burn RNFT with flags=0x00 using Interpreter.correctlySpends', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       // Issue token
@@ -186,7 +186,7 @@ void main() {
 
     test('burn RNFT with flags=0x01 (self-transfer only) - burn still works', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -213,7 +213,7 @@ void main() {
 
     test('burn RNFT with flags=0x02 (non-transferable) - burn still works', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -242,7 +242,7 @@ void main() {
   group('RNFT redeem transaction', () {
     test('redeem RNFT with Interpreter.correctlySpends', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -272,7 +272,7 @@ void main() {
     for (var flags in [0x00, 0x01, 0x02, 0x04, 0x05, 0x06]) {
       test('issue and burn with flags=0x${flags.toRadixString(16).padLeft(2, "0")}', () async {
         var service = RestrictedTokenTool();
-        var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+        var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
         var bobFundingTx = getBobFundingTx();
 
         var issuanceTx = await service.createTokenIssuanceTxn(
@@ -310,7 +310,7 @@ void main() {
   group('RNFT with companion token header', () {
     test('issue and burn with companion token (110-byte header)', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
       var companionId = List<int>.filled(32, 0xEE);
 
@@ -349,7 +349,7 @@ void main() {
   group('RNFT issue witness', () {
     test('issue witness with Rabin identity binding verifies PP1_RNFT', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       // Issue with real Rabin pubkey hash
@@ -394,8 +394,8 @@ void main() {
   group('RNFT transfer transaction', () {
     test('full issue → witness → transfer → witness → burn cycle', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 
@@ -481,7 +481,7 @@ void main() {
 
     test('self-transfer-only policy (flags=0x01) allows self-transfer', () async {
       var service = RestrictedTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 

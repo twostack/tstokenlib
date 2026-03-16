@@ -42,13 +42,13 @@ Future<void> main() async {
   var bobPubKey = bobPrivateKey.publicKey;
   var bobAddress = Address.fromPublicKey(bobPubKey, NetworkType.TEST);
   var bobPubkeyHash = "650c4adb156f19e36a755c820d892cda108299c4";
-  var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+  var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
   // --- Recipient (Alice) ---
   var alicePrivateKey = SVPrivateKey.fromWIF("cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5");
   var alicePubKey = alicePrivateKey.publicKey;
   var aliceAddress = Address.fromPublicKey(alicePubKey, NetworkType.TEST);
-  var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+  var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
   // The FungibleTokenTool is the primary API for all fungible token operations.
   var tokenTool = FungibleTokenTool(networkType: NetworkType.TEST);

@@ -53,7 +53,7 @@ void main() {
   group('RFT mint transaction', () {
     test('creates 5-output mint with flags=0x00 and amount=1000', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -83,7 +83,7 @@ void main() {
 
     test('PP1_RFT output contains correct fields', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -136,7 +136,7 @@ void main() {
   group('RFT burn transaction', () {
     test('burn RFT with flags=0x00 using Interpreter.correctlySpends', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -163,7 +163,7 @@ void main() {
 
     test('burn RFT with flags=0x01 (self-transfer only) - burn still works', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -192,7 +192,7 @@ void main() {
   group('RFT redeem transaction', () {
     test('redeem RFT with Interpreter.correctlySpends', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -222,7 +222,7 @@ void main() {
     for (var flags in [0x00, 0x01, 0x02, 0x04, 0x05, 0x06]) {
       test('mint and burn with flags=0x${flags.toRadixString(16).padLeft(2, "0")}', () async {
         var service = RestrictedFungibleTokenTool();
-        var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+        var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
         var bobFundingTx = getBobFundingTx();
 
         var mintTx = await service.createFungibleMintTxn(
@@ -258,7 +258,7 @@ void main() {
   group('RFT mint witness', () {
     test('mint witness with Rabin identity binding verifies PP1_RFT', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var bobFundingTx = getBobFundingTx();
 
       var mintTx = await service.createFungibleMintTxn(
@@ -288,8 +288,8 @@ void main() {
   group('RFT transfer transaction', () {
     test('full mint → witness → transfer → witness → burn cycle', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 
@@ -368,7 +368,7 @@ void main() {
 
     test('self-transfer-only policy (flags=0x01) allows self-transfer', () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 
@@ -419,8 +419,8 @@ void main() {
     test('mint → witness → split 700/300 → recipient witness → change witness → burn both',
         timeout: Timeout(Duration(minutes: 2)), () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 
@@ -537,7 +537,7 @@ void main() {
     test('split 600/400 then merge back to 1000',
         timeout: Timeout(Duration(minutes: 3)), () async {
       var service = RestrictedFungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var interp = Interpreter();
       var bobFundingTx = getBobFundingTx();
 

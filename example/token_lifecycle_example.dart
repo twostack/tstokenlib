@@ -40,13 +40,13 @@ Future<void> main() async {
   var bobPrivateKey = SVPrivateKey.fromWIF("cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS");
   var bobPubKey = bobPrivateKey.publicKey;
   var bobAddress = Address.fromPublicKey(bobPubKey, NetworkType.TEST);
-  var bobSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+  var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
   // --- Recipient (Alice) ---
   var alicePrivateKey = SVPrivateKey.fromWIF("cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5");
   var alicePubKey = alicePrivateKey.publicKey;
   var aliceAddress = Address.fromPublicKey(alicePubKey, NetworkType.TEST);
-  var aliceSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+  var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
   // --- Rabin Identity Keypair ---
   // A Rabin keypair is required for identity anchoring in PP1.

@@ -153,7 +153,7 @@ void main() {
       var builder = PP1FtUnlockBuilder.forBurn(bobPub);
 
       // Need to sign to get a script sig
-      var signer = TransactionSigner(
+      var signer = DefaultTransactionSigner(
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value,
           bobPrivateKey);
 

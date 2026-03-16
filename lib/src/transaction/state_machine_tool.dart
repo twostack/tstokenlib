@@ -236,7 +236,7 @@ class StateMachineTool {
     var preImagePP1 = Sighash().createSighashPreImage(preImageTxn, sigHashAll, 1, subscript1, BigInt.one);
 
     // Compute customer signature off-chain (same sighash preimage)
-    var customerSig = TransactionSigner.signPreimage(
+    var customerSig = DefaultTransactionSigner.signPreimageWithKey(
         customerPrivateKey, Uint8List.fromList(preImagePP1!), sigHashAll);
     var customerSigBytes = hex.decode(customerSig.toTxFormat());
 

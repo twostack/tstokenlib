@@ -55,7 +55,7 @@ void main() {
       var service = TokenTool();
       var sigHashAll =
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-      var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Build a transaction with only one output (index 0)
       var singleOutputTx = TransactionBuilder()
@@ -87,7 +87,7 @@ void main() {
       var service = TokenTool();
       var sigHashAll =
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
-      var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Build a funding tx with only 1 sat in output[1]
       var tinyFundingTx = TransactionBuilder()
@@ -128,7 +128,7 @@ void main() {
 
       // 1. Issue token to Bob
       var bobFundingTx = getBobFundingTx();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
           bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
@@ -168,7 +168,7 @@ void main() {
       );
 
       // 5. Create witness for Alice's token
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var aliceWitnessTx = service.createWitnessTxn(
         aliceFundingSigner,
         aliceFundingTx,
@@ -228,7 +228,7 @@ void main() {
 
       // 1. Issue token to Bob
       var bobFundingTx = getBobFundingTx();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
           bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
@@ -268,7 +268,7 @@ void main() {
 
       // 4. Create witness with garbage parentTokenTxBytes
       var garbageBytes = List<int>.filled(200, 0xDE);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // This should not crash -- it builds a witness transaction
       var witnessTx = service.createWitnessTxn(
@@ -328,7 +328,7 @@ void main() {
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
       var bobFundingTx = getBobFundingTx();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var issuanceTx = await service.createTokenIssuanceTxn(
           bobFundingTx, bobFundingSigner, bobPub, bobAddress, bobFundingTx.hash, rabinPubKeyHash);
 
@@ -363,7 +363,7 @@ void main() {
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
       var fundingTx = getBobFundingTx();
-      var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Pass null metadataBytes (the default)
       var issuanceTx = await service.createTokenIssuanceTxn(
@@ -384,7 +384,7 @@ void main() {
           SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
       var fundingTx = getBobFundingTx();
-      var fundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var fundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Create 1000 bytes of metadata
       var largeMetadata = Uint8List(1000);

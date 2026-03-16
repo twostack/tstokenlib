@@ -83,8 +83,8 @@ void main() {
 
   setUpAll(() async {
     service = FungibleTokenTool();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+    var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
     // Step 1: Bob mints 1000 tokens
     var bobFundingTx = getBobFundingTx();
@@ -374,8 +374,8 @@ void main() {
     late Transaction splitWitnessTx;
 
     setUpAll(() {
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // Use the shared mintTx and mintWitnessTx from outer setUpAll
       var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
@@ -489,7 +489,7 @@ void main() {
     late Transaction mergeWitnessTx;
 
     setUpAll(() async {
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
       var tokenId = pp1FtLock.tokenId;

@@ -57,8 +57,8 @@ void main() {
     test('Bob issues, transfers to Alice, Alice transfers back to Bob, Bob burns',
         timeout: Timeout(Duration(minutes: 2)), () async {
       var service = TokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // --- Step 1: Bob issues a token ---
       var bobFundingTx = getBobFundingTx();
@@ -245,7 +245,7 @@ void main() {
 
     test('createTokenIssuanceTxn works with testnet configuration', () async {
       var service = TokenTool(networkType: NetworkType.TEST);
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var fundingTx = getBobFundingTx();
       var testnetAddress = Address.fromPublicKey(bobPub, NetworkType.TEST);
 
@@ -259,7 +259,7 @@ void main() {
 
     test('createTokenIssuanceTxn works with mainnet configuration', () async {
       var service = TokenTool(networkType: NetworkType.MAIN);
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var fundingTx = getBobFundingTx();
       var mainnetAddress = Address.fromPublicKey(bobPub, NetworkType.MAIN);
 
@@ -276,7 +276,7 @@ void main() {
     test('custom fee of 200 sats produces different change than default', () async {
       var defaultService = TokenTool(); // defaultFee = 135
       var customService = TokenTool(defaultFee: BigInt.from(200));
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Issue tokens with both services
       var fundingTx1 = getBobFundingTx();
@@ -343,7 +343,7 @@ void main() {
     test('fee of 50 sats leaves more change than default', () async {
       var defaultService = TokenTool(); // defaultFee = 135
       var lowFeeService = TokenTool(defaultFee: BigInt.from(50));
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var fundingTx1 = getBobFundingTx();
       var issuanceTx1 = await defaultService.createTokenIssuanceTxn(
@@ -408,7 +408,7 @@ void main() {
     test('fee of 500 sats leaves significantly less change', () async {
       var defaultService = TokenTool(); // defaultFee = 135
       var highFeeService = TokenTool(defaultFee: BigInt.from(500));
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var fundingTx1 = getBobFundingTx();
       var issuanceTx1 = await defaultService.createTokenIssuanceTxn(

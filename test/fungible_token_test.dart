@@ -33,7 +33,7 @@ void main() {
   group('Fungible token mint transaction', () {
     test('creates 5-output mint transaction with correct structure', () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var bobFundingTx = getBobFundingTx();
       var mintTx = await service.createFungibleMintTxn(
@@ -63,7 +63,7 @@ void main() {
 
     test('PP1_FT output contains correct amount and tokenId', () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var bobFundingTx = getBobFundingTx();
       var mintTx = await service.createFungibleMintTxn(
@@ -81,7 +81,7 @@ void main() {
 
     test('PP2-FT output has correct indices (1,2)', () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var bobFundingTx = getBobFundingTx();
       var mintTx = await service.createFungibleMintTxn(
@@ -99,8 +99,8 @@ void main() {
     test('Bob mints 1000 tokens, transfers to Alice, Alice burns',
         timeout: Timeout(Duration(minutes: 2)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // --- Step 1: Bob mints 1000 tokens ---
       var bobFundingTx = getBobFundingTx();
@@ -227,7 +227,7 @@ void main() {
     test('Bob mints then burns immediately',
         timeout: Timeout(Duration(minutes: 1)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var bobFundingTx = getBobFundingTx();
       var mintTx = await service.createFungibleMintTxn(
@@ -267,7 +267,7 @@ void main() {
     test('mint -> witness -> split creates 8-output transaction',
         timeout: Timeout(Duration(minutes: 2)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Mint 1000 tokens
       var bobFundingTx = getBobFundingTx();
@@ -375,7 +375,7 @@ void main() {
 
     test('split with minimum amounts (1 and 999)', () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       var bobFundingTx = getBobFundingTx();
       var mintTx = await service.createFungibleMintTxn(
@@ -413,8 +413,8 @@ void main() {
     test('burn recipient triplet after split',
         timeout: Timeout(Duration(minutes: 1)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // Mint and witness
       var bobFundingTx = getBobFundingTx();
@@ -466,7 +466,7 @@ void main() {
     test('burn change triplet after split',
         timeout: Timeout(Duration(minutes: 1)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // Mint, witness, split
       var bobFundingTx = getBobFundingTx();
@@ -520,7 +520,7 @@ void main() {
     test('split 600/400 then merge back to 1000',
         timeout: Timeout(Duration(minutes: 3)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
 
       // --- Step 1: Mint 1000 tokens ---
       var bobFundingTx = getBobFundingTx();
@@ -708,7 +708,7 @@ void main() {
 
       // --- Step 10: Witness for Alice's transfer (exercises PP1_FT.transferToken on merged output) ---
       // tokenChangePKH must be Bob's PKH because the transfer tx's satoshi change goes to Bob (the sender)
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var aliceWitnessTx = service.createFungibleWitnessTxn(
         aliceFundingSigner, aliceWitnessFundingTx, transferTx,
         alicePubKey, bobPubkeyHash,
@@ -732,8 +732,8 @@ void main() {
     test('split change triplet (parentPP1FtIndex=4) then verify witnesses',
         timeout: Timeout(Duration(minutes: 3)), () async {
       var service = FungibleTokenTool();
-      var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-      var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
       // --- Step 1: Mint 1000 tokens ---
       var bobFundingTx = getBobFundingTx();

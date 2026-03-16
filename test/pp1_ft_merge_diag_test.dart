@@ -34,8 +34,8 @@ void main() {
   test('Diagnostic: merge-then-transfer with trace',
       timeout: Timeout(Duration(minutes: 3)), () async {
     var service = FungibleTokenTool();
-    var bobFundingSigner = TransactionSigner(sigHashAll, bobPrivateKey);
-    var aliceFundingSigner = TransactionSigner(sigHashAll, alicePrivateKey);
+    var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+    var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
     // Step 1: Mint 1000 tokens
     var bobFundingTx = getBobFundingTx();

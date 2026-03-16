@@ -149,7 +149,7 @@ void main() {
   group('SM issuance transaction', () {
     test('creates 5-output issuance', () {
       var service = StateMachineTool();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var merchantFundingTx = getMerchantFundingTx();
       var merchPKH = hex.decode(merchantPubkeyHash);
       var custPKH = hex.decode(customerPubkeyHash);
@@ -171,7 +171,7 @@ void main() {
 
     test('PP1_SM output contains correct initial fields', () {
       var service = StateMachineTool();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var merchantFundingTx = getMerchantFundingTx();
       var merchPKH = hex.decode(merchantPubkeyHash);
       var custPKH = hex.decode(customerPubkeyHash);
@@ -209,7 +209,7 @@ void main() {
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
@@ -219,7 +219,7 @@ void main() {
 
       var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var burnTx = TransactionBuilder()
           .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
           .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
@@ -245,7 +245,7 @@ void main() {
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
@@ -255,7 +255,7 @@ void main() {
 
       var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var burnTx = TransactionBuilder()
           .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
           .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
@@ -281,7 +281,7 @@ void main() {
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
@@ -291,7 +291,7 @@ void main() {
 
       var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var burnTx = TransactionBuilder()
           .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
           .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
@@ -320,7 +320,7 @@ void main() {
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
           .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
@@ -331,7 +331,7 @@ void main() {
       // Try to burn with customer key (should fail — ownerPKH is merchantPKH)
       var burnUnlocker = PP1SmUnlockBuilder.forBurn(customerPub);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var burnTx = TransactionBuilder()
           .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
           .spendFromTxnWithSigner(customerSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
@@ -355,7 +355,7 @@ void main() {
       var custPKH = hex.decode(customerPubkeyHash);
 
       var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var customerFundingTx = getCustomerFundingTx();
 
       var issuanceTx = service.createTokenIssuanceTxn(
@@ -364,7 +364,7 @@ void main() {
         customerFundingTx.hash,
       );
 
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var witnessTx = service.createWitnessTxn(
         customerSigner,
         customerFundingTx,
@@ -392,7 +392,7 @@ void main() {
 
       // Step 1: Issue token
       var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var customerFundingTx = getCustomerFundingTx();
 
       var issuanceTx = service.createTokenIssuanceTxn(
@@ -402,7 +402,7 @@ void main() {
       );
 
       // Step 2: Create witness (merchant signs, dispatches OP_0)
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
       var createWitnessTx = service.createWitnessTxn(
         customerSigner,
         customerFundingTx,
@@ -486,9 +486,9 @@ void main() {
 
       // Step 1: Issue
       var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
@@ -582,9 +582,9 @@ void main() {
 
       // Abbreviated setup: issue → create → enroll → enroll witness → confirm → confirm witness
       var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
       var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
@@ -668,8 +668,8 @@ void main() {
       var interp = Interpreter();
 
       // Setup: issue → create → enroll → enroll witness → confirm → confirm witness → convert → convert witness
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
         getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
@@ -774,14 +774,14 @@ void main() {
       var interp = Interpreter();
 
       // Setup: issue → create → enroll → enroll witness
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
         getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash);
 
       var createWitnessTx = service.createWitnessTxn(
-        TransactionSigner(sigHashAll, customerPrivateKey),
+        DefaultTransactionSigner(sigHashAll, customerPrivateKey),
         getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
         customerPub, customerPubkeyHash, StateMachineAction.CREATE);
@@ -847,8 +847,8 @@ void main() {
       var merchPKH = hex.decode(merchantPubkeyHash);
       var custPKH = hex.decode(customerPubkeyHash);
       var interp = Interpreter();
-      var merchantSigner = TransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerSigner = TransactionSigner(sigHashAll, customerPrivateKey);
+      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
 
       // Step 1: Issue (CREATE state)
       var issuanceTx = service.createTokenIssuanceTxn(

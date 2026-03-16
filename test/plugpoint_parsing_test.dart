@@ -23,7 +23,7 @@ void main(){
     var service = TokenTool();
     var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
     var fundingTx = getBobFundingTx();
-    var fundingTxSigner = TransactionSigner(sigHashAll, bobPrivateKey);
+    var fundingTxSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var rabinPubKeyHash = hash160(Rabin.bigIntToScriptNum(Rabin.generateKeyPair(512).n).toList());
     var issuanceTx = await service.createTokenIssuanceTxn(fundingTx, fundingTxSigner, bobPub, bobAddress, fundingTx.hash, rabinPubKeyHash);
 
