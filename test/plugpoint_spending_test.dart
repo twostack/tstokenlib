@@ -433,9 +433,9 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
-      verifyFlags.add(VerifyFlag.MINIMALDATA);
+    verifyFlags.add(VerifyFlag.MINIMALDATA);
 
-    //verify PP1 spending
+    //verify PP1 spending — correctlySpends + clean stack check
     var scriptSigPP1 = witnessTx.inputs[1].script;
     var scriptPubKeyPP1 = recipientTokenTx.outputs[1].script;
     var outputSatsPP1 = recipientTokenTx.outputs[1].satoshis;
@@ -443,6 +443,13 @@ void main() {
         () => interp.correctlySpends(
                   scriptSigPP1!, scriptPubKeyPP1, witnessTx, 1, verifyFlags, Coin.valueOf(outputSatsPP1)),
         returnsNormally);
+
+    // Verify clean stack: execute scriptSig then scriptPubKey and check stack size == 1
+    var stackInterp = Interpreter();
+    var stack = InterpreterStack<List<int>>();
+    stackInterp.executeScript(witnessTx, 1, scriptSigPP1!, stack, outputSatsPP1, verifyFlags);
+    stackInterp.executeScript(witnessTx, 1, scriptPubKeyPP1, stack, outputSatsPP1, verifyFlags);
+    expect(stack.length, 1, reason: 'PP1 transfer witness must leave exactly 1 item on stack (clean stack)');
 
     //verify PP2 spending
     var scriptSigPP2 = witnessTx.inputs[2].script;

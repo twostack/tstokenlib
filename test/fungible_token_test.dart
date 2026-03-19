@@ -720,12 +720,21 @@ void main() {
       expect(aliceWitnessTx.outputs.length, 1);
 
       // Verify PP1_FT spending in Alice's witness (input[1] spends transferTx output[1])
+      var scriptSigPP1 = aliceWitnessTx.inputs[1].script!;
+      var scriptPubKeyPP1 = transferTx.outputs[1].script;
+      var pp1Sats = transferTx.outputs[1].satoshis;
       expect(
-          () => interp.correctlySpends(
-              aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
-              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          () => interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
+              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(pp1Sats)),
           returnsNormally,
           reason: 'PP1_FT transferToken spending after merge should verify');
+
+      // Verify clean stack
+      var stackInterp = Interpreter();
+      var stack = InterpreterStack<List<int>>();
+      stackInterp.executeScript(aliceWitnessTx, 1, scriptSigPP1, stack, pp1Sats, verifyFlags);
+      stackInterp.executeScript(aliceWitnessTx, 1, scriptPubKeyPP1, stack, pp1Sats, verifyFlags);
+      expect(stack.length, 1, reason: 'PP1_FT transfer witness (merge) must leave clean stack');
     });
   });
 
@@ -907,12 +916,21 @@ void main() {
       expect(bobTransferWitnessTx.outputs.length, 1);
 
       // Verify PP1_FT transferToken spending in witness
+      var scriptSigPP1 = bobTransferWitnessTx.inputs[1].script!;
+      var scriptPubKeyPP1 = transferTx.outputs[1].script;
+      var pp1Sats = transferTx.outputs[1].satoshis;
       expect(
-          () => interp.correctlySpends(
-              bobTransferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
-              bobTransferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          () => interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
+              bobTransferWitnessTx, 1, verifyFlags, Coin.valueOf(pp1Sats)),
           returnsNormally,
           reason: 'PP1_FT transferToken after split-change transfer should verify');
+
+      // Verify clean stack
+      var stackInterp2 = Interpreter();
+      var stack2 = InterpreterStack<List<int>>();
+      stackInterp2.executeScript(bobTransferWitnessTx, 1, scriptSigPP1, stack2, pp1Sats, verifyFlags);
+      stackInterp2.executeScript(bobTransferWitnessTx, 1, scriptPubKeyPP1, stack2, pp1Sats, verifyFlags);
+      expect(stack2.length, 1, reason: 'PP1_FT transfer witness (split-change) must leave clean stack');
     });
   });
 

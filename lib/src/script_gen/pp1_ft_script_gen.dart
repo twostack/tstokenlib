@@ -599,6 +599,13 @@ class PP1FtScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // Clean up main stack residuals: [pp2OutOrig, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);            // ownerSig
+    b.opCode(OpCodes.OP_DROP);            // changeAmt
+    b.opCode(OpCodes.OP_DROP);            // changePkh
+    b.opCode(OpCodes.OP_DROP);            // ownerPK
+    b.opCode(OpCodes.OP_DROP);            // pp2OutOrig
+
     b.opCode(OpCodes.OP_1);               // leave TRUE
   }
 
@@ -1322,6 +1329,14 @@ class PP1FtScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // parentTxId
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // Clean up main stack residuals: [pp2RecipOut, pp2ChangeOut, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);           // ownerSig
+    b.opCode(OpCodes.OP_DROP);           // changeAmt
+    b.opCode(OpCodes.OP_DROP);           // changePkh
+    b.opCode(OpCodes.OP_DROP);           // ownerPK
+    b.opCode(OpCodes.OP_DROP);           // pp2ChangeOut
+    b.opCode(OpCodes.OP_DROP);           // pp2RecipOut
+
     b.opCode(OpCodes.OP_1);              // leave TRUE
   }
 
@@ -1729,6 +1744,13 @@ class PP1FtScriptGen {
     // Stack: [..., parentTxIdB, outpoint4_txId]
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_EQUALVERIFY);     // outpoint4_txId == parentTxIdB
+
+    // Clean up main stack residuals: [pp2Out, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);            // ownerSig
+    b.opCode(OpCodes.OP_DROP);            // changeAmt
+    b.opCode(OpCodes.OP_DROP);            // changePkh
+    b.opCode(OpCodes.OP_DROP);            // ownerPK
+    b.opCode(OpCodes.OP_DROP);            // pp2Out
 
     b.opCode(OpCodes.OP_1);               // leave TRUE
   }

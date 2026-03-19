@@ -139,14 +139,24 @@ void main() {
     interp.traceCallback = tracer.record;
     var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
+    var scriptSigPP1 = aliceTransferWitnessTx.inputs[1].script!;
+    var scriptPubKeyPP1 = transferTx.outputs[1].script;
+    var pp1Sats = transferTx.outputs[1].satoshis;
+
     try {
-      interp.correctlySpends(
-          aliceTransferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
-          aliceTransferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis));
+      interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
+          aliceTransferWitnessTx, 1, verifyFlags, Coin.valueOf(pp1Sats));
       print('PP1_FT transferToken after merge PASSED');
     } catch (e) {
       print('PP1_FT transferToken after merge FAILED: $e');
       tracer.dump();
     }
+
+    // Verify clean stack
+    var stackInterp = Interpreter();
+    var stack = InterpreterStack<List<int>>();
+    stackInterp.executeScript(aliceTransferWitnessTx, 1, scriptSigPP1, stack, pp1Sats, verifyFlags);
+    stackInterp.executeScript(aliceTransferWitnessTx, 1, scriptPubKeyPP1, stack, pp1Sats, verifyFlags);
+    expect(stack.length, 1, reason: 'PP1_FT transfer witness (merge) must leave clean stack');
   });
 }

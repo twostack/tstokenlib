@@ -406,12 +406,21 @@ void main() {
         parentOutputCount: 5,
       );
 
+      var scriptSigPP1 = transferWitnessTx.inputs[1].script!;
+      var scriptPubKeyPP1 = transferTx.outputs[1].script;
+      var pp1Sats = transferTx.outputs[1].satoshis;
       expect(
-          () => interp.correctlySpends(
-              transferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
-              transferWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          () => interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
+              transferWitnessTx, 1, verifyFlags, Coin.valueOf(pp1Sats)),
           returnsNormally,
           reason: 'PP1_RFT self-transfer with flags=0x01 should verify');
+
+      // Verify clean stack
+      var stackInterp = Interpreter();
+      var stack = InterpreterStack<List<int>>();
+      stackInterp.executeScript(transferWitnessTx, 1, scriptSigPP1, stack, pp1Sats, verifyFlags);
+      stackInterp.executeScript(transferWitnessTx, 1, scriptPubKeyPP1, stack, pp1Sats, verifyFlags);
+      expect(stack.length, 1, reason: 'PP1_RFT transfer witness must leave clean stack');
     });
   });
 

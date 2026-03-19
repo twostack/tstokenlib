@@ -154,14 +154,24 @@ void main() {
 
     var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
+    var scriptSigPP1 = aliceWitnessTx.inputs[1].script!;
+    var scriptPubKeyPP1 = transferTx.outputs[1].script;
+    var pp1Sats = transferTx.outputs[1].satoshis;
+
     try {
-      interp.correctlySpends(
-          aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
-          aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis));
+      interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
+          aliceWitnessTx, 1, verifyFlags, Coin.valueOf(pp1Sats));
       print('PP1_FT transferToken spending PASSED');
     } catch (e) {
       print('PP1_FT transferToken spending FAILED: $e');
       tracer.dump();
     }
+
+    // Verify clean stack
+    var stackInterp = Interpreter();
+    var stack = InterpreterStack<List<int>>();
+    stackInterp.executeScript(aliceWitnessTx, 1, scriptSigPP1, stack, pp1Sats, verifyFlags);
+    stackInterp.executeScript(aliceWitnessTx, 1, scriptPubKeyPP1, stack, pp1Sats, verifyFlags);
+    expect(stack.length, 1, reason: 'PP1_FT transfer witness must leave clean stack');
   });
 }

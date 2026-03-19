@@ -704,6 +704,13 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // Clean up main stack residuals: [pp2OutOrig, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);            // ownerSig
+    b.opCode(OpCodes.OP_DROP);            // changeAmt
+    b.opCode(OpCodes.OP_DROP);            // changePkh
+    b.opCode(OpCodes.OP_DROP);            // ownerPK
+    b.opCode(OpCodes.OP_DROP);            // pp2OutOrig
+
     b.opCode(OpCodes.OP_1);               // leave TRUE
   }
 

@@ -538,6 +538,13 @@ class PP1NftScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId  (Alt now: [tokenId, rabinPubKeyHash])
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // Clean up main stack residuals: [pp2Out, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);            // ownerSig
+    b.opCode(OpCodes.OP_DROP);            // changeAmt
+    b.opCode(OpCodes.OP_DROP);            // changePkh
+    b.opCode(OpCodes.OP_DROP);            // ownerPK
+    b.opCode(OpCodes.OP_DROP);            // pp2Out
+
     // Clean up alt (drop tokenId and rabinPubKeyHash)
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
     b.opCode(OpCodes.OP_DROP);

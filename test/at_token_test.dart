@@ -345,12 +345,20 @@ void main() {
       );
 
       // Verify PP1_AT transferToken spending in witness
+      var scriptSigPP1 = transferWitnessTx.inputs[1].script!;
+      var scriptPubKeyPP1 = transferTx.outputs[1].script;
       expect(
-          () => interp.correctlySpends(
-              transferWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+          () => interp.correctlySpends(scriptSigPP1, scriptPubKeyPP1,
               transferWitnessTx, 1, verifyFlags, Coin.valueOf(BigInt.one)),
           returnsNormally,
           reason: 'PP1_AT transferToken spending should verify');
+
+      // Verify clean stack
+      var stackInterp = Interpreter();
+      var stack = InterpreterStack<List<int>>();
+      stackInterp.executeScript(transferWitnessTx, 1, scriptSigPP1, stack, BigInt.one, verifyFlags);
+      stackInterp.executeScript(transferWitnessTx, 1, scriptPubKeyPP1, stack, BigInt.one, verifyFlags);
+      expect(stack.length, 1, reason: 'PP1_AT transfer witness must leave clean stack');
 
       // Step 5: Alice burns the token
       var burnFundingTx = getAliceFundingTx();

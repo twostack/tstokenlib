@@ -773,6 +773,13 @@ class PP1RnftScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);    // parentTxId
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // Clean up main stack residuals: [pp2Out, ownerPK, changePkh, changeAmt, ownerSig]
+    b.opCode(OpCodes.OP_DROP);            // ownerSig
+    b.opCode(OpCodes.OP_DROP);            // changeAmt
+    b.opCode(OpCodes.OP_DROP);            // changePkh
+    b.opCode(OpCodes.OP_DROP);            // ownerPK
+    b.opCode(OpCodes.OP_DROP);            // pp2Out
+
     // Clean up alt: drain tokenId, rabinPKH, [companionTokenId]
     b.opCode(OpCodes.OP_FROMALTSTACK);    // tokenId
     b.opCode(OpCodes.OP_DROP);
