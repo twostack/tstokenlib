@@ -358,8 +358,8 @@ void main() {
         bobFundingTx.hash, rabinPubKeyHash, 0x00,
       );
 
-      // Compute Rabin signature over sha256(identityTxId || ed25519PubKey)
-      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+      // Compute Rabin signature over sha256(identityTxId || ed25519PubKey || tokenId)
+      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...bobFundingTx.hash];
       var messageHash = Rabin.sha256ToScriptInt(concat);
       var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
       var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
@@ -407,8 +407,8 @@ void main() {
       var pp1Lock = PP1RnftLockBuilder.fromScript(issuanceTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId!;
 
-      // Step 2: Issue witness (Rabin identity binding)
-      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+      // Step 2: Issue witness (Rabin identity binding, includes tokenId)
+      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId];
       var messageHash = Rabin.sha256ToScriptInt(concat);
       var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
       var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
@@ -493,8 +493,8 @@ void main() {
       var pp1Lock = PP1RnftLockBuilder.fromScript(issuanceTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId!;
 
-      // Issue witness
-      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+      // Issue witness (includes tokenId in Rabin message)
+      var concat = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId];
       var messageHash = Rabin.sha256ToScriptInt(concat);
       var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
       var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();

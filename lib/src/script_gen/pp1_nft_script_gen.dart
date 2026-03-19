@@ -135,25 +135,30 @@ class PP1NftScriptGen {
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
 
-    // --- Phase 2: Clear ownerPKH and tokenId from altstack ---
+    // --- Phase 2: Clear ownerPKH; keep tokenId for Rabin message binding ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // ownerPKH → drop
     b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId → drop
-    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId (keep on main stack for hash binding)
     // Alt: [rabinPubKeyHash]
+    // Stack: tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3, rabinS=4, rabinN=5, ...
 
     // --- Phase 3: Verify hash160(rabinN) == rabinPubKeyHash ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // rabinPubKeyHash (now at top, shifts indices)
-    b.opCode(OpCodes.OP_5);
-    b.opCode(OpCodes.OP_PICK);           // copy rabinN (index 5 after rabinPubKeyHash push)
+    b.opCode(OpCodes.OP_6);
+    b.opCode(OpCodes.OP_PICK);           // copy rabinN (index 6: tokenId added to stack)
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_EQUALVERIFY);
     // Alt: [] (empty)
 
     // --- Phase 4: Rabin signature verification ---
-    // Compute sha256(identityTxId || ed25519PubKey) as positive script number
-    // Stack: ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4, ...
-    b.opCode(OpCodes.OP_CAT);            // identityTxId||ed25519PubKey
+    // Compute sha256(identityTxId || ed25519PubKey || tokenId) as positive script number
+    // Binds the Rabin signature to this specific token, preventing replay attacks.
+    // Stack: tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3, rabinS=4, rabinN=5, ...
+    b.opCode(OpCodes.OP_ROT);            // [identityTxId, tokenId, ed25519PubKey, ...]
+    b.opCode(OpCodes.OP_ROT);            // [ed25519PubKey, identityTxId, tokenId, ...]
+    b.opCode(OpCodes.OP_CAT);            // [identityTxId||ed25519PubKey, tokenId, ...]
+    b.opCode(OpCodes.OP_SWAP);           // [tokenId, identityTxId||ed25519PubKey, ...]
+    b.opCode(OpCodes.OP_CAT);            // [identityTxId||ed25519PubKey||tokenId, ...]
     b.opCode(OpCodes.OP_SHA256);          // raw hash (32 bytes)
     b.addData(Uint8List.fromList([0x00]));
     b.opCode(OpCodes.OP_CAT);

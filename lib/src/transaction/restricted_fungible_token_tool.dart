@@ -24,6 +24,7 @@ import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 import '../builder/map_lockbuilder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp1_rft_lock_builder.dart';
+import '../script_gen/pp1_rft_script_gen.dart';
 import '../builder/pp1_rft_unlock_builder.dart';
 import '../builder/pp2_ft_lock_builder.dart';
 import '../builder/pp2_ft_unlock_builder.dart';
@@ -530,7 +531,10 @@ class RestrictedFungibleTokenTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     if (action == RestrictedFungibleTokenAction.MINT) {
-      var concat = [...identityTxId!, ...ed25519PubKey!];
+      // Extract tokenId from PP1 output to bind Rabin signature to this token
+      var pp1Script = tokenTx.outputs[tripletBaseIndex].script;
+      var tokenId = pp1Script.buffer!.sublist(PP1RftScriptGen.tokenIdDataStart, PP1RftScriptGen.tokenIdDataEnd);
+      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
       var messageHash = Rabin.sha256ToScriptInt(concat);
       var sig = Rabin.sign(messageHash, rabinKeyPair!.p, rabinKeyPair.q);
 

@@ -59,11 +59,10 @@ Future<void> main() async {
   var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
   var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
 
-  // Sign the identity binding message with the Rabin key
-  var identityMessage = [...dummyIdentityTxId, ...dummyEd25519PubKey];
-  var messageHash = Rabin.sha256ToScriptInt(identityMessage);
-  var rabinSig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
-  var rabinSBytes = Rabin.bigIntToScriptNum(rabinSig.s).toList();
+  // Rabin signature variables — computed after bobFundingTx is available,
+  // because the message includes the tokenId (= bobFundingTx.hash) to prevent replay attacks.
+  late RabinSignature rabinSig;
+  late List<int> rabinSBytes;
 
   // The TokenTool is the primary API for all token operations.
   var tokenTool = TokenTool(networkType: NetworkType.TEST);
@@ -88,6 +87,15 @@ Future<void> main() async {
     "f36b0388ac00ca9a3b000000001976a914650c4adb156f19e36a755c820d892cda108299c4"
     "88ac65000000",
   );
+
+  // Sign the identity binding message with the Rabin key.
+  // The message includes tokenId (= bobFundingTx.hash) to bind the signature
+  // to this specific token, preventing replay attacks on other tokens.
+  var tokenId = bobFundingTx.hash;
+  var identityMessage = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId];
+  var messageHash = Rabin.sha256ToScriptInt(identityMessage);
+  rabinSig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+  rabinSBytes = Rabin.bigIntToScriptNum(rabinSig.s).toList();
 
   print("=== STEP 1: Token Issuance ===");
 

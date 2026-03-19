@@ -172,8 +172,10 @@ void main() {
     dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
     dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
 
-    // Pre-compute Rabin signature over sha256(identityTxId || ed25519PubKey)
-    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+    // Pre-compute Rabin signature over sha256(identityTxId || ed25519PubKey || tokenId)
+    // tokenId is deterministic: getBobFundingTx().hash
+    var tokenId = getBobFundingTx().hash;
+    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId];
     var messageHash = Rabin.sha256ToScriptInt(messageBytes);
     var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
     rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();

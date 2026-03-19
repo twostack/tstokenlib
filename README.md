@@ -123,10 +123,11 @@ For **issuance witnesses**, a Rabin signature over `sha256(identityTxId || ed255
 be provided to prove the issuer is authorized by the identity anchor:
 
 ```dart
-// Compute Rabin signature for identity binding
+// Compute Rabin signature for identity binding (tokenId prevents replay attacks)
 var identityTxId = ...;       // 32-byte identity anchor txid
 var ed25519PubKey = ...;      // 32-byte ED25519 public key from identity anchor
-var messageHash = Rabin.sha256ToScriptInt([...identityTxId, ...ed25519PubKey]);
+var tokenId = fundingTx.hash; // 32-byte token ID (funding tx hash)
+var messageHash = Rabin.sha256ToScriptInt([...identityTxId, ...ed25519PubKey, ...tokenId]);
 var rabinSig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
 
 var witnessTx = service.createWitnessTxn(

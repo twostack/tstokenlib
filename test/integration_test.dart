@@ -46,7 +46,9 @@ void main() {
     rabinPubKeyHash = hash160(rabinNBytes);
     dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
     dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
-    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey];
+    // Include tokenId in Rabin message to bind signature to this token
+    var tokenId = getBobFundingTx().hash;
+    var messageBytes = [...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId];
     var messageHash = Rabin.sha256ToScriptInt(messageBytes);
     var sig = Rabin.sign(messageHash, kp.p, kp.q);
     rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
