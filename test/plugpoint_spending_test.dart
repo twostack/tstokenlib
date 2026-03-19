@@ -260,6 +260,7 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
     var scriptSigPP1 = witnessTx.inputs[1].script;
     var scriptPubKeyPP1 = issuanceTxn.outputs[1].script;
@@ -343,6 +344,7 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
     //validate the spend from the Witness' output (ModP2PKH)
     var scriptSigWitness = transferTx.inputs[1].script;
@@ -431,6 +433,7 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
     //verify PP1 spending
     var scriptSigPP1 = witnessTx.inputs[1].script;
@@ -537,6 +540,7 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
     // Verify spending from the witness output (ModP2PKH) in Alice→Charlie transfer
     var scriptSigWitness = transferTxAliceToCharlie.inputs[1].script;
@@ -592,6 +596,7 @@ void main() {
     verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
     verifyFlags.add(VerifyFlag.LOW_S);
     verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
     // Verify PP1 burn spending (input[1])
     var scriptSigPP1 = burnTx.inputs[1].script;

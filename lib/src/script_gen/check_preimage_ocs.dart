@@ -25,17 +25,17 @@ import 'opcode_helpers.dart';
 /// used by both PP3-FT (WitnessCheckScriptGen) and PP1_FT (PP1FtScriptGen).
 class CheckPreimageOCS {
 
-  /// Private key (LE with sign byte) for OCS signature construction.
+  /// Private key (LE, minimally encoded) for OCS signature construction.
   static final Uint8List privKeyLE = Uint8List.fromList(hex.decode(
-      '97dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff02600'));
+      '97dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff026'));
 
   /// Modular inverse of nonce k (LE with sign byte).
   static final Uint8List invKLE = Uint8List.fromList(hex.decode(
       '0ac407f0e4bd44bfc207355a778b046225a7068fc59ee7eda43ad905aadbffc800'));
 
-  /// r value as LE script number (with sign byte).
+  /// r value as LE script number (minimally encoded).
   static final Uint8List rLE = Uint8List.fromList(hex.decode(
-      '6c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce081000'));
+      '6c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce0810'));
 
   /// r value in big-endian (for DER encoding).
   static final Uint8List rBigEndian = Uint8List.fromList(hex.decode(

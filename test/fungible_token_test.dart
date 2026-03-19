@@ -179,6 +179,7 @@ void main() {
       verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
       verifyFlags.add(VerifyFlag.LOW_S);
       verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
       // Verify PP1_FT burn spending (input[1] spends transferTx output[1])
       expect(

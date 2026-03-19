@@ -205,6 +205,7 @@ void main() {
       verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
       verifyFlags.add(VerifyFlag.LOW_S);
       verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
       // Input[1] spends the witness output locked to Alice -- Bob cannot sign it
       var scriptSigWitness = wrongOwnerTransferTx.inputs[1].script;
@@ -290,6 +291,7 @@ void main() {
       verifyFlags.add(VerifyFlag.SIGHASH_FORKID);
       verifyFlags.add(VerifyFlag.LOW_S);
       verifyFlags.add(VerifyFlag.UTXO_AFTER_GENESIS);
+      verifyFlags.add(VerifyFlag.MINIMALDATA);
 
       var scriptSigPP1 = witnessTx.inputs[1].script;
       var scriptPubKeyPP1 = transferTx.outputs[1].script;
