@@ -161,6 +161,7 @@ void exportPP1() {
 void exportPP1Ft() {
   var ownerPKH = List.filled(20, 0xAA);
   var tokenId = List.filled(32, 0xBB);
+  var rabinPKH = List.filled(20, 0xCC);
   // Amount: 8 bytes of 0xDD sentinel
   // Use a specific amount that produces our sentinel pattern
   // amount is encoded as 8-byte LE with bit 63 clear
@@ -170,15 +171,11 @@ void exportPP1Ft() {
   var script = PP1FtScriptGen.generate(
     ownerPKH: ownerPKH,
     tokenId: tokenId,
+    rabinPubKeyHash: rabinPKH,
     amount: amount,
   );
 
   var fullHex = hex.encode(script.buffer!);
-
-  // Verify the amount encoding at the expected offset
-  var amountHexStart = PP1FtScriptGen.amountDataStart * 2;
-  var amountHexEnd = PP1FtScriptGen.amountDataEnd * 2;
-  var amountHex = fullHex.substring(amountHexStart, amountHexEnd);
 
   // Build template by replacing sentinel regions
   // For amount, we need to find the actual encoded bytes
@@ -191,19 +188,14 @@ void exportPP1Ft() {
   amountBytes[7] = val & 0x7F;
   var amountSentinelHex = hex.encode(amountBytes);
 
-  // Replace ownerPKH and tokenId using sentinel approach
+  // Replace ownerPKH, tokenId, and rabinPubKeyHash using sentinel approach
   var templateHex = templatizeHex(fullHex, {
     'ownerPKH': _SentinelRegion(PP1FtScriptGen.pkhDataStart, 20, 0xAA),
     'tokenId': _SentinelRegion(PP1FtScriptGen.tokenIdDataStart, 32, 0xBB),
+    'rabinPubKeyHash': _SentinelRegion(PP1FtScriptGen.rabinPKHDataStart, 20, 0xCC),
   });
 
   // Replace amount region manually (not uniform sentinel bytes)
-  var amountStart = PP1FtScriptGen.amountDataStart * 2;
-  // Adjust for placeholder insertions before this offset
-  // ownerPKH placeholder: replaced 40 hex chars with "{{ownerPKH}}" (12 chars) = -28 shift
-  // tokenId placeholder: replaced 64 hex chars with "{{tokenId}}" (11 chars) = -53 shift
-  // But since we used templatizeHex which sorts descending, ownerPKH (offset 1) was replaced last
-  // Let's just find the amount hex in the template string
   var amountInTemplate = templateHex.indexOf(amountSentinelHex);
   if (amountInTemplate == -1) {
     throw Exception('Could not find amount sentinel in template hex');
@@ -229,6 +221,12 @@ void exportPP1Ft() {
         'size': 32,
         'encoding': 'hex',
         'description': '32-byte unique token identifier (genesis txid)',
+      },
+      {
+        'name': 'rabinPubKeyHash',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte hash160 of the Rabin public key for identity anchoring',
       },
       {
         'name': 'amount',

@@ -103,6 +103,11 @@ class ScriptTracer {
   }
 }
 
+late RabinKeyPair rabinKeyPair;
+late List<int> rabinPubKeyHash;
+var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+
 void main() {
   test('Diagnostic: standard transfer + interpreter verify with trace',
       timeout: Timeout(Duration(minutes: 2)), () async {
@@ -110,11 +115,15 @@ void main() {
     var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
+    rabinKeyPair = Rabin.generateKeyPair(1024);
+    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+
     // Step 1: Mint
     var bobFundingTx = getBobFundingTx();
     var mintTx = await service.createFungibleMintTxn(
       bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-      bobFundingTx.hash, 1000,
+      bobFundingTx.hash, rabinPubKeyHash, 1000,
     );
     var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
     var tokenId = pp1FtLock.tokenId;
@@ -123,6 +132,9 @@ void main() {
     var mintWitnessTx = service.createFungibleWitnessTxn(
       bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
       FungibleTokenAction.MINT,
+      rabinKeyPair: rabinKeyPair,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // Step 3: Transfer

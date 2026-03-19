@@ -124,7 +124,7 @@ void main() {
   // 3. PP1_FT Lock
   {
     var amount = 50000;
-    var builder = PP1FtLockBuilder(hex.decode(bobPubkeyHash), tokenId, amount);
+    var builder = PP1FtLockBuilder(hex.decode(bobPubkeyHash), tokenId, rabinPubKeyHash, amount);
     var script = builder.getScriptPubkey();
     vectors.add({
       'name': 'PP1_FT_LOCK',
@@ -133,6 +133,7 @@ void main() {
       'inputs': {
         'ownerPKH': bobPubkeyHash,
         'tokenId': hex.encode(tokenId),
+        'rabinPubKeyHash': hex.encode(rabinPubKeyHash),
         'amount': amount,
       },
       'expectedScriptHex': script.toHex(),

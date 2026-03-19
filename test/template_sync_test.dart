@@ -61,6 +61,7 @@ void main() {
 
       var ownerPKH = List.generate(20, (i) => i + 1);
       var tokenId = List.generate(32, (i) => i + 0x20);
+      var rabinPKH = List.generate(20, (i) => i + 0x40);
       var amount = 1000000; // 1M satoshis
 
       // Encode amount as 8-byte LE (same as PP1FtScriptGen)
@@ -75,11 +76,13 @@ void main() {
       var substituted = templateHex
           .replaceFirst('{{ownerPKH}}', hex.encode(ownerPKH))
           .replaceFirst('{{tokenId}}', hex.encode(tokenId))
+          .replaceFirst('{{rabinPubKeyHash}}', hex.encode(rabinPKH))
           .replaceFirst('{{amount}}', hex.encode(amountBytes));
 
       var script = PP1FtScriptGen.generate(
         ownerPKH: ownerPKH,
         tokenId: tokenId,
+        rabinPubKeyHash: rabinPKH,
         amount: amount,
       );
       var generatedHex = hex.encode(script.buffer!);

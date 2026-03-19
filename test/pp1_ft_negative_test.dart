@@ -70,6 +70,11 @@ SVScript tamperChunkNumber(SVScript original, int chunkIndex, int newValue) {
 
 var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
+late RabinKeyPair rabinKeyPair;
+late List<int> rabinPubKeyHash;
+var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+
 void main() {
   // =========================================================================
   // Shared setup: mint → witness → transfer (used by transfer and burn tests)
@@ -86,11 +91,15 @@ void main() {
     var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
     var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
 
+    rabinKeyPair = Rabin.generateKeyPair(1024);
+    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+
     // Step 1: Bob mints 1000 tokens
     var bobFundingTx = getBobFundingTx();
     mintTx = await service.createFungibleMintTxn(
       bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-      bobFundingTx.hash, 1000,
+      bobFundingTx.hash, rabinPubKeyHash, 1000,
     );
 
     var pp1FtLock = PP1FtLockBuilder.fromScript(mintTx.outputs[1].script);
@@ -100,6 +109,9 @@ void main() {
     mintWitnessTx = service.createFungibleWitnessTxn(
       bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
       FungibleTokenAction.MINT,
+      rabinKeyPair: rabinKeyPair,
+      identityTxId: dummyIdentityTxId,
+      ed25519PubKey: dummyEd25519PubKey,
     );
 
     // Step 3: Bob transfers to Alice

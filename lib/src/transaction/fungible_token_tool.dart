@@ -28,6 +28,8 @@ import '../builder/pp2_ft_lock_builder.dart';
 import '../builder/pp2_ft_unlock_builder.dart';
 import '../builder/partial_witness_ft_lock_builder.dart';
 import '../builder/partial_witness_ft_unlock_builder.dart';
+import '../crypto/rabin.dart';
+import '../script_gen/pp1_ft_script_gen.dart';
 import 'utils.dart';
 
 /// High-level API for creating fungible token transactions using the TSL1-FT protocol.
@@ -75,6 +77,7 @@ class FungibleTokenTool {
       SVPublicKey fundingPubKey,
       Address recipientAddress,
       List<int> witnessFundingTxId,
+      List<int> rabinPubKeyHash,
       int amount,
       {List<int>? metadataBytes}
   ) async {
@@ -89,7 +92,7 @@ class FungibleTokenTool {
     tokenTxBuilder.withFeePerKb(1);
 
     // Output 1: PP1_FT (fungible token state)
-    var pp1FtLocker = PP1FtLockBuilder(recipientPKH, tokenId, amount);
+    var pp1FtLocker = PP1FtLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, amount);
     tokenTxBuilder.spendToLockBuilder(pp1FtLocker, BigInt.one);
 
     // Output 2: PP2-FT (witness bridge)
@@ -137,7 +140,10 @@ class FungibleTokenTool {
        List<int>? parentTokenTxBytesB,
        int parentOutputCountB = 5,
        int parentPP1FtIndexA = 1,
-       int parentPP1FtIndexB = 1}
+       int parentPP1FtIndexB = 1,
+       RabinKeyPair? rabinKeyPair,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}
   ) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -172,7 +178,10 @@ class FungibleTokenTool {
         parentTokenTxBytesB: parentTokenTxBytesB,
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
-        parentPP1FtIndexB: parentPP1FtIndexB);
+        parentPP1FtIndexB: parentPP1FtIndexB,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: identityTxId,
+        ed25519PubKey: ed25519PubKey);
 
     var witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker);
@@ -186,7 +195,10 @@ class FungibleTokenTool {
         parentTokenTxBytesB: parentTokenTxBytesB,
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
-        parentPP1FtIndexB: parentPP1FtIndexB);
+        parentPP1FtIndexB: parentPP1FtIndexB,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: identityTxId,
+        ed25519PubKey: ed25519PubKey);
 
     witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker);
@@ -219,8 +231,12 @@ class FungibleTokenTool {
     var recipientPKH = hex.decode(recipientAddress.pubkeyHash160);
     var prevPP3Index = prevTripletBaseIndex + 2;
 
+    // Extract rabinPubKeyHash from parent PP1_FT output
+    var parentPP1 = PP1FtLockBuilder.fromScript(prevTokenTx.outputs[prevTripletBaseIndex].script);
+    var rabinPubKeyHash = parentPP1.rabinPubKeyHash;
+
     // Build output lockers
-    var pp1FtLocker = PP1FtLockBuilder(recipientPKH, tokenId, amount);
+    var pp1FtLocker = PP1FtLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, amount);
     var pp2FtLocker = PP2FtLockBuilder(
         getOutpoint(recipientWitnessFundingTxId), recipientPKH, 1, recipientPKH, 1, 2);
     var pp3FtLocker = PartialWitnessFtLockBuilder(recipientPKH, 2);
@@ -302,14 +318,18 @@ class FungibleTokenTool {
     var changeTokenAmount = totalAmount - sendAmount;
     var prevPP3Index = prevTripletBaseIndex + 2;
 
+    // Extract rabinPubKeyHash from parent PP1_FT output
+    var parentPP1 = PP1FtLockBuilder.fromScript(prevTokenTx.outputs[prevTripletBaseIndex].script);
+    var rabinPubKeyHash = parentPP1.rabinPubKeyHash;
+
     // Recipient triplet (outputs 1,2,3)
-    var pp1FtRecipientLocker = PP1FtLockBuilder(recipientPKH, tokenId, sendAmount);
+    var pp1FtRecipientLocker = PP1FtLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, sendAmount);
     var pp2FtRecipientLocker = PP2FtLockBuilder(
         getOutpoint(recipientWitnessFundingTxId), recipientPKH, 1, recipientPKH, 1, 2);
     var pp3FtRecipientLocker = PartialWitnessFtLockBuilder(recipientPKH, 2);
 
     // Change triplet (outputs 4,5,6)
-    var pp1FtChangeLocker = PP1FtLockBuilder(senderPKH, tokenId, changeTokenAmount);
+    var pp1FtChangeLocker = PP1FtLockBuilder(senderPKH, tokenId, rabinPubKeyHash, changeTokenAmount);
     var pp2FtChangeLocker = PP2FtLockBuilder(
         getOutpoint(changeWitnessFundingTxId), senderPKH, 1, senderPKH, 4, 5);
     var pp3FtChangeLocker = PartialWitnessFtLockBuilder(senderPKH, 5);
@@ -433,8 +453,12 @@ class FungibleTokenTool {
     var prevPP3IndexA = prevTripletBaseIndexA + 2;
     var prevPP3IndexB = prevTripletBaseIndexB + 2;
 
+    // Extract rabinPubKeyHash from parent PP1_FT output
+    var parentPP1 = PP1FtLockBuilder.fromScript(prevTokenTxA.outputs[prevTripletBaseIndexA].script);
+    var rabinPubKeyHash = parentPP1.rabinPubKeyHash;
+
     // Build output lockers (single merged triplet)
-    var pp1FtLocker = PP1FtLockBuilder(ownerPKH, tokenId, totalAmount);
+    var pp1FtLocker = PP1FtLockBuilder(ownerPKH, tokenId, rabinPubKeyHash, totalAmount);
     var pp2FtLocker = PP2FtLockBuilder(
         getOutpoint(mergedWitnessFundingTxId), ownerPKH, 1, ownerPKH, 1, 2);
     var pp3FtLocker = PartialWitnessFtLockBuilder(ownerPKH, 2);
@@ -486,13 +510,25 @@ class FungibleTokenTool {
       {List<int>? parentTokenTxBytesB,
        int parentOutputCountB = 5,
        int parentPP1FtIndexA = 1,
-       int parentPP1FtIndexB = 1}
+       int parentPP1FtIndexB = 1,
+       RabinKeyPair? rabinKeyPair,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}
   ) {
     var pp2Index = tripletBaseIndex + 1;
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     if (action == FungibleTokenAction.MINT) {
-      return PP1FtUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes);
+      var pp1Script = tokenTx.outputs[tripletBaseIndex].script;
+      var tokenId = pp1Script.buffer!.sublist(PP1FtScriptGen.tokenIdDataStart, PP1FtScriptGen.tokenIdDataEnd);
+      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
+      var messageHash = Rabin.sha256ToScriptInt(concat);
+      var sig = Rabin.sign(messageHash, rabinKeyPair!.p, rabinKeyPair.q);
+      var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n);
+      var rabinS = Rabin.bigIntToScriptNum(sig.s);
+      return PP1FtUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes,
+          rabinN: rabinN.toList(), rabinS: rabinS.toList(), rabinPadding: sig.padding,
+          identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == FungibleTokenAction.TRANSFER) {
       var pp2Output = tokenTx.outputs[pp2Index].serialize();
       return PP1FtUnlockBuilder.forTransfer(

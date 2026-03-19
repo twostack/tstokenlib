@@ -13,13 +13,15 @@ Address bobAddress = Address.fromPublicKey(bobPub, NetworkType.TEST);
 var bobPubkeyHash = "650c4adb156f19e36a755c820d892cda108299c4";
 
 void main() {
+  var dummyRabinPKH = List<int>.generate(20, (i) => i + 0xC0);
+
   group('PP1FtLockBuilder round-trip', () {
-    test('build then parse recovers recipientPKH, tokenId, and amount', () {
+    test('build then parse recovers recipientPKH, tokenId, rabinPubKeyHash, and amount', () {
       var recipientPKH = hex.decode(bobPubkeyHash).toList();
       var tokenId = List<int>.generate(32, (i) => i + 0xA0);
       var amount = 1000;
 
-      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, dummyRabinPKH, amount);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1FtLockBuilder.fromScript(script);
@@ -28,6 +30,8 @@ void main() {
           reason: 'recipientPKH mismatch after round-trip');
       expect(ListEquality().equals(parsed.tokenId, tokenId), true,
           reason: 'tokenId mismatch after round-trip');
+      expect(ListEquality().equals(parsed.rabinPubKeyHash, dummyRabinPKH), true,
+          reason: 'rabinPubKeyHash mismatch after round-trip');
       expect(parsed.amount, amount, reason: 'amount mismatch after round-trip');
     });
 
@@ -36,7 +40,7 @@ void main() {
       var tokenId = List<int>.generate(32, (i) => i);
       var amount = 1;
 
-      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, dummyRabinPKH, amount);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1FtLockBuilder.fromScript(script);
@@ -49,7 +53,7 @@ void main() {
       var tokenId = List<int>.generate(32, (i) => 0xFF);
       var amount = 21000000 * 100000000; // 21M * 1e8
 
-      var builder = PP1FtLockBuilder(recipientPKH, tokenId, amount);
+      var builder = PP1FtLockBuilder(recipientPKH, tokenId, dummyRabinPKH, amount);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1FtLockBuilder.fromScript(script);
@@ -60,19 +64,19 @@ void main() {
     test('rejects PKH with wrong length', () {
       var badPKH = List<int>.generate(19, (i) => i);
       var tokenId = List<int>.generate(32, (i) => i);
-      expect(() => PP1FtLockBuilder(badPKH, tokenId, 100), throwsException);
+      expect(() => PP1FtLockBuilder(badPKH, tokenId, dummyRabinPKH, 100), throwsException);
     });
 
     test('rejects tokenId with wrong length', () {
       var pkh = hex.decode(bobPubkeyHash).toList();
       var badTokenId = List<int>.generate(31, (i) => i);
-      expect(() => PP1FtLockBuilder(pkh, badTokenId, 100), throwsException);
+      expect(() => PP1FtLockBuilder(pkh, badTokenId, dummyRabinPKH, 100), throwsException);
     });
 
     test('rejects negative amount', () {
       var pkh = hex.decode(bobPubkeyHash).toList();
       var tokenId = List<int>.generate(32, (i) => i);
-      expect(() => PP1FtLockBuilder(pkh, tokenId, -1), throwsException);
+      expect(() => PP1FtLockBuilder(pkh, tokenId, dummyRabinPKH, -1), throwsException);
     });
   });
 
@@ -133,20 +137,26 @@ void main() {
   });
 
   group('PP1FtUnlockBuilder script construction', () {
-    test('MINT action produces OP_0 selector', () {
+    test('MINT action produces OP_0 selector with Rabin params', () {
       var preImage = List<int>.generate(100, (i) => i);
       var witnessFundingTxId = List<int>.generate(32, (i) => i + 0x50);
       var padding = Uint8List(5);
+      var rabinN = List<int>.generate(64, (i) => i + 0x10);
+      var rabinS = List<int>.generate(64, (i) => i + 0x20);
+      var identityTxId = List<int>.generate(32, (i) => i + 1);
+      var ed25519PubKey = List<int>.generate(32, (i) => i + 0x41);
 
-      var builder = PP1FtUnlockBuilder.forMint(preImage, witnessFundingTxId, padding);
+      var builder = PP1FtUnlockBuilder.forMint(preImage, witnessFundingTxId, padding,
+          rabinN: rabinN, rabinS: rabinS, rabinPadding: 0,
+          identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
       var script = builder.getScriptSig();
       var chunks = script.chunks;
 
       // Last chunk should be OP_0
       expect(chunks.last.opcodenum, OpCodes.OP_0,
           reason: 'MINT should end with OP_0');
-      // Should have 4 chunks: preImage, witnessFundingTxId, padding, OP_0
-      expect(chunks.length, 4);
+      // Should have 9 chunks: preImage, fundingTxId, padding, rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey, OP_0
+      expect(chunks.length, 9);
     });
 
     test('BURN action produces OP_4 selector with pubkey and sig', () {

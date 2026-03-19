@@ -64,6 +64,13 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
   //these are populated upon parsing/reconstruction
   List<int>? _sigBytes;
 
+  // Rabin identity fields (used for MINT only)
+  List<int>? _rabinN;
+  List<int>? _rabinS;
+  int? _rabinPadding;
+  List<int>? _identityTxId;
+  List<int>? _ed25519PubKey;
+
   /// Creates a PP1_FT unlock builder for minting new tokens.
   ///
   /// [preImage] - The sighash preimage.
@@ -73,9 +80,19 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
     List<int> preImage,
     List<int> witnessFundingTxId,
     List<int> witnessPadding,
+    {List<int>? rabinN,
+     List<int>? rabinS,
+     int? rabinPadding,
+     List<int>? identityTxId,
+     List<int>? ed25519PubKey}
   ) : _preImage = preImage,
       _witnessFundingTxId = witnessFundingTxId,
       _witnessPadding = witnessPadding,
+      _rabinN = rabinN,
+      _rabinS = rabinS,
+      _rabinPadding = rabinPadding,
+      _identityTxId = identityTxId,
+      _ed25519PubKey = ed25519PubKey,
       _action = FungibleTokenAction.MINT;
 
   /// Creates a PP1_FT unlock builder for a token transfer.
@@ -243,6 +260,11 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._preImage!));
       result.addData(Uint8List.fromList(this._witnessFundingTxId!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
+      result.addData(Uint8List.fromList(this._rabinN!));
+      result.addData(Uint8List.fromList(this._rabinS!));
+      result.number(this._rabinPadding!);
+      result.addData(Uint8List.fromList(this._identityTxId!));
+      result.addData(Uint8List.fromList(this._ed25519PubKey!));
 
     } else if (_action == FungibleTokenAction.TRANSFER) {
 
