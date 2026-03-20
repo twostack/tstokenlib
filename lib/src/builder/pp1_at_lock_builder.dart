@@ -24,7 +24,7 @@ import '../script_gen/pp1_at_script_gen.dart';
 /// PP1_AT is a loyalty/stamp card token with dual authority (issuer + owner),
 /// append-only rolling hash, and threshold-based redemption.
 ///
-/// Header layout (118 bytes):
+/// Header layout (139 bytes):
 /// ```
 /// Byte 0:        0x14 (pushdata 20)
 /// Bytes 1-20:    ownerPKH (customer)
@@ -32,18 +32,21 @@ import '../script_gen/pp1_at_script_gen.dart';
 /// Bytes 22-53:   tokenId
 /// Byte 54:       0x14 (pushdata 20)
 /// Bytes 55-74:   issuerPKH (shop)
-/// Byte 75:       0x04 (pushdata 4)
-/// Bytes 76-79:   stampCount (4-byte LE)
-/// Byte 80:       0x04 (pushdata 4)
-/// Bytes 81-84:   threshold (4-byte LE)
-/// Byte 85:       0x20 (pushdata 32)
-/// Bytes 86-117:  stampsHash (rolling SHA256)
-/// Byte 118:      start of script body
+/// Byte 75:       0x14 (pushdata 20)
+/// Bytes 76-95:   rabinPubKeyHash (identity anchor)
+/// Byte 96:       0x04 (pushdata 4)
+/// Bytes 97-100:  stampCount (4-byte LE)
+/// Byte 101:      0x04 (pushdata 4)
+/// Bytes 102-105: threshold (4-byte LE)
+/// Byte 106:      0x20 (pushdata 32)
+/// Bytes 107-138: stampsHash (rolling SHA256)
+/// Byte 139:      start of script body
 /// ```
 class PP1AtLockBuilder extends LockingScriptBuilder {
   Address? _recipientAddress;
   List<int>? _tokenId;
   List<int>? _issuerPKH;
+  List<int>? _rabinPubKeyHash;
   int _stampCount;
   int _threshold;
   List<int>? _stampsHash;
@@ -53,6 +56,7 @@ class PP1AtLockBuilder extends LockingScriptBuilder {
       : _stampCount = 0, _threshold = 0, super.fromScript(script);
 
   PP1AtLockBuilder(this._recipientAddress, this._tokenId, this._issuerPKH,
+      this._rabinPubKeyHash,
       this._stampCount, this._threshold, this._stampsHash, {this.networkType}) {
     if (_recipientAddress == null) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient address is required");
@@ -62,6 +66,9 @@ class PP1AtLockBuilder extends LockingScriptBuilder {
     }
     if (_issuerPKH == null || _issuerPKH!.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Issuer PKH must be 20 bytes");
+    }
+    if (_rabinPubKeyHash == null || _rabinPubKeyHash!.length != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin public key hash must be 20 bytes");
     }
     if (_stampsHash == null || _stampsHash!.length != 32) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Stamps hash must be 32 bytes");
@@ -75,6 +82,7 @@ class PP1AtLockBuilder extends LockingScriptBuilder {
       ownerPKH: ownerPKH,
       tokenId: _tokenId!,
       issuerPKH: _issuerPKH!,
+      rabinPubKeyHash: _rabinPubKeyHash!,
       stampCount: _stampCount,
       threshold: _threshold,
       stampsHash: _stampsHash!,
@@ -97,8 +105,9 @@ class PP1AtLockBuilder extends LockingScriptBuilder {
         networkType ?? NetworkType.TEST);
     _tokenId = buf.sublist(PP1AtScriptGen.tokenIdDataStart, PP1AtScriptGen.tokenIdDataEnd).toList();
     _issuerPKH = buf.sublist(PP1AtScriptGen.issuerPKHDataStart, PP1AtScriptGen.issuerPKHDataEnd).toList();
+    _rabinPubKeyHash = buf.sublist(PP1AtScriptGen.rabinPKHDataStart, PP1AtScriptGen.rabinPKHDataEnd).toList();
 
-    // stampCount: 4-byte LE at bytes 76-79
+    // stampCount: 4-byte LE at bytes 97-100
     var scBytes = buf.sublist(PP1AtScriptGen.stampCountDataStart, PP1AtScriptGen.stampCountDataEnd).toList();
     _stampCount = scBytes[0] | (scBytes[1] << 8) | (scBytes[2] << 16) | (scBytes[3] << 24);
 
@@ -112,6 +121,7 @@ class PP1AtLockBuilder extends LockingScriptBuilder {
   List<int>? get tokenId => _tokenId;
   Address? get recipientAddress => _recipientAddress;
   List<int>? get issuerPKH => _issuerPKH;
+  List<int>? get rabinPubKeyHash => _rabinPubKeyHash;
   int get stampCount => _stampCount;
   int get threshold => _threshold;
   List<int>? get stampsHash => _stampsHash;

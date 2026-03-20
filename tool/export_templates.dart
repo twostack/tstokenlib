@@ -414,6 +414,7 @@ void exportPP1At() {
   var ownerPKH = List.filled(20, 0xAA);
   var tokenId = List.filled(32, 0xBB);
   var issuerPKH = List.filled(20, 0xCC);
+  var rabinPubKeyHash = List.filled(20, 0x99);
   var stampCount = 0xDDDDDDDD;
   var threshold = 0xEEEEEEEE;
   var stampsHash = List.filled(32, 0xFF);
@@ -422,6 +423,7 @@ void exportPP1At() {
     ownerPKH: ownerPKH,
     tokenId: tokenId,
     issuerPKH: issuerPKH,
+    rabinPubKeyHash: rabinPubKeyHash,
     stampCount: stampCount,
     threshold: threshold,
     stampsHash: stampsHash,
@@ -433,6 +435,7 @@ void exportPP1At() {
     'ownerPKH': _SentinelRegion(PP1AtScriptGen.pkhDataStart, 20, 0xAA),
     'tokenId': _SentinelRegion(PP1AtScriptGen.tokenIdDataStart, 32, 0xBB),
     'issuerPKH': _SentinelRegion(PP1AtScriptGen.issuerPKHDataStart, 20, 0xCC),
+    'rabinPubKeyHash': _SentinelRegion(PP1AtScriptGen.rabinPKHDataStart, 20, 0x99),
     'stampsHash': _SentinelRegion(PP1AtScriptGen.stampsHashDataStart, 32, 0xFF),
   });
 
@@ -459,7 +462,7 @@ void exportPP1At() {
   writeTemplate('templates/nft/pp1_at.json', {
     'name': 'PP1_AT',
     'version': version,
-    'description': 'Appendable token (loyalty/stamp card) locking script. Tracks stamp count, threshold, and rolling stamps hash.',
+    'description': 'Appendable token (loyalty/stamp card) locking script with Rabin identity binding. Tracks stamp count, threshold, and rolling stamps hash.',
     'category': 'nft',
     'parameters': [
       {
@@ -479,6 +482,12 @@ void exportPP1At() {
         'size': 20,
         'encoding': 'hex',
         'description': '20-byte pubkey hash of the stamp issuer',
+      },
+      {
+        'name': 'rabinPubKeyHash',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte hash160 of the Rabin public key for identity anchoring',
       },
       {
         'name': 'stampCount',

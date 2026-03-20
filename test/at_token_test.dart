@@ -6,6 +6,9 @@ import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/script_gen/pp1_at_script_gen.dart';
 
+// Dummy Rabin PKH for tests that don't need real Rabin verification
+var testRabinPubKeyHash = List<int>.filled(20, 0x99);
+
 var bobWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
 SVPrivateKey bobPrivateKey = SVPrivateKey.fromWIF(bobWif);
 var bobPub = bobPrivateKey.publicKey;
@@ -37,41 +40,59 @@ Transaction getAliceFundingTx() {
 
 void main() {
 
+  // Rabin keypair for witness tests (generated once)
+  late RabinKeyPair rabinKeyPair;
+  late List<int> rabinPubKeyHash;
+  late List<int> dummyIdentityTxId;
+  late List<int> dummyEd25519PubKey;
+
+  setUpAll(() {
+    rabinKeyPair = Rabin.generateKeyPair(1024);
+    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+    dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+    dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+  });
+
   group('AT lock builder parse roundtrip', () {
-    test('118-byte header roundtrip', () {
+    test('139-byte header roundtrip', () {
       var ownerPKH = hex.decode(bobPubkeyHash);
       var tokenId = List<int>.filled(32, 0xAA);
       var issuerPKH = hex.decode(alicePubkeyHash);
+      var rabinPKH = List<int>.filled(20, 0x99);
       var stampCount = 0;
       var threshold = 10;
       var stampsHash = List<int>.filled(32, 0x00);
 
-      var builder = PP1AtLockBuilder(bobAddress, tokenId, issuerPKH, stampCount, threshold, stampsHash);
+      var builder = PP1AtLockBuilder(bobAddress, tokenId, issuerPKH, rabinPKH, stampCount, threshold, stampsHash);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1AtLockBuilder.fromScript(script);
       expect(parsed.tokenId, tokenId);
       expect(parsed.issuerPKH, issuerPKH);
+      expect(parsed.rabinPubKeyHash, rabinPKH);
       expect(parsed.stampCount, stampCount);
       expect(parsed.threshold, threshold);
       expect(parsed.stampsHash, stampsHash);
       expect(hex.encode(hex.decode(parsed.recipientAddress!.address)), bobPubkeyHash);
     });
 
-    test('118-byte header with non-zero stampCount roundtrip', () {
+    test('139-byte header with non-zero stampCount roundtrip', () {
       var tokenId = List<int>.filled(32, 0xBB);
       var issuerPKH = hex.decode(alicePubkeyHash);
+      var rabinPKH = List<int>.filled(20, 0x99);
       var stampCount = 7;
       var threshold = 10;
       var stampsHash = List<int>.generate(32, (i) => i + 1);
 
-      var builder = PP1AtLockBuilder(bobAddress, tokenId, issuerPKH, stampCount, threshold, stampsHash);
+      var builder = PP1AtLockBuilder(bobAddress, tokenId, issuerPKH, rabinPKH, stampCount, threshold, stampsHash);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1AtLockBuilder.fromScript(script);
       expect(parsed.stampCount, 7);
       expect(parsed.threshold, 10);
       expect(parsed.stampsHash, stampsHash);
+      expect(parsed.rabinPubKeyHash, rabinPKH);
     });
   });
 
@@ -84,7 +105,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, 10,
+        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -104,12 +125,13 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, 10,
+        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
       var pp1Lock = PP1AtLockBuilder.fromScript(issuanceTx.outputs[1].script);
       expect(pp1Lock.tokenId, bobFundingTx.hash, reason: 'tokenId should be funding tx hash');
       expect(pp1Lock.issuerPKH, issuerPKH, reason: 'issuerPKH should match');
+      expect(pp1Lock.rabinPubKeyHash, rabinPubKeyHash, reason: 'rabinPubKeyHash should match');
       expect(pp1Lock.stampCount, 0, reason: 'initial stampCount should be 0');
       expect(pp1Lock.threshold, 10, reason: 'threshold should be 10');
       expect(pp1Lock.stampsHash, List<int>.filled(32, 0), reason: 'initial stampsHash should be zeros');
@@ -125,7 +147,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, 10,
+        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
       var aliceFundingTx = getAliceFundingTx();
@@ -152,7 +174,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, 10,
+        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
       var aliceFundingTx = getAliceFundingTx();
@@ -181,6 +203,7 @@ void main() {
         ownerPKH: hex.decode(bobPubkeyHash),
         tokenId: tokenId,
         issuerPKH: issuerPKH,
+        rabinPubKeyHash: testRabinPubKeyHash,
         stampCount: 10,
         threshold: 10,
         stampsHash: stampsHash,
@@ -219,6 +242,7 @@ void main() {
         ownerPKH: hex.decode(bobPubkeyHash),
         tokenId: tokenId,
         issuerPKH: issuerPKH,
+        rabinPubKeyHash: testRabinPubKeyHash,
         stampCount: 15,
         threshold: 10,
         stampsHash: stampsHash,
@@ -249,7 +273,7 @@ void main() {
   });
 
   group('AT issue witness', () {
-    test('issue witness verifies with issuer signature', () {
+    test('issue witness verifies with issuer signature and Rabin identity', () {
       var service = AppendableTokenTool();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
@@ -260,10 +284,10 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, 10,
+        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
-      // Create witness with issuer (Alice) signing
+      // Create witness with issuer (Alice) signing + Rabin identity binding
       var aliceSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
       var witnessTx = service.createWitnessTxn(
         aliceSigner,
@@ -273,6 +297,9 @@ void main() {
         alicePubKey,
         alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Verify PP1_AT issue (input[1])
@@ -296,16 +323,19 @@ void main() {
       var aliceFundingTx = getAliceFundingTx();
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, 10,
+        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
       var tokenId = bobFundingTx.hash;
 
-      // Step 2: Issue witness (Alice signs as issuer)
+      // Step 2: Issue witness (Alice signs as issuer + Rabin identity)
       var issueWitnessTx = service.createWitnessTxn(
         aliceSigner, aliceFundingTx, issuanceTx,
         hex.decode(bobFundingTx.serialize()),
         alicePubKey, alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Verify issue witness PP1_AT
@@ -389,15 +419,18 @@ void main() {
       var aliceFundingTx = getAliceFundingTx();
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, 10,
+        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
       );
 
-      // Step 2: Issue witness (Alice signs as issuer)
+      // Step 2: Issue witness (Alice signs as issuer + Rabin identity)
       var issueWitnessTx = service.createWitnessTxn(
         aliceSigner, aliceFundingTx, issuanceTx,
         hex.decode(bobFundingTx.serialize()),
         alicePubKey, alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Step 3: Alice stamps the token

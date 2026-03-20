@@ -27,6 +27,7 @@ import '../builder/pp1_at_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
+import '../crypto/rabin.dart';
 import 'utils.dart';
 
 /// High-level API for creating Appendable Token (PP1_AT) transactions.
@@ -52,6 +53,9 @@ class AppendableTokenTool {
   /// [tokenChangePKH] pubkey hash for the token's change output.
   /// [action] specifies the token action.
   /// [stampMetadata] required for STAMP action.
+  /// [rabinKeyPair] Rabin keypair for ISSUANCE (required for Rabin identity binding).
+  /// [identityTxId] 32-byte identity anchor txid (required for ISSUANCE).
+  /// [ed25519PubKey] 32-byte ED25519 public key (required for ISSUANCE).
   Transaction createWitnessTxn(
       TransactionSigner signer,
       Transaction fundingTx,
@@ -60,7 +64,10 @@ class AppendableTokenTool {
       SVPublicKey pubkey,
       String tokenChangePKH,
       AppendableTokenAction action,
-      {List<int>? stampMetadata}) {
+      {List<int>? stampMetadata,
+       RabinKeyPair? rabinKeyPair,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey}) {
 
     var signerAddress = Address.fromPublicKey(pubkey, networkType);
     var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash);
@@ -84,8 +91,26 @@ class AppendableTokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
+    // Compute Rabin signature for ISSUANCE
+    List<int>? rabinN;
+    List<int>? rabinS;
+    int? rabinPadding;
+    if (action == AppendableTokenAction.ISSUANCE && rabinKeyPair != null) {
+      // Extract tokenId from PP1 output
+      var pp1Lock = PP1AtLockBuilder.fromScript(tokenTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId!;
+      // Sign over identityTxId || ed25519PubKey || tokenId
+      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
+      var messageHash = Rabin.sha256ToScriptInt(concat);
+      var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+      rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+      rabinS = Rabin.bigIntToScriptNum(sig.s).toList();
+      rabinPadding = sig.padding;
+    }
+
     var pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1!, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
-        stampMetadata: stampMetadata);
+        stampMetadata: stampMetadata,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
@@ -96,7 +121,8 @@ class AppendableTokenTool {
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
     pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
-        stampMetadata: stampMetadata);
+        stampMetadata: stampMetadata,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -123,6 +149,7 @@ class AppendableTokenTool {
   /// [recipientAddress] is the initial card holder (customer).
   /// [witnessFundingTxId] txid of the transaction that will fund the first witness.
   /// [issuerPKH] is the 20-byte hash160 of the issuer's (shop) public key.
+  /// [rabinPubKeyHash] is the 20-byte hash160 of the Rabin public key for identity anchoring.
   /// [threshold] stamps required for redemption.
   /// [metadataBytes] optional raw metadata to embed in the OP_RETURN output.
   Transaction createTokenIssuanceTxn(
@@ -132,6 +159,7 @@ class AppendableTokenTool {
       Address recipientAddress,
       List<int> witnessFundingTxId,
       List<int> issuerPKH,
+      List<int> rabinPubKeyHash,
       int threshold,
       {List<int>? metadataBytes}) {
 
@@ -146,7 +174,7 @@ class AppendableTokenTool {
     tokenTxBuilder.withFeePerKb(1);
 
     // PP1_AT output
-    var pp1Locker = PP1AtLockBuilder(recipientAddress, tokenId, issuerPKH, 0, threshold, initialStampsHash);
+    var pp1Locker = PP1AtLockBuilder(recipientAddress, tokenId, issuerPKH, rabinPubKeyHash, 0, threshold, initialStampsHash);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
     // PP2 output
@@ -195,7 +223,7 @@ class AppendableTokenTool {
 
     // Parse previous PP1_AT to carry forward immutable params
     var prevPP1 = PP1AtLockBuilder.fromScript(prevTokenTx.outputs[1].script);
-    var pp1LockBuilder = PP1AtLockBuilder(recipientAddress, tokenId, prevPP1.issuerPKH!, prevPP1.stampCount, prevPP1.threshold, prevPP1.stampsHash!);
+    var pp1LockBuilder = PP1AtLockBuilder(recipientAddress, tokenId, prevPP1.issuerPKH!, prevPP1.rabinPubKeyHash!, prevPP1.stampCount, prevPP1.threshold, prevPP1.stampsHash!);
 
     var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
@@ -282,7 +310,7 @@ class AppendableTokenTool {
 
     // Build new PP1_AT with updated stampCount and stampsHash (ownerPKH unchanged)
     var pp1LockBuilder = PP1AtLockBuilder(ownerAddress, prevPP1.tokenId!, prevPP1.issuerPKH!,
-        newStampCount, prevPP1.threshold, newStampsHash.toList());
+        prevPP1.rabinPubKeyHash!, newStampCount, prevPP1.threshold, newStampsHash.toList());
 
     var pp2Locker = PP2LockBuilder(getOutpoint(issuerWitnessFundingTxId),
         hex.decode(ownerAddress.pubkeyHash160), 1, hex.decode(ownerAddress.pubkeyHash160));

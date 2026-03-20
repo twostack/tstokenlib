@@ -49,6 +49,13 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _witnessFundingTxId;
   List<int>? _stampMetadata;
 
+  // Rabin identity binding fields (used during issuance)
+  List<int>? _rabinN;           // Rabin public key n, encoded as script number bytes
+  List<int>? _rabinS;           // Rabin signature s, encoded as script number bytes
+  int? _rabinPadding;           // Rabin signature padding (small integer)
+  List<int>? _identityTxId;     // 32-byte identity anchor transaction ID
+  List<int>? _ed25519PubKey;    // 32-byte ED25519 public key
+
   List<int>? _sigBytes;
 
   List<int>? get preImage => _preImage;
@@ -65,8 +72,18 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
       this._witnessPadding,
       this.action,
       this._witnessFundingTxId,
-      {List<int>? stampMetadata})
-      : _stampMetadata = stampMetadata;
+      {List<int>? stampMetadata,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
+       List<int>? identityTxId,
+       List<int>? ed25519PubKey})
+      : _stampMetadata = stampMetadata,
+        _rabinN = rabinN,
+        _rabinS = rabinS,
+        _rabinPadding = rabinPadding,
+        _identityTxId = identityTxId,
+        _ed25519PubKey = ed25519PubKey;
 
   /// Creates a PP1_AT unlock builder for burning a token.
   PP1AtUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
@@ -97,12 +114,19 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
     var result = ScriptBuilder();
 
     if (action == AppendableTokenAction.ISSUANCE) {
-      // Stack: [preImage, fundingTxId, padding, issuerPubKey, issuerSig]
+      // Stack: [preImage, fundingTxId, padding, issuerPubKey, issuerSig,
+      //         rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey]
       result.addData(Uint8List.fromList(this._preImage!));
       result.addData(Uint8List.fromList(this._witnessFundingTxId!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.addData(Uint8List.fromList(hex.decode(this._pubKey!.toHex())));
       result.addData(Uint8List.fromList(sigBytes));
+      // Rabin identity binding data
+      result.addData(Uint8List.fromList(this._rabinN!));
+      result.addData(Uint8List.fromList(this._rabinS!));
+      result.number(this._rabinPadding!);
+      result.addData(Uint8List.fromList(this._identityTxId!));
+      result.addData(Uint8List.fromList(this._ed25519PubKey!));
     } else if (action == AppendableTokenAction.STAMP) {
       // Stack: [preImage, pp2Out, issuerPK, changePkh, changeAmt, issuerSig,
       //         scriptLHS, parentRawTx, padding, stampMetadata]

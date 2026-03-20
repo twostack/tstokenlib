@@ -25,7 +25,7 @@ import 'pp1_ft_script_gen.dart';
 /// A loyalty/stamp card token with dual authority (issuer + owner),
 /// append-only rolling hash, and threshold-based redemption.
 ///
-/// Constructor param layout (118-byte header):
+/// Constructor param layout (139-byte header):
 /// ```
 /// Byte 0:        0x14 (pushdata 20)
 /// Bytes 1-20:    ownerPKH (customer)
@@ -33,13 +33,15 @@ import 'pp1_ft_script_gen.dart';
 /// Bytes 22-53:   tokenId
 /// Byte 54:       0x14 (pushdata 20)
 /// Bytes 55-74:   issuerPKH (shop)
-/// Byte 75:       0x04 (pushdata 4)
-/// Bytes 76-79:   stampCount (4-byte LE, mutable)
-/// Byte 80:       0x04 (pushdata 4)
-/// Bytes 81-84:   threshold (4-byte LE, immutable)
-/// Byte 85:       0x20 (pushdata 32)
-/// Bytes 86-117:  stampsHash (rolling SHA256, mutable)
-/// Byte 118:      start of script body
+/// Byte 75:       0x14 (pushdata 20)
+/// Bytes 76-95:   rabinPubKeyHash (identity anchor)
+/// Byte 96:       0x04 (pushdata 4)
+/// Bytes 97-100:  stampCount (4-byte LE, mutable)
+/// Byte 101:      0x04 (pushdata 4)
+/// Bytes 102-105: threshold (4-byte LE, immutable)
+/// Byte 106:      0x20 (pushdata 32)
+/// Bytes 107-138: stampsHash (rolling SHA256, mutable)
+/// Byte 139:      start of script body
 /// ```
 ///
 /// Dispatch selectors:
@@ -57,13 +59,15 @@ class PP1AtScriptGen {
   static const int tokenIdDataEnd = 54;
   static const int issuerPKHDataStart = 55;
   static const int issuerPKHDataEnd = 75;
-  static const int stampCountDataStart = 76;
-  static const int stampCountDataEnd = 80;
-  static const int thresholdDataStart = 81;
-  static const int thresholdDataEnd = 85;
-  static const int stampsHashDataStart = 86;
-  static const int stampsHashDataEnd = 118;
-  static const int scriptBodyStart = 118;
+  static const int rabinPKHDataStart = 76;
+  static const int rabinPKHDataEnd = 96;
+  static const int stampCountDataStart = 97;
+  static const int stampCountDataEnd = 101;
+  static const int thresholdDataStart = 102;
+  static const int thresholdDataEnd = 106;
+  static const int stampsHashDataStart = 107;
+  static const int stampsHashDataEnd = 139;
+  static const int scriptBodyStart = 139;
 
   // PP2 NFT compiled byte offsets (same as PP1NftScriptGen / PP1RnftScriptGen)
   static const int pp2FundingOutpointStart = 117;
@@ -77,6 +81,7 @@ class PP1AtScriptGen {
     required List<int> ownerPKH,
     required List<int> tokenId,
     required List<int> issuerPKH,
+    required List<int> rabinPubKeyHash,
     required int stampCount,
     required int threshold,
     required List<int> stampsHash,
@@ -84,9 +89,10 @@ class PP1AtScriptGen {
     var b = ScriptBuilder();
 
     // Push constructor params as data
-    b.addData(Uint8List.fromList(ownerPKH));       // 0x14 + 20 bytes
-    b.addData(Uint8List.fromList(tokenId));         // 0x20 + 32 bytes
-    b.addData(Uint8List.fromList(issuerPKH));       // 0x14 + 20 bytes
+    b.addData(Uint8List.fromList(ownerPKH));        // 0x14 + 20 bytes
+    b.addData(Uint8List.fromList(tokenId));          // 0x20 + 32 bytes
+    b.addData(Uint8List.fromList(issuerPKH));        // 0x14 + 20 bytes
+    b.addData(Uint8List.fromList(rabinPubKeyHash));  // 0x14 + 20 bytes
 
     // stampCount as 4-byte LE (avoids dartsv addData single-byte OP_N mapping)
     var stampCountBytes = Uint8List(4);
@@ -94,7 +100,7 @@ class PP1AtScriptGen {
     stampCountBytes[1] = (stampCount >> 8) & 0xFF;
     stampCountBytes[2] = (stampCount >> 16) & 0xFF;
     stampCountBytes[3] = (stampCount >> 24) & 0xFF;
-    b.addData(stampCountBytes);                     // 0x04 + 4 bytes
+    b.addData(stampCountBytes);                      // 0x04 + 4 bytes
 
     // threshold as 4-byte LE
     var thresholdBytes = Uint8List(4);
@@ -102,21 +108,22 @@ class PP1AtScriptGen {
     thresholdBytes[1] = (threshold >> 8) & 0xFF;
     thresholdBytes[2] = (threshold >> 16) & 0xFF;
     thresholdBytes[3] = (threshold >> 24) & 0xFF;
-    b.addData(thresholdBytes);                      // 0x04 + 4 bytes
+    b.addData(thresholdBytes);                       // 0x04 + 4 bytes
 
-    b.addData(Uint8List.fromList(stampsHash));      // 0x20 + 32 bytes
+    b.addData(Uint8List.fromList(stampsHash));       // 0x20 + 32 bytes
 
     // Move constructor params to altstack (LIFO order)
     // Push order: stampsHash last → first to altstack
     b.opCode(OpCodes.OP_TOALTSTACK);   // stampsHash
     b.opCode(OpCodes.OP_TOALTSTACK);   // threshold
     b.opCode(OpCodes.OP_TOALTSTACK);   // stampCount
+    b.opCode(OpCodes.OP_TOALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_TOALTSTACK);   // issuerPKH
     b.opCode(OpCodes.OP_TOALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_TOALTSTACK);   // ownerPKH
     // Altstack bottom→top:
-    //   [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
-    // Pop order: ownerPKH, tokenId, issuerPKH, stampCount, threshold, stampsHash
+    //   [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
+    // Pop order: ownerPKH, tokenId, issuerPKH, rabinPubKeyHash, stampCount, threshold, stampsHash
 
     _emitDispatch(b);
     return b.build();
@@ -171,13 +178,15 @@ class PP1AtScriptGen {
   // =========================================================================
 
   /// Stack: [ownerPubKey, ownerSig]
-  /// Altstack: [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
+  /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   static void _emitBurnToken(ScriptBuilder b) {
     // Drain altstack: keep ownerPKH, drop everything else
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // issuerPKH
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // stampCount
     b.opCode(OpCodes.OP_DROP);
@@ -202,7 +211,7 @@ class PP1AtScriptGen {
   // =========================================================================
 
   /// Stack: [ownerPubKey, ownerSig]
-  /// Altstack: [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
+  /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   ///
   /// Burn-redeem: verifies stampCount >= threshold, then P2PKH auth.
   static void _emitRedeemToken(ScriptBuilder b) {
@@ -211,6 +220,8 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // issuerPKH
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // stampCount
     b.opCode(OpCodes.OP_FROMALTSTACK);   // threshold
@@ -242,43 +253,67 @@ class PP1AtScriptGen {
   // issueToken (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingTxId, witnessPadding, issuerPubKey, issuerSig]
-  /// Altstack: [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
+  /// Stack: [preImage, fundingTxId, witnessPadding, issuerPubKey, issuerSig,
+  ///         rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey]
+  /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   static void _emitIssueToken(ScriptBuilder b) {
-    // Stack (5 items, top=0):
-    //   issuerSig=0, issuerPubKey=1, witnessPadding=2, fundingTxId=3, preImage=4
+    // Stack (10 items, top=0):
+    //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
+    //   issuerSig=5, issuerPubKey=6, witnessPadding=7, fundingTxId=8, preImage=9
 
     // --- Phase 1: Validate witnessPadding length ---
-    b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);           // copy witnessPadding
+    b.opCode(OpCodes.OP_7);
+    b.opCode(OpCodes.OP_PICK);           // copy witnessPadding (idx 7)
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
 
-    // --- Phase 2: Clear ownerPKH, tokenId from altstack ---
+    // --- Phase 2: Pop ownerPKH (drop), pop tokenId (keep for Rabin binding) ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // ownerPKH -> drop
     b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId -> drop
-    b.opCode(OpCodes.OP_DROP);
-    // Alt: [stampsHash, threshold, stampCount, issuerPKH]
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId -> keep on main stack
+    // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH]
+    // Stack (11 items):
+    //   tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3, rabinS=4,
+    //   rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8, fundingTxId=9, preImage=10
 
     // --- Phase 3: Verify hash160(issuerPubKey) == issuerPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // issuerPKH
-    // Stack (6): issuerPKH=0, issuerSig=1, issuerPubKey=2, padding=3, fundingTxId=4, preImage=5
-    b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);           // copy issuerPubKey (idx 2)
+    // Stack (12): issuerPKH=0, tokenId=1, ed25519PubKey=2, identityTxId=3,
+    //   rabinPadding=4, rabinS=5, rabinN=6, issuerSig=7, issuerPubKey=8,
+    //   witnessPadding=9, fundingTxId=10, preImage=11
+    b.opCode(OpCodes.OP_8);
+    b.opCode(OpCodes.OP_PICK);           // copy issuerPubKey (idx 8)
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_EQUALVERIFY);    // hash160(issuerPK) == issuerPKH; both consumed
-    // Alt: [stampsHash, threshold, stampCount]
-    // Stack (5): issuerSig=0, issuerPubKey=1, padding=2, fundingTxId=3, preImage=4
+    // Stack (11): tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3,
+    //   rabinS=4, rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8,
+    //   fundingTxId=9, preImage=10
 
     // --- Phase 3b: CHECKSIG for issuer ---
-    b.opCode(OpCodes.OP_DUP);           // copy issuerSig (idx 0)
-    b.opCode(OpCodes.OP_2);
-    b.opCode(OpCodes.OP_PICK);          // copy issuerPubKey (shifted +1 to idx 2)
+    b.opCode(OpCodes.OP_6);
+    b.opCode(OpCodes.OP_PICK);          // copy issuerSig (idx 6)
+    b.opCode(OpCodes.OP_8);
+    b.opCode(OpCodes.OP_PICK);          // copy issuerPubKey (shifted +1 to idx 8)
     b.opCode(OpCodes.OP_CHECKSIG);
     b.opCode(OpCodes.OP_VERIFY);
+    // Stack (11): tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3,
+    //   rabinS=4, rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8,
+    //   fundingTxId=9, preImage=10
 
-    // --- Phase 4: Drain remaining altstack ---
+    // --- Phase 3c: Verify hash160(rabinN) == rabinPubKeyHash ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // rabinPubKeyHash
+    // Stack (12): rabinPKH=0, tokenId=1, ed25519PubKey=2, identityTxId=3,
+    //   rabinPadding=4, rabinS=5, rabinN=6, issuerSig=7, issuerPubKey=8,
+    //   witnessPadding=9, fundingTxId=10, preImage=11
+    b.opCode(OpCodes.OP_6);
+    b.opCode(OpCodes.OP_PICK);           // copy rabinN (idx 6)
+    b.opCode(OpCodes.OP_HASH160);
+    b.opCode(OpCodes.OP_EQUALVERIFY);    // hash160(rabinN) == rabinPKH; both consumed
+    // Stack (11): tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3,
+    //   rabinS=4, rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8,
+    //   fundingTxId=9, preImage=10
+
+    // --- Phase 4: Drain remaining altstack (stampCount, threshold, stampsHash) ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // stampCount -> drop
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);  // threshold -> drop
@@ -287,15 +322,40 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_DROP);
     // Alt: [] (empty)
 
-    // --- Phase 5: Drop issuerSig and issuerPubKey ---
+    // --- Phase 5: Rabin signature verification ---
+    // Compute sha256(identityTxId || ed25519PubKey || tokenId) as positive script number
+    // Stack: tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3,
+    //   rabinS=4, rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8,
+    //   fundingTxId=9, preImage=10
+    b.opCode(OpCodes.OP_ROT);           // brings identityTxId to top
+    b.opCode(OpCodes.OP_ROT);           // brings ed25519PubKey to top
+    // Stack: ed25519PubKey=0, identityTxId=1, tokenId=2, rabinPadding=3, ...
+    b.opCode(OpCodes.OP_CAT);           // identityTxId||ed25519PubKey
+    b.opCode(OpCodes.OP_SWAP);          // tokenId on top
+    b.opCode(OpCodes.OP_CAT);           // (identityTxId||ed25519PubKey)||tokenId
+    b.opCode(OpCodes.OP_SHA256);         // raw hash (32 bytes)
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);        // hashNum (positive script number)
+    // Stack: hashNum=0, rabinPadding=1, rabinS=2, rabinN=3,
+    //   issuerSig=4, issuerPubKey=5, witnessPadding=6, fundingTxId=7, preImage=8
+
+    // Rabin verify: s^2 mod n == hashNum + rabinPadding
+    b.opCode(OpCodes.OP_SWAP);           // [rabinPadding, hashNum, rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_ADD);            // [(hashNum+padding), rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_SWAP);           // [rabinS, (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_MUL);            // [s^2, (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_ROT);            // [rabinN, s^2, (h+p), ...]
+    b.opCode(OpCodes.OP_MOD);            // [(s^2 mod n), (h+p), ...]
+    b.opCode(OpCodes.OP_NUMEQUALVERIFY); // verified!
+    // Stack: [issuerSig, issuerPubKey, witnessPadding, fundingTxId, preImage]
+
+    // --- Phase 6: Drop issuerSig, issuerPubKey, witnessPadding ---
     b.opCode(OpCodes.OP_DROP);          // issuerSig
     b.opCode(OpCodes.OP_DROP);          // issuerPubKey
-    // Stack: [witnessPadding, fundingTxId, preImage]
-
-    // --- Phase 6: Drop witnessPadding ---
-    // Stack: [preImage, fundingTxId, padding] (padding on top)
-    b.opCode(OpCodes.OP_DROP);          // drop padding
-    // Stack: [preImage, fundingTxId]
+    b.opCode(OpCodes.OP_DROP);          // witnessPadding
+    // Stack: [fundingTxId, preImage]
 
     // --- Phase 7: checkPreimageOCS + hashPrevouts ---
     b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingTxId
@@ -359,7 +419,7 @@ class PP1AtScriptGen {
 
   /// Stack: [preImage, pp2Out, issuerPK, changePkh, changeAmt, issuerSig,
   ///         scriptLHS, parentRawTx, padding, stampMetadata]
-  /// Altstack: [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
+  /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   ///
   /// Rolling hash is computed from parent PP1 script (extracted from parentRawTx):
   ///   newStamp = SHA256(stampMetadata)
@@ -367,10 +427,10 @@ class PP1AtScriptGen {
   ///   newStampCount = parentStampCount + 1
   static void _emitStampToken(ScriptBuilder b) {
     // --- Phase 1: Issuer auth ---
-    // Drain ownerPKH and tokenId (not needed for stamp auth)
+    // Drain ownerPKH, tokenId, and rabinPubKeyHash (not needed for stamp auth)
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [stampsHash, threshold, stampCount, issuerPKH]
+    // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH]
 
     b.opCode(OpCodes.OP_FROMALTSTACK);   // issuerPKH
     // Stack (11): [preImage, pp2Out, issuerPK, changePkh, changeAmt, issuerSig,
@@ -393,7 +453,7 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_CHECKSIG);
     b.opCode(OpCodes.OP_VERIFY);
     // Stack (11): [..., stampMetadata, issuerPKH]
-    // Alt: [stampsHash, threshold, stampCount]
+    // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash]
 
     // Drop issuerPKH (no longer needed)
     b.opCode(OpCodes.OP_DROP);
@@ -403,9 +463,10 @@ class PP1AtScriptGen {
     //      chgPkh=6, issuerPK=7, pp2=8, preImg=9
 
     // --- Phase 1b: Drain remaining altstack items ---
-    // Alt: [stampsHash, threshold, stampCount]
-    // Pop order (LIFO): stampCount, threshold, stampsHash
+    // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash]
+    // Pop order (LIFO): rabinPubKeyHash, stampCount, threshold, stampsHash
     // These are not needed — rolling hash will be computed from parentPP1Script.
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // stampCount
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // threshold
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // stampsHash
@@ -668,7 +729,7 @@ class PP1AtScriptGen {
 
   /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
   ///         scriptLHS, parentRawTx, padding]
-  /// Altstack: [stampsHash, threshold, stampCount, issuerPKH, tokenId, ownerPKH]
+  /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   static void _emitTransferToken(ScriptBuilder b) {
     // --- Phase 1: Get ownerPKH, do P2PKH auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
@@ -692,7 +753,7 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_VERIFY);
     // Stack: [..., padding, ownerPKH]
 
-    // Alt: [stampsHash, threshold, stampCount, issuerPKH, tokenId]
+    // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId]
     // These are all immutable and carried forward by the inductive proof.
     // Leave them on altstack; drain after Phase 16.
 
@@ -903,9 +964,10 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_DROP);            // ownerPK
     b.opCode(OpCodes.OP_DROP);            // pp2Out
 
-    // Clean up alt: drain tokenId, issuerPKH, stampCount, threshold, stampsHash
+    // Clean up alt: drain tokenId, issuerPKH, rabinPubKeyHash, stampCount, threshold, stampsHash
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // issuerPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // stampCount
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // threshold
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // stampsHash
@@ -944,51 +1006,51 @@ class PP1AtScriptGen {
 
   /// Rebuild PP1_AT script with stampCount and stampsHash changed (for stamp).
   /// Pre: [parentPP1AtScript, newStampCount4LE, newStampsHash]. Post: [rebuiltScript].
-  /// Layout: parent[0:76] + newStampCount + parent[80:86] + newStampsHash + parent[118:]
+  /// Layout: parent[0:97] + newStampCount + parent[101:107] + newStampsHash + parent[139:]
   static void _emitRebuildPP1AtStamp(ScriptBuilder b) {
     // Stack: [pp1S, newSC, newSH]
-    // Goal: pp1S[0:76] + newSC + pp1S[80:86] + newSH + pp1S[118:]
+    // Goal: pp1S[0:97] + newSC + pp1S[101:107] + newSH + pp1S[139:]
 
     // Step 1: Bring pp1S to top for splitting
     b.opCode(OpCodes.OP_ROT);           // [newSC, newSH, pp1S]
 
-    // Step 2: Split at byte 76
-    OpcodeHelpers.pushInt(b, 76);
-    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix76, rest]
+    // Step 2: Split at byte 97
+    OpcodeHelpers.pushInt(b, stampCountDataStart);
+    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix97, rest]
 
     // Step 3: Skip old stampCount (4 bytes)
     b.opCode(OpCodes.OP_4);
-    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix76, oldSC4, rest2]
-    b.opCode(OpCodes.OP_NIP);            // [newSC, newSH, prefix76, rest2]
+    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix97, oldSC4, rest2]
+    b.opCode(OpCodes.OP_NIP);            // [newSC, newSH, prefix97, rest2]
 
-    // Step 4: Extract middle6 (bytes 80-85: 0x04 + threshold(4) + 0x20)
+    // Step 4: Extract middle6 (bytes 101-106: 0x04 + threshold(4) + 0x20)
     b.opCode(OpCodes.OP_6);
-    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix76, middle6, rest3]
+    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix97, middle6, rest3]
 
     // Step 5: Skip old stampsHash (32 bytes) to get suffix
     OpcodeHelpers.pushInt(b, 32);
-    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix76, middle6, oldSH32, suffix]
-    b.opCode(OpCodes.OP_NIP);            // [newSC, newSH, prefix76, middle6, suffix]
+    b.opCode(OpCodes.OP_SPLIT);          // [newSC, newSH, prefix97, middle6, oldSH32, suffix]
+    b.opCode(OpCodes.OP_NIP);            // [newSC, newSH, prefix97, middle6, suffix]
 
     // Step 6: Reassemble using altstack
-    // Need: prefix76 + newSC + middle6 + newSH + suffix
-    // Stack b→t: newSC, newSH, prefix76, middle6, suffix
+    // Need: prefix97 + newSC + middle6 + newSH + suffix
+    // Stack b→t: newSC, newSH, prefix97, middle6, suffix
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash suffix       alt:[suffix]
-    // ROT top 3: (newSH, prefix76, middle6) -> (prefix76, middle6, newSH)
-    b.opCode(OpCodes.OP_ROT);            // [newSC, prefix76, middle6, newSH]
+    // ROT top 3: (newSH, prefix97, middle6) -> (prefix97, middle6, newSH)
+    b.opCode(OpCodes.OP_ROT);            // [newSC, prefix97, middle6, newSH]
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash newSH         alt:[suffix, newSH]
-    // ROT top 3: (newSC, prefix76, middle6) -> (prefix76, middle6, newSC)
-    b.opCode(OpCodes.OP_ROT);            // [prefix76, middle6, newSC]
-    b.opCode(OpCodes.OP_SWAP);           // [prefix76, newSC, middle6]
+    // ROT top 3: (newSC, prefix97, middle6) -> (prefix97, middle6, newSC)
+    b.opCode(OpCodes.OP_ROT);            // [prefix97, middle6, newSC]
+    b.opCode(OpCodes.OP_SWAP);           // [prefix97, newSC, middle6]
     b.opCode(OpCodes.OP_TOALTSTACK);     // stash middle6       alt:[suffix, newSH, middle6]
-    // Stack: [prefix76, newSC]
-    b.opCode(OpCodes.OP_CAT);            // [prefix76+newSC]
+    // Stack: [prefix97, newSC]
+    b.opCode(OpCodes.OP_CAT);            // [prefix97+newSC]
     b.opCode(OpCodes.OP_FROMALTSTACK);   // middle6 (LIFO top)  alt:[suffix, newSH]
-    b.opCode(OpCodes.OP_CAT);            // [prefix76+newSC+middle6]
+    b.opCode(OpCodes.OP_CAT);            // [prefix97+newSC+middle6]
     b.opCode(OpCodes.OP_FROMALTSTACK);   // newSH (LIFO top)    alt:[suffix]
-    b.opCode(OpCodes.OP_CAT);            // [prefix76+newSC+middle6+newSH]
+    b.opCode(OpCodes.OP_CAT);            // [prefix97+newSC+middle6+newSH]
     b.opCode(OpCodes.OP_FROMALTSTACK);   // suffix (LIFO top)   alt:[]
-    b.opCode(OpCodes.OP_CAT);            // [prefix76+newSC+middle6+newSH+suffix]
+    b.opCode(OpCodes.OP_CAT);            // [prefix97+newSC+middle6+newSH+suffix]
   }
 
   /// Validate PP2 (NFT) output script structure against parent template.
