@@ -27,6 +27,8 @@ import '../builder/pp1_sm_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
+import '../crypto/rabin.dart';
+import '../script_gen/pp1_sm_script_gen.dart';
 import 'utils.dart';
 
 /// High-level API for creating State Machine Token (PP1_SM) transactions.
@@ -71,6 +73,7 @@ class StateMachineTool {
       int transitionBitmask,
       int timeoutDelta,
       List<int> witnessFundingTxId,
+      List<int> rabinPubKeyHash,
       {List<int>? metadataBytes}) {
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -84,7 +87,7 @@ class StateMachineTool {
     tokenTxBuilder.withFeePerKb(1);
 
     var pp1Locker = PP1SmLockBuilder(
-        merchantAddress, tokenId, merchantPKH, customerPKH,
+        merchantAddress, tokenId, merchantPKH, customerPKH, rabinPubKeyHash,
         0, 0, initialCommitmentHash, transitionBitmask, timeoutDelta);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
@@ -130,7 +133,10 @@ class StateMachineTool {
       BigInt? refundAmount,
       int? nLockTime,
       int pp1OutputIndex = 1,
-      int pp2OutputIndex = 2}) {
+      int pp2OutputIndex = 2,
+      RabinKeyPair? rabinKeyPair,
+      List<int>? identityTxId,
+      List<int>? ed25519PubKey}) {
 
     var signerAddress = Address.fromPublicKey(merchantPubkey, networkType);
     var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash);
@@ -161,6 +167,20 @@ class StateMachineTool {
     var pp2Output = tokenTx.outputs[pp2OutputIndex].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
+    // Compute Rabin signature for CREATE action
+    List<int>? rabinNBytes, rabinSBytes;
+    int? rabinPaddingValue;
+    if (action == StateMachineAction.CREATE && rabinKeyPair != null) {
+      var pp1Script = tokenTx.outputs[pp1OutputIndex].script;
+      var tokenId = pp1Script.buffer!.sublist(PP1SmScriptGen.tokenIdDataStart, PP1SmScriptGen.tokenIdDataEnd);
+      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
+      var messageHash = Rabin.sha256ToScriptInt(concat);
+      var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
+      rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+      rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+      rabinPaddingValue = sig.padding;
+    }
+
     var pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1!, pp2Output, merchantPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
@@ -168,7 +188,9 @@ class StateMachineTool {
         eventData: eventData,
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
-        refundAmount: refundAmount);
+        refundAmount: refundAmount,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     var witnessBuilder1 = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, 1, seqNum, fundingUnlocker)
@@ -187,7 +209,9 @@ class StateMachineTool {
         eventData: eventData,
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
-        refundAmount: refundAmount);
+        refundAmount: refundAmount,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     var witnessBuilder2 = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, 1, seqNum, fundingUnlocker)
@@ -312,7 +336,8 @@ class StateMachineTool {
 
     var pp1Locker = PP1SmLockBuilder(
         customerAddress, prevPP1.tokenId!, prevPP1.merchantPKH!,
-        prevPP1.customerPKH!, 1, 0, // state=ACTIVE, mc unchanged
+        prevPP1.customerPKH!, prevPP1.rabinPubKeyHash!,
+        1, 0, // state=ACTIVE, mc unchanged
         List<int>.from(newCommitHash),
         prevPP1.transitionBitmask, prevPP1.timeoutDelta);
 
@@ -413,8 +438,8 @@ class StateMachineTool {
 
     var pp1Locker = PP1SmLockBuilder(
         newOwnerAddress, prevPP1.tokenId!, prevPP1.merchantPKH!,
-        prevPP1.customerPKH!, newState, newMC,
-        newCommitHash,
+        prevPP1.customerPKH!, prevPP1.rabinPubKeyHash!,
+        newState, newMC, newCommitHash,
         prevPP1.transitionBitmask, prevPP1.timeoutDelta);
 
     var pp2Locker = PP2LockBuilder(
@@ -519,8 +544,8 @@ class StateMachineTool {
 
     var pp1Locker = PP1SmLockBuilder(
         newOwnerAddress, prevPP1.tokenId!, prevPP1.merchantPKH!,
-        prevPP1.customerPKH!, 4, prevPP1.milestoneCount,
-        newCommitHash,
+        prevPP1.customerPKH!, prevPP1.rabinPubKeyHash!,
+        4, prevPP1.milestoneCount, newCommitHash,
         prevPP1.transitionBitmask, prevPP1.timeoutDelta);
 
     var pp2Locker = PP2LockBuilder(
@@ -617,8 +642,8 @@ class StateMachineTool {
 
     var pp1Locker = PP1SmLockBuilder(
         newOwnerAddress, prevPP1.tokenId!, prevPP1.merchantPKH!,
-        prevPP1.customerPKH!, 5, prevPP1.milestoneCount,
-        parentCommitHash,
+        prevPP1.customerPKH!, prevPP1.rabinPubKeyHash!,
+        5, prevPP1.milestoneCount, parentCommitHash,
         prevPP1.transitionBitmask, prevPP1.timeoutDelta);
 
     var pp2Locker = PP2LockBuilder(

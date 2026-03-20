@@ -69,6 +69,13 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _sigBytes;
 
+  // Rabin identity fields (used for CREATE only)
+  List<int>? _rabinN;
+  List<int>? _rabinS;
+  int? _rabinPadding;
+  List<int>? _identityTxId;
+  List<int>? _ed25519PubKey;
+
   List<int>? get preImage => _preImage;
 
   /// Full constructor for standard operations (enroll, confirm, convert, settle, timeout).
@@ -88,13 +95,23 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
       List<int>? customerSigBytes,
       BigInt? custRewardAmount,
       BigInt? merchPayAmount,
-      BigInt? refundAmount})
+      BigInt? refundAmount,
+      List<int>? rabinN,
+      List<int>? rabinS,
+      int? rabinPadding,
+      List<int>? identityTxId,
+      List<int>? ed25519PubKey})
       : _eventData = eventData,
         _customerPubKey = customerPubKey,
         _customerSigBytes = customerSigBytes,
         _custRewardAmount = custRewardAmount,
         _merchPayAmount = merchPayAmount,
-        _refundAmount = refundAmount;
+        _refundAmount = refundAmount,
+        _rabinN = rabinN,
+        _rabinS = rabinS,
+        _rabinPadding = rabinPadding,
+        _identityTxId = identityTxId,
+        _ed25519PubKey = ed25519PubKey;
 
   /// Creates a PP1_SM unlock builder for burning a token.
   PP1SmUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
@@ -125,10 +142,16 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
 
     switch (action!) {
       case StateMachineAction.CREATE:
-        // Stack: [preImage, fundingTxId, padding, OP_0]
+        // Stack: [preImage, fundingTxId, witnessPadding, rabinN, rabinS,
+        //         rabinPadding, identityTxId, ed25519PubKey, OP_0]
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_witnessFundingTxId!));
         result.addData(Uint8List.fromList(_witnessPadding!));
+        result.addData(Uint8List.fromList(_rabinN!));
+        result.addData(Uint8List.fromList(_rabinS!));
+        result.number(_rabinPadding!);
+        result.addData(Uint8List.fromList(_identityTxId!));
+        result.addData(Uint8List.fromList(_ed25519PubKey!));
         break;
 
       case StateMachineAction.ENROLL:

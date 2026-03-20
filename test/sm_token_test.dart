@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sm_script_gen.dart';
 
 // Merchant identity (Bob)
@@ -23,6 +24,12 @@ var customerPubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
 var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
+late RabinKeyPair rabinKeyPair;
+late List<int> rabinPubKeyHash;
+var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
+var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+var dummyRabinPKH = List<int>.generate(20, (i) => i + 0xC0);
+
 Transaction getMerchantFundingTx() {
   var rawTx =
       "0200000001cf5ae107ead0a5117ea2124aacb61d0d700de05a937ed3e48c9245bfab19dd8c000000004847304402206edac55dd4f791a611e05a6d946862ca45d914d0cdf391bfd982399c3d84ea4602205a196505d536b3646834051793acd5d9e820249979c94d0a4252298d0ffe9a7041feffffff0200196bee000000001976a914da217dfa3513d4224802556228d07b278af36b0388ac00ca9a3b000000001976a914650c4adb156f19e36a755c820d892cda108299c488ac65000000";
@@ -36,6 +43,12 @@ Transaction getCustomerFundingTx() {
 }
 
 void main() {
+  setUpAll(() {
+    rabinKeyPair = Rabin.generateKeyPair(1024);
+    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinPubKeyHash = hash160(rabinNBytes);
+  });
+
   group('SM lock builder parse roundtrip', () {
     test('140-byte header roundtrip with initial state', () {
       var tokenId = List<int>.filled(32, 0xAA);
@@ -44,7 +57,7 @@ void main() {
       var commitmentHash = List<int>.filled(32, 0x00);
 
       var builder = PP1SmLockBuilder(
-          merchantAddress, tokenId, merchPKH, custPKH,
+          merchantAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
           0, 0, commitmentHash, 0x3F, 86400);
       var script = builder.getScriptPubkey();
 
@@ -66,7 +79,7 @@ void main() {
       var commitmentHash = List<int>.generate(32, (i) => i + 1);
 
       var builder = PP1SmLockBuilder(
-          customerAddress, tokenId, merchPKH, custPKH,
+          customerAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
           1, 3, commitmentHash, 0x1F, 172800);
       var script = builder.getScriptPubkey();
 
@@ -85,41 +98,42 @@ void main() {
       var commitmentHash = List<int>.filled(32, 0xFF);
 
       var builder = PP1SmLockBuilder(
-          merchantAddress, tokenId, merchPKH, custPKH,
+          merchantAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
           2, 5, commitmentHash, 0x3F, 3600);
       var script = builder.getScriptPubkey();
       var buf = script.buffer;
 
-      expect(buf[0], 0x14);
-      expect(buf[21], 0x20);
-      expect(buf[54], 0x14);
-      expect(buf[75], 0x14);
-      expect(buf[96], 0x01);
-      expect(buf[98], 0x01);
-      expect(buf[100], 0x20);
-      expect(buf[133], 0x01);
-      expect(buf[135], 0x04);
+      expect(buf[0], 0x14);   // ownerPKH pushdata
+      expect(buf[21], 0x20);  // tokenId pushdata
+      expect(buf[54], 0x14);  // merchantPKH pushdata
+      expect(buf[75], 0x14);  // customerPKH pushdata
+      expect(buf[96], 0x14);  // rabinPubKeyHash pushdata
+      expect(buf[117], 0x01); // currentState pushdata
+      expect(buf[119], 0x01); // milestoneCount pushdata
+      expect(buf[121], 0x20); // commitmentHash pushdata
+      expect(buf[154], 0x01); // transitionBitmask pushdata
+      expect(buf[156], 0x04); // timeoutDelta pushdata
 
-      expect(buf[97], 2);
-      expect(buf[99], 5);
-      expect(buf[134], 0x3F);
-      expect(buf[136], 0x10);
-      expect(buf[137], 0x0E);
-      expect(buf[138], 0x00);
-      expect(buf[139], 0x00);
+      expect(buf[118], 2);    // currentState value
+      expect(buf[120], 5);    // milestoneCount value
+      expect(buf[155], 0x3F); // transitionBitmask value
+      expect(buf[157], 0x10); // timeoutDelta byte 0
+      expect(buf[158], 0x0E); // timeoutDelta byte 1
+      expect(buf[159], 0x00); // timeoutDelta byte 2
+      expect(buf[160], 0x00); // timeoutDelta byte 3
     });
 
     test('validation rejects wrong-length tokenId', () {
       expect(() => PP1SmLockBuilder(
           merchantAddress, [1, 2, 3], hex.decode(merchantPubkeyHash),
-          hex.decode(customerPubkeyHash), 0, 0, List<int>.filled(32, 0), 0x3F, 0),
+          hex.decode(customerPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
           throwsA(isA<ScriptException>()));
     });
 
     test('validation rejects wrong-length merchantPKH', () {
       expect(() => PP1SmLockBuilder(
           merchantAddress, List<int>.filled(32, 0), [1, 2],
-          hex.decode(customerPubkeyHash), 0, 0, List<int>.filled(32, 0), 0x3F, 0),
+          hex.decode(customerPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
           throwsA(isA<ScriptException>()));
     });
   });
@@ -131,6 +145,7 @@ void main() {
         tokenId: List<int>.filled(32, 0xAA),
         merchantPKH: hex.decode(merchantPubkeyHash),
         customerPKH: hex.decode(customerPubkeyHash),
+        rabinPubKeyHash: dummyRabinPKH,
         currentState: 0,
         milestoneCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
@@ -139,10 +154,10 @@ void main() {
       );
 
       var buf = script.buffer;
-      expect(buf.length > 140, true, reason: 'Script must be > 140 bytes (header + body)');
+      expect(buf.length > 161, true, reason: 'Script must be > 161 bytes (header + body)');
       expect(buf[0], 0x14);
-      expect(buf[96], 0x01);
-      expect(buf[97], 0x00);
+      expect(buf[117], 0x01);  // currentState pushdata
+      expect(buf[118], 0x00);  // currentState value
     });
   });
 
@@ -157,7 +172,7 @@ void main() {
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400,
-        merchantFundingTx.hash,
+        merchantFundingTx.hash, rabinPubKeyHash,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -179,7 +194,7 @@ void main() {
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400,
-        merchantFundingTx.hash,
+        merchantFundingTx.hash, rabinPubKeyHash,
       );
 
       var pp1Lock = PP1SmLockBuilder.fromScript(issuanceTx.outputs[1].script);
@@ -202,6 +217,7 @@ void main() {
         tokenId: List<int>.filled(32, 0xAA),
         merchantPKH: hex.decode(merchantPubkeyHash),
         customerPKH: hex.decode(customerPubkeyHash),
+        rabinPubKeyHash: dummyRabinPKH,
         currentState: 4, // SETTLED
         milestoneCount: 3,
         commitmentHash: List<int>.filled(32, 0x11),
@@ -238,6 +254,7 @@ void main() {
         tokenId: List<int>.filled(32, 0xAA),
         merchantPKH: hex.decode(merchantPubkeyHash),
         customerPKH: hex.decode(customerPubkeyHash),
+        rabinPubKeyHash: dummyRabinPKH,
         currentState: 5, // EXPIRED
         milestoneCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
@@ -274,6 +291,7 @@ void main() {
         tokenId: List<int>.filled(32, 0xAA),
         merchantPKH: hex.decode(merchantPubkeyHash),
         customerPKH: hex.decode(customerPubkeyHash),
+        rabinPubKeyHash: dummyRabinPKH,
         currentState: 0, // INIT — not terminal
         milestoneCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
@@ -313,6 +331,7 @@ void main() {
         tokenId: List<int>.filled(32, 0xAA),
         merchantPKH: hex.decode(merchantPubkeyHash),
         customerPKH: hex.decode(customerPubkeyHash),
+        rabinPubKeyHash: dummyRabinPKH,
         currentState: 4,
         milestoneCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
@@ -361,7 +380,7 @@ void main() {
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash,
+        customerFundingTx.hash, rabinPubKeyHash,
       );
 
       var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
@@ -373,6 +392,9 @@ void main() {
         customerPub,
         customerPubkeyHash,
         StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Verify PP1_SM create witness (input[1])
@@ -398,7 +420,7 @@ void main() {
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash,
+        customerFundingTx.hash, rabinPubKeyHash,
       );
 
       // Step 2: Create witness (merchant signs, dispatches OP_0)
@@ -411,6 +433,9 @@ void main() {
         customerPub,
         customerPubkeyHash,
         StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Verify create witness passes interpreter
@@ -493,7 +518,7 @@ void main() {
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
         merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash,
+        customerFundingTx.hash, rabinPubKeyHash,
       );
 
       // Step 2: Create witness
@@ -502,6 +527,9 @@ void main() {
         hex.decode(merchantFundingTx.serialize()),
         customerPub, customerPubkeyHash,
         StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair,
+        identityTxId: dummyIdentityTxId,
+        ed25519PubKey: dummyEd25519PubKey,
       );
 
       // Step 3: Enroll
@@ -588,12 +616,13 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, customerFundingTx.hash);
+        merchPKH, custPKH, 0x3F, 86400, customerFundingTx.hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
         customerSigner, customerFundingTx, issuanceTx,
         hex.decode(merchantFundingTx.serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE);
+        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollTx = service.createEnrollTxn(
         createWitnessTx, issuanceTx, merchantPub,
@@ -673,12 +702,13 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash);
+        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
         customerSigner, getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE);
+        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
@@ -778,13 +808,14 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash);
+        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
         DefaultTransactionSigner(sigHashAll, customerPrivateKey),
         getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE);
+        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
@@ -853,7 +884,7 @@ void main() {
       // Step 1: Issue (CREATE state)
       var issuanceTx = service.createTokenIssuanceTxn(
         getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash);
+        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
       var issuePP1 = PP1SmLockBuilder.fromScript(issuanceTx.outputs[1].script);
       expect(issuePP1.currentState, 0, reason: 'Issue: state=CREATED');
 
@@ -861,7 +892,8 @@ void main() {
       var createWitnessTx = service.createWitnessTxn(
         customerSigner, getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE);
+        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
       expect(
           () => interp.correctlySpends(
               createWitnessTx.inputs[1].script!, issuanceTx.outputs[1].script,

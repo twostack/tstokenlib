@@ -522,6 +522,7 @@ void exportPP1Sm() {
   var tokenId = List.filled(32, 0xBB);
   var merchantPKH = List.filled(20, 0xCC);
   var customerPKH = List.filled(20, 0xDD);
+  var rabinPubKeyHash = List.filled(20, 0x99);
   var currentState = 0x11;
   var milestoneCount = 0x22;
   var commitmentHash = List.filled(32, 0xEE);
@@ -533,6 +534,7 @@ void exportPP1Sm() {
     tokenId: tokenId,
     merchantPKH: merchantPKH,
     customerPKH: customerPKH,
+    rabinPubKeyHash: rabinPubKeyHash,
     currentState: currentState,
     milestoneCount: milestoneCount,
     commitmentHash: commitmentHash,
@@ -548,6 +550,7 @@ void exportPP1Sm() {
     'tokenId': _SentinelRegion(PP1SmScriptGen.tokenIdDataStart, 32, 0xBB),
     'merchantPKH': _SentinelRegion(PP1SmScriptGen.merchantPKHDataStart, 20, 0xCC),
     'customerPKH': _SentinelRegion(PP1SmScriptGen.customerPKHDataStart, 20, 0xDD),
+    'rabinPubKeyHash': _SentinelRegion(PP1SmScriptGen.rabinPKHDataStart, 20, 0x99),
     'commitmentHash': _SentinelRegion(PP1SmScriptGen.commitmentHashDataStart, 32, 0xEE),
   });
 
@@ -555,12 +558,12 @@ void exportPP1Sm() {
   // The header layout after multi-byte templatization:
   //   ...{{customerPKH}} 01 <currentState> 01 <milestoneCount> 20 {{commitmentHash}} 01 <bitmask> 04 <timeoutDelta> ...
 
-  // currentState (1 byte, sentinel 0x11): after {{customerPKH}}, prefix 0x01
+  // currentState (1 byte, sentinel 0x11): after {{rabinPubKeyHash}}, prefix 0x01
   var stateHex = fullHex.substring(PP1SmScriptGen.currentStateDataStart * 2,
       PP1SmScriptGen.currentStateDataEnd * 2);
   templateHex = templateHex.replaceFirst(
-      '{{customerPKH}}01$stateHex',
-      '{{customerPKH}}01{{currentState}}');
+      '{{rabinPubKeyHash}}01$stateHex',
+      '{{rabinPubKeyHash}}01{{currentState}}');
 
   // milestoneCount (1 byte, sentinel 0x22): after {{currentState}}, prefix 0x01
   var mcHex = fullHex.substring(PP1SmScriptGen.milestoneCountDataStart * 2,
@@ -612,6 +615,12 @@ void exportPP1Sm() {
         'size': 20,
         'encoding': 'hex',
         'description': '20-byte pubkey hash of the customer (immutable)',
+      },
+      {
+        'name': 'rabinPubKeyHash',
+        'size': 20,
+        'encoding': 'hex',
+        'description': '20-byte hash160 of the Rabin public key for identity anchoring (immutable)',
       },
       {
         'name': 'currentState',

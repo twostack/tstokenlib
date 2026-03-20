@@ -39,6 +39,7 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
   List<int>? _tokenId;
   List<int>? _merchantPKH;
   List<int>? _customerPKH;
+  List<int>? _rabinPubKeyHash;
   int _currentState;
   int _milestoneCount;
   List<int>? _commitmentHash;
@@ -55,6 +56,7 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
       this._tokenId,
       this._merchantPKH,
       this._customerPKH,
+      this._rabinPubKeyHash,
       this._currentState,
       this._milestoneCount,
       this._commitmentHash,
@@ -73,6 +75,9 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
     if (_customerPKH == null || _customerPKH!.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Customer PKH must be 20 bytes");
     }
+    if (_rabinPubKeyHash == null || _rabinPubKeyHash!.length != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin pubkey hash must be 20 bytes");
+    }
     if (_commitmentHash == null || _commitmentHash!.length != 32) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Commitment hash must be 32 bytes");
     }
@@ -86,6 +91,7 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
       tokenId: _tokenId!,
       merchantPKH: _merchantPKH!,
       customerPKH: _customerPKH!,
+      rabinPubKeyHash: _rabinPubKeyHash!,
       currentState: _currentState,
       milestoneCount: _milestoneCount,
       commitmentHash: _commitmentHash!,
@@ -111,6 +117,7 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
     _tokenId = buf.sublist(PP1SmScriptGen.tokenIdDataStart, PP1SmScriptGen.tokenIdDataEnd).toList();
     _merchantPKH = buf.sublist(PP1SmScriptGen.merchantPKHDataStart, PP1SmScriptGen.merchantPKHDataEnd).toList();
     _customerPKH = buf.sublist(PP1SmScriptGen.customerPKHDataStart, PP1SmScriptGen.customerPKHDataEnd).toList();
+    _rabinPubKeyHash = buf.sublist(PP1SmScriptGen.rabinPKHDataStart, PP1SmScriptGen.rabinPKHDataEnd).toList();
     _currentState = buf[PP1SmScriptGen.currentStateDataStart];
     _milestoneCount = buf[PP1SmScriptGen.milestoneCountDataStart];
     _commitmentHash = buf.sublist(PP1SmScriptGen.commitmentHashDataStart, PP1SmScriptGen.commitmentHashDataEnd).toList();
@@ -124,6 +131,7 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
   List<int>? get tokenId => _tokenId;
   List<int>? get merchantPKH => _merchantPKH;
   List<int>? get customerPKH => _customerPKH;
+  List<int>? get rabinPubKeyHash => _rabinPubKeyHash;
   int get currentState => _currentState;
   int get milestoneCount => _milestoneCount;
   List<int>? get commitmentHash => _commitmentHash;

@@ -22,18 +22,19 @@ import 'pp1_ft_script_gen.dart';
 
 /// Generates the complete PP1_SM (State Machine) locking script.
 ///
-/// Constructor param layout (140-byte header):
+/// Constructor param layout (161-byte header):
 /// ```
 /// [0:1]     0x14  [1:21]    ownerPKH (mutable)
 /// [21:22]   0x20  [22:54]   tokenId (immutable)
 /// [54:55]   0x14  [55:75]   merchantPKH (immutable)
 /// [75:76]   0x14  [76:96]   customerPKH (immutable)
-/// [96:97]   0x01  [97:98]   currentState (mutable)
-/// [98:99]   0x01  [99:100]  milestoneCount (mutable)
-/// [100:101] 0x20  [101:133] commitmentHash (mutable)
-/// [133:134] 0x01  [134:135] transitionBitmask (immutable)
-/// [135:136] 0x04  [136:140] timeoutDelta (immutable)
-/// [140:]    script body (immutable)
+/// [96:97]   0x14  [97:117]  rabinPubKeyHash (immutable)
+/// [117:118] 0x01  [118:119] currentState (mutable)
+/// [119:120] 0x01  [120:121] milestoneCount (mutable)
+/// [121:122] 0x20  [122:154] commitmentHash (mutable)
+/// [154:155] 0x01  [155:156] transitionBitmask (immutable)
+/// [156:157] 0x04  [157:161] timeoutDelta (immutable)
+/// [161:]    script body (immutable)
 /// ```
 ///
 /// Dispatch: OP_6=burn, OP_0=create, OP_1=enroll, OP_2=confirm,
@@ -48,17 +49,19 @@ class PP1SmScriptGen {
   static const int merchantPKHDataEnd = 75;
   static const int customerPKHDataStart = 76;
   static const int customerPKHDataEnd = 96;
-  static const int currentStateDataStart = 97;
-  static const int currentStateDataEnd = 98;
-  static const int milestoneCountDataStart = 99;
-  static const int milestoneCountDataEnd = 100;
-  static const int commitmentHashDataStart = 101;
-  static const int commitmentHashDataEnd = 133;
-  static const int transitionBitmaskDataStart = 134;
-  static const int transitionBitmaskDataEnd = 135;
-  static const int timeoutDeltaDataStart = 136;
-  static const int timeoutDeltaDataEnd = 140;
-  static const int scriptBodyStart = 140;
+  static const int rabinPKHDataStart = 97;
+  static const int rabinPKHDataEnd = 117;
+  static const int currentStateDataStart = 118;
+  static const int currentStateDataEnd = 119;
+  static const int milestoneCountDataStart = 120;
+  static const int milestoneCountDataEnd = 121;
+  static const int commitmentHashDataStart = 122;
+  static const int commitmentHashDataEnd = 154;
+  static const int transitionBitmaskDataStart = 155;
+  static const int transitionBitmaskDataEnd = 156;
+  static const int timeoutDeltaDataStart = 157;
+  static const int timeoutDeltaDataEnd = 161;
+  static const int scriptBodyStart = 161;
 
   static const int pp2FundingOutpointStart = 117;
   static const int pp2WitnessChangePKHStart = 154;
@@ -71,6 +74,7 @@ class PP1SmScriptGen {
     required List<int> tokenId,
     required List<int> merchantPKH,
     required List<int> customerPKH,
+    required List<int> rabinPubKeyHash,
     required int currentState,
     required int milestoneCount,
     required List<int> commitmentHash,
@@ -83,6 +87,7 @@ class PP1SmScriptGen {
     b.addData(Uint8List.fromList(tokenId));
     b.addData(Uint8List.fromList(merchantPKH));
     b.addData(Uint8List.fromList(customerPKH));
+    b.addData(Uint8List.fromList(rabinPubKeyHash));
     _addRawByte(b, currentState & 0xFF);
     _addRawByte(b, milestoneCount & 0xFF);
     b.addData(Uint8List.fromList(commitmentHash));
@@ -96,12 +101,12 @@ class PP1SmScriptGen {
     b.addData(tdBytes);
 
     // Move to altstack (LIFO)
-    for (var i = 0; i < 9; i++) {
+    for (var i = 0; i < 10; i++) {
       b.opCode(OpCodes.OP_TOALTSTACK);
     }
     // Alt bottom→top: [timeoutDelta, bitmask, commitHash, milestoneCount,
-    //                   state, custPKH, merchPKH, tokenId, ownerPKH]
-    // Pop order: ownerPKH, tokenId, merchPKH, custPKH, state,
+    //                   state, rabinPubKeyHash, custPKH, merchPKH, tokenId, ownerPKH]
+    // Pop order: ownerPKH, tokenId, merchPKH, custPKH, rabinPubKeyHash, state,
     //            milestoneCount, commitHash, bitmask, timeoutDelta
 
     _emitDispatch(b);
@@ -156,6 +161,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // merchantPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // customerPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK);   // currentState
     // Stack: [ownerPubKey, ownerSig, ownerPKH, currentState]
 
@@ -185,49 +191,99 @@ class PP1SmScriptGen {
   // createFunnel (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingTxId, padding]
+  /// Stack: [preImage, fundingTxId, witnessPadding, rabinN, rabinS,
+  ///         rabinPadding, identityTxId, ed25519PubKey]
+  /// Altstack: [td, bm, ch, mc, state, rabinPKH, custPKH, merchPKH, tokenId, ownerPKH]
   static void _emitCreateFunnel(ScriptBuilder b) {
-    // Validate padding
-    b.opCode(OpCodes.OP_DUP);
+    // Stack (8 items, top=0):
+    //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
+    //   witnessPadding=5, fundingTxId=6, preImage=7
+
+    // --- Phase 1: Validate witnessPadding length ---
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_PICK);           // copy witnessPadding
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
 
-    // Validate initial state fields
+    // --- Phase 2: Pop ownerPKH, tokenId (keep), merchantPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // ownerPKH
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId (keep for Rabin binding)
     b.opCode(OpCodes.OP_FROMALTSTACK);  // merchantPKH
+    // Stack (11): merchPKH=0, tokenId=1, ownerPKH=2, ed25519PK=3, idTxId=4,
+    //   rabinPad=5, rabinS=6, rabinN=7, witnessPad=8, fundingTxId=9, preImage=10
+    // Alt: [td, bm, ch, mc, state, rabinPKH, custPKH]
 
-    // ownerPKH == merchantPKH
-    // Stack: [merchPKH=0, ownerPKH=1, padding=2, fundingTxId=3, preImage=4]
-    b.opCode(OpCodes.OP_OVER);                           // copy ownerPKH (idx 1)
-    b.opCode(OpCodes.OP_OVER);                           // copy merchPKH (idx 1, shifted)
+    // Verify ownerPKH == merchantPKH
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_PICK);           // copy ownerPKH
+    b.opCode(OpCodes.OP_OVER);           // copy merchPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    b.opCode(OpCodes.OP_DROP); b.opCode(OpCodes.OP_DROP); // drop both
+    b.opCode(OpCodes.OP_DROP);           // drop merchPKH
+    b.opCode(OpCodes.OP_SWAP);           // [ownerPKH, tokenId, ...]
+    b.opCode(OpCodes.OP_DROP);           // drop ownerPKH
+    // Stack (9): tokenId=0, ed25519PK=1, idTxId=2, rabinPad=3, rabinS=4,
+    //   rabinN=5, witnessPad=6, fundingTxId=7, preImage=8
 
+    // --- Pop + drop customerPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // customerPKH
+    // Alt: [td, bm, ch, mc, state, rabinPKH]
 
-    // currentState == 0
-    b.opCode(OpCodes.OP_FROMALTSTACK);
+    // --- Phase 3: Verify hash160(rabinN) == rabinPubKeyHash ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // rabinPubKeyHash
+    // Stack (10): rabinPKH=0, tokenId=1, ed25519PK=2, idTxId=3, rabinPad=4,
+    //   rabinS=5, rabinN=6, witnessPad=7, fundingTxId=8, preImage=9
+    b.opCode(OpCodes.OP_6);
+    b.opCode(OpCodes.OP_PICK);           // copy rabinN
+    b.opCode(OpCodes.OP_HASH160);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+    // Alt: [td, bm, ch, mc, state]
+
+    // --- Phase 4: Validate state==0, milestoneCount==0, commitmentHash==zeros ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // state
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    // milestoneCount == 0
-    b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // milestoneCount
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    // commitmentHash == 32 zero bytes
-    b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // commitmentHash
     b.addData(Uint8List(32));
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    // Drain remaining
+    // Drain bitmask + timeoutDelta
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // bitmask
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // timeoutDelta
+    // Alt: [] (empty)
 
-    // Drop padding
+    // --- Phase 5: Rabin signature verification ---
+    // Stack (9): tokenId=0, ed25519PK=1, idTxId=2, rabinPad=3, rabinS=4,
+    //   rabinN=5, witnessPad=6, fundingTxId=7, preImage=8
+    // Compute sha256(identityTxId || ed25519PubKey || tokenId)
+    b.opCode(OpCodes.OP_ROT);            // [idTxId, tokenId, ed25519PK, ...]
+    b.opCode(OpCodes.OP_ROT);            // [ed25519PK, idTxId, tokenId, ...]
+    b.opCode(OpCodes.OP_CAT);            // [idTxId||ed25519PK, tokenId, ...]
+    b.opCode(OpCodes.OP_SWAP);           // [tokenId, idTxId||ed25519PK, ...]
+    b.opCode(OpCodes.OP_CAT);            // [idTxId||ed25519PK||tokenId, ...]
+    b.opCode(OpCodes.OP_SHA256);
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);         // hashNum (positive)
+
+    // Rabin verify: s^2 mod n == hashNum + rabinPadding
+    b.opCode(OpCodes.OP_SWAP);           // [rabinPadding, hashNum, rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_ADD);            // [(hashNum+padding), rabinS, rabinN, ...]
+    b.opCode(OpCodes.OP_SWAP);           // [rabinS, (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_MUL);            // [s^2, (h+p), rabinN, ...]
+    b.opCode(OpCodes.OP_ROT);            // [rabinN, s^2, (h+p), ...]
+    b.opCode(OpCodes.OP_MOD);            // [(s^2 mod n), (h+p), ...]
+    b.opCode(OpCodes.OP_NUMEQUALVERIFY); // verified!
+    // Stack: [witnessPadding, fundingTxId, preImage]
+
+    // --- Phase 6: Drop witnessPadding ---
     b.opCode(OpCodes.OP_DROP);
-    // Stack: [preImage, fundingTxId]
+    // Stack: [fundingTxId, preImage]
 
     // checkPreimageOCS + hashPrevouts
     b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingTxId
@@ -311,6 +367,7 @@ class PP1SmScriptGen {
 
     // --- Pop custPKH (will be newOwnerPKH) ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH → main stack
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Stack (11): custPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     // Alt: [td, bm, ch, mc, state]
@@ -394,6 +451,7 @@ class PP1SmScriptGen {
 
     // --- Pop custPKH, customer auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Stack (13): custPKH=0, pad=1, rawTx=2, lhs=3, milestoneData=4,
     //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     // Alt: [td, bm, ch, mc, state]
@@ -493,6 +551,7 @@ class PP1SmScriptGen {
 
     // --- Pop custPKH, customer auth, then drop ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Stack (14): custPKH=0, merchPKH=1, pad=2, rawTx=3, lhs=4, convData=5,
     //   custSig=6, custPK=7, mSig=8, chgAmt=9, chgPkh=10, mPK=11, pp2=12, preImg=13
     // Alt: [td, bm, ch, mc, state]
@@ -595,8 +654,9 @@ class PP1SmScriptGen {
     // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, merchPayAmt=4,
     //   custRewardAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
-    // --- Drain custPKH ---
+    // --- Drain custPKH + rabinPubKeyHash ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // custPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Alt: [td, bm, ch, mc, state]
 
     // --- Pop state, check == 0x04 (SETTLED = post-settle) ---
@@ -682,8 +742,9 @@ class PP1SmScriptGen {
     // Stack (10): pad=0, rawTx=1, lhs=2, refundAmt=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
 
-    // --- Drain custPKH ---
+    // --- Drain custPKH + rabinPubKeyHash ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // custPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Alt: [td, bm, ch, mc, state]
 
     // --- Pop state, check == 0x05 (EXPIRED = post-timeout) ---
@@ -1603,8 +1664,8 @@ class PP1SmScriptGen {
     // seg0(1byte), rest=pp1S[1:]
     OpcodeHelpers.pushInt(b, 20);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);  // skip old PKH
-    OpcodeHelpers.pushInt(b, 76);
-    b.opCode(OpCodes.OP_SPLIT);  // seg1(76), rest=pp1S[97:]
+    OpcodeHelpers.pushInt(b, 97);
+    b.opCode(OpCodes.OP_SPLIT);  // seg1(97), rest=pp1S[118:]
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);  // skip old state
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_SPLIT);     // seg2(1), rest=pp1S[99:]
