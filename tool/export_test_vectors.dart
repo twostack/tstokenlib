@@ -351,7 +351,9 @@ void main() {
 
   // 14. PP1_FT Unlock — Mint
   {
-    var builder = PP1FtUnlockBuilder.forMint(preImage, witnessFundingTxId, witnessPadding);
+    var builder = PP1FtUnlockBuilder.forMint(preImage, witnessFundingTxId, witnessPadding,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: 0,
+        identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var script = builder.getScriptSig();
     vectors.add({
       'name': 'PP1_FT_UNLOCK_MINT',
@@ -362,6 +364,11 @@ void main() {
         'preImage': hex.encode(preImage),
         'witnessFundingTxId': hex.encode(witnessFundingTxId),
         'witnessPadding': hex.encode(witnessPadding),
+        'rabinN': hex.encode(rabinN),
+        'rabinS': hex.encode(rabinS),
+        'rabinPadding': 0,
+        'identityTxId': hex.encode(identityTxId),
+        'ed25519PubKey': hex.encode(ed25519PubKey),
       },
       'expectedScriptHex': script.toHex(),
     });
