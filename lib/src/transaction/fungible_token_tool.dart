@@ -141,7 +141,9 @@ class FungibleTokenTool {
        int parentOutputCountB = 5,
        int parentPP1FtIndexA = 1,
        int parentPP1FtIndexB = 1,
-       RabinKeyPair? rabinKeyPair,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
        List<int>? identityTxId,
        List<int>? ed25519PubKey}
   ) {
@@ -179,7 +181,7 @@ class FungibleTokenTool {
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
         parentPP1FtIndexB: parentPP1FtIndexB,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
         identityTxId: identityTxId,
         ed25519PubKey: ed25519PubKey);
 
@@ -196,7 +198,7 @@ class FungibleTokenTool {
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
         parentPP1FtIndexB: parentPP1FtIndexB,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
         identityTxId: identityTxId,
         ed25519PubKey: ed25519PubKey);
 
@@ -511,7 +513,9 @@ class FungibleTokenTool {
        int parentOutputCountB = 5,
        int parentPP1FtIndexA = 1,
        int parentPP1FtIndexB = 1,
-       RabinKeyPair? rabinKeyPair,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
        List<int>? identityTxId,
        List<int>? ed25519PubKey}
   ) {
@@ -519,15 +523,8 @@ class FungibleTokenTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     if (action == FungibleTokenAction.MINT) {
-      var pp1Script = tokenTx.outputs[tripletBaseIndex].script;
-      var tokenId = pp1Script.buffer!.sublist(PP1FtScriptGen.tokenIdDataStart, PP1FtScriptGen.tokenIdDataEnd);
-      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
-      var messageHash = Rabin.sha256ToScriptInt(concat);
-      var sig = Rabin.sign(messageHash, rabinKeyPair!.p, rabinKeyPair.q);
-      var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n);
-      var rabinS = Rabin.bigIntToScriptNum(sig.s);
       return PP1FtUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes,
-          rabinN: rabinN.toList(), rabinS: rabinS.toList(), rabinPadding: sig.padding,
+          rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding!,
           identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == FungibleTokenAction.TRANSFER) {
       var pp2Output = tokenTx.outputs[pp2Index].serialize();

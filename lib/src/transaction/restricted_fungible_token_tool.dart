@@ -190,7 +190,7 @@ class RestrictedFungibleTokenTool {
   /// - MINT: validates Rabin identity binding + hashPrevouts
   /// - TRANSFER: validates inductive proof from parent
   ///
-  /// For MINT: [rabinKeyPair], [identityTxId], [ed25519PubKey] are required.
+  /// For MINT: [rabinN], [rabinS], [rabinPadding], [identityTxId], [ed25519PubKey] are required.
   /// For TRANSFER: [parentTokenTxBytes] and [parentOutputCount] are required.
   Transaction createRftWitnessTxn(
       TransactionSigner fundingSigner,
@@ -203,7 +203,9 @@ class RestrictedFungibleTokenTool {
        int parentOutputCount = 5,
        int tripletBaseIndex = 1,
        int parentPP1FtIndex = 1,
-       RabinKeyPair? rabinKeyPair,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
        List<int>? identityTxId,
        List<int>? ed25519PubKey,
        List<int>? parentTokenTxBytesB,
@@ -241,7 +243,7 @@ class RestrictedFungibleTokenTool {
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
         parentOutputCount, tripletBaseIndex, fundingTx.hash,
         parentPP1FtIndex: parentPP1FtIndex,
-        rabinKeyPair: rabinKeyPair, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexB: parentPP1FtIndexB);
 
@@ -255,7 +257,7 @@ class RestrictedFungibleTokenTool {
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
         parentOutputCount, tripletBaseIndex, fundingTx.hash,
         parentPP1FtIndex: parentPP1FtIndex,
-        rabinKeyPair: rabinKeyPair, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexB: parentPP1FtIndexB);
 
@@ -520,7 +522,9 @@ class RestrictedFungibleTokenTool {
       int tripletBaseIndex,
       List<int> fundingTxHash,
       {int parentPP1FtIndex = 1,
-       RabinKeyPair? rabinKeyPair,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
        List<int>? identityTxId,
        List<int>? ed25519PubKey,
        List<int>? parentTokenTxBytesB,
@@ -531,18 +535,9 @@ class RestrictedFungibleTokenTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     if (action == RestrictedFungibleTokenAction.MINT) {
-      // Extract tokenId from PP1 output to bind Rabin signature to this token
-      var pp1Script = tokenTx.outputs[tripletBaseIndex].script;
-      var tokenId = pp1Script.buffer!.sublist(PP1RftScriptGen.tokenIdDataStart, PP1RftScriptGen.tokenIdDataEnd);
-      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
-      var messageHash = Rabin.sha256ToScriptInt(concat);
-      var sig = Rabin.sign(messageHash, rabinKeyPair!.p, rabinKeyPair.q);
-
-      var rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n);
-      var rabinS = Rabin.bigIntToScriptNum(sig.s);
-
+      // Rabin signature is pre-computed by the caller. The tool never sees the private key.
       return PP1RftUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes,
-          rabinN: rabinN.toList(), rabinS: rabinS.toList(), rabinPadding: sig.padding,
+          rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding!,
           identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == RestrictedFungibleTokenAction.TRANSFER) {
       var pp2Output = tokenTx.outputs[pp2Index].serialize();

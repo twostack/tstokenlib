@@ -53,7 +53,7 @@ class AppendableTokenTool {
   /// [tokenChangePKH] pubkey hash for the token's change output.
   /// [action] specifies the token action.
   /// [stampMetadata] required for STAMP action.
-  /// [rabinKeyPair] Rabin keypair for ISSUANCE (required for Rabin identity binding).
+  /// [rabinN], [rabinS], [rabinPadding] pre-computed Rabin signature for ISSUANCE.
   /// [identityTxId] 32-byte identity anchor txid (required for ISSUANCE).
   /// [ed25519PubKey] 32-byte ED25519 public key (required for ISSUANCE).
   Transaction createWitnessTxn(
@@ -65,7 +65,9 @@ class AppendableTokenTool {
       String tokenChangePKH,
       AppendableTokenAction action,
       {List<int>? stampMetadata,
-       RabinKeyPair? rabinKeyPair,
+       List<int>? rabinN,
+       List<int>? rabinS,
+       int? rabinPadding,
        List<int>? identityTxId,
        List<int>? ed25519PubKey}) {
 
@@ -91,23 +93,7 @@ class AppendableTokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
-    // Compute Rabin signature for ISSUANCE
-    List<int>? rabinN;
-    List<int>? rabinS;
-    int? rabinPadding;
-    if (action == AppendableTokenAction.ISSUANCE && rabinKeyPair != null) {
-      // Extract tokenId from PP1 output
-      var pp1Lock = PP1AtLockBuilder.fromScript(tokenTx.outputs[1].script);
-      var tokenId = pp1Lock.tokenId!;
-      // Sign over identityTxId || ed25519PubKey || tokenId
-      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
-      var messageHash = Rabin.sha256ToScriptInt(concat);
-      var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
-      rabinN = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
-      rabinS = Rabin.bigIntToScriptNum(sig.s).toList();
-      rabinPadding = sig.padding;
-    }
-
+    // Rabin signature is pre-computed by the caller. The tool never sees the private key.
     var pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1!, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
         stampMetadata: stampMetadata,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);

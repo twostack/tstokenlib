@@ -118,6 +118,11 @@ void main() {
     rabinKeyPair = Rabin.generateKeyPair(1024);
     var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
     rabinPubKeyHash = hash160(rabinNBytes);
+    var rabinTokenId = getBobFundingTx().hash;
+    var msg = Rabin.sha256ToScriptInt([...dummyIdentityTxId, ...dummyEd25519PubKey, ...rabinTokenId]);
+    var sig = Rabin.sign(msg, rabinKeyPair.p, rabinKeyPair.q);
+    var rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    var rabinPaddingValue = sig.padding;
 
     // Step 1: Mint
     var bobFundingTx = getBobFundingTx();
@@ -132,7 +137,7 @@ void main() {
     var mintWitnessTx = service.createFungibleWitnessTxn(
       bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
       FungibleTokenAction.MINT,
-      rabinKeyPair: rabinKeyPair,
+      rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
       identityTxId: dummyIdentityTxId,
       ed25519PubKey: dummyEd25519PubKey,
     );

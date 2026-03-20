@@ -43,15 +43,24 @@ void main() {
   // Rabin keypair for witness tests (generated once)
   late RabinKeyPair rabinKeyPair;
   late List<int> rabinPubKeyHash;
+  late List<int> rabinNBytes;
+  late List<int> rabinSBytes;
+  late int rabinPaddingValue;
   late List<int> dummyIdentityTxId;
   late List<int> dummyEd25519PubKey;
 
   setUpAll(() {
     rabinKeyPair = Rabin.generateKeyPair(1024);
-    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
     rabinPubKeyHash = hash160(rabinNBytes);
     dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
     dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
+    // Pre-compute Rabin signature for deterministic tokenId
+    var tokenId = getBobFundingTx().hash;
+    var msg = Rabin.sha256ToScriptInt([...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId]);
+    var sig = Rabin.sign(msg, rabinKeyPair.p, rabinKeyPair.q);
+    rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    rabinPaddingValue = sig.padding;
   });
 
   group('AT lock builder parse roundtrip', () {
@@ -297,7 +306,7 @@ void main() {
         alicePubKey,
         alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
@@ -333,7 +342,7 @@ void main() {
         hex.decode(bobFundingTx.serialize()),
         alicePubKey, alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
@@ -428,7 +437,7 @@ void main() {
         hex.decode(bobFundingTx.serialize()),
         alicePubKey, alicePubkeyHash,
         AppendableTokenAction.ISSUANCE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );

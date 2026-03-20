@@ -29,6 +29,9 @@ late List<int> rabinPubKeyHash;
 var dummyIdentityTxId = List<int>.generate(32, (i) => i + 1);
 var dummyEd25519PubKey = List<int>.generate(32, (i) => i + 0x41);
 var dummyRabinPKH = List<int>.generate(20, (i) => i + 0xC0);
+late List<int> rabinNBytes;
+late List<int> rabinSBytes;
+late int rabinPaddingValue;
 
 Transaction getMerchantFundingTx() {
   var rawTx =
@@ -45,8 +48,13 @@ Transaction getCustomerFundingTx() {
 void main() {
   setUpAll(() {
     rabinKeyPair = Rabin.generateKeyPair(1024);
-    var rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
+    rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
     rabinPubKeyHash = hash160(rabinNBytes);
+    var tokenId = getMerchantFundingTx().hash;
+    var msg = Rabin.sha256ToScriptInt([...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId]);
+    var sig = Rabin.sign(msg, rabinKeyPair.p, rabinKeyPair.q);
+    rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
+    rabinPaddingValue = sig.padding;
   });
 
   group('SM lock builder parse roundtrip', () {
@@ -392,7 +400,7 @@ void main() {
         customerPub,
         customerPubkeyHash,
         StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
@@ -433,7 +441,7 @@ void main() {
         customerPub,
         customerPubkeyHash,
         StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
@@ -527,7 +535,7 @@ void main() {
         hex.decode(merchantFundingTx.serialize()),
         customerPub, customerPubkeyHash,
         StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
         ed25519PubKey: dummyEd25519PubKey,
       );
@@ -622,7 +630,7 @@ void main() {
         customerSigner, customerFundingTx, issuanceTx,
         hex.decode(merchantFundingTx.serialize()),
         customerPub, customerPubkeyHash, StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollTx = service.createEnrollTxn(
         createWitnessTx, issuanceTx, merchantPub,
@@ -708,7 +716,7 @@ void main() {
         customerSigner, getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
         customerPub, customerPubkeyHash, StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
@@ -815,7 +823,7 @@ void main() {
         getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
         customerPub, customerPubkeyHash, StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
@@ -893,7 +901,7 @@ void main() {
         customerSigner, getCustomerFundingTx(), issuanceTx,
         hex.decode(getMerchantFundingTx().serialize()),
         customerPub, customerPubkeyHash, StateMachineAction.CREATE,
-        rabinKeyPair: rabinKeyPair, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
       expect(
           () => interp.correctlySpends(
               createWitnessTx.inputs[1].script!, issuanceTx.outputs[1].script,

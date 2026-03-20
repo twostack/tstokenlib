@@ -134,7 +134,9 @@ class StateMachineTool {
       int? nLockTime,
       int pp1OutputIndex = 1,
       int pp2OutputIndex = 2,
-      RabinKeyPair? rabinKeyPair,
+      List<int>? rabinN,
+      List<int>? rabinS,
+      int? rabinPadding,
       List<int>? identityTxId,
       List<int>? ed25519PubKey}) {
 
@@ -167,19 +169,7 @@ class StateMachineTool {
     var pp2Output = tokenTx.outputs[pp2OutputIndex].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
-    // Compute Rabin signature for CREATE action
-    List<int>? rabinNBytes, rabinSBytes;
-    int? rabinPaddingValue;
-    if (action == StateMachineAction.CREATE && rabinKeyPair != null) {
-      var pp1Script = tokenTx.outputs[pp1OutputIndex].script;
-      var tokenId = pp1Script.buffer!.sublist(PP1SmScriptGen.tokenIdDataStart, PP1SmScriptGen.tokenIdDataEnd);
-      var concat = [...identityTxId!, ...ed25519PubKey!, ...tokenId];
-      var messageHash = Rabin.sha256ToScriptInt(concat);
-      var sig = Rabin.sign(messageHash, rabinKeyPair.p, rabinKeyPair.q);
-      rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
-      rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
-      rabinPaddingValue = sig.padding;
-    }
+    // Rabin signature is pre-computed by the caller. The tool never sees the private key.
 
     var pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1!, pp2Output, merchantPubkey, tokenChangePKH,
@@ -189,7 +179,7 @@ class StateMachineTool {
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
         refundAmount: refundAmount,
-        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
         identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     var witnessBuilder1 = TransactionBuilder()
@@ -210,7 +200,7 @@ class StateMachineTool {
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
         refundAmount: refundAmount,
-        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
         identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     var witnessBuilder2 = TransactionBuilder()
