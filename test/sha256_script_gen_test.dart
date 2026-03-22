@@ -541,28 +541,31 @@ void main() {
         print('  H[$i] = 0x${(TEMP[i] & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0')}');
       }
 
-      // Build W blob (LE — matches message schedule output)
-      var wBlob = Uint8List(256);
-      for (int i = 0; i < 64; i++) {
-        var bd = ByteData.sublistView(wBlob, i * 4, (i + 1) * 4);
-        bd.setUint32(0, w[i] & 0xFFFFFFFF, Endian.little);
-      }
-
-      // Unlock: push state as LE words (h...a, a on top)
+      // Unlock: push W[0..15] as LE (W[0] at bottom, W[15] on top),
+      // then state as LE words (h...a, a on top)
       var unlockBuilder = ScriptBuilder();
+      for (int i = 0; i < 16; i++) {
+        unlockBuilder.addData(_uint32ToLE(w[i] & 0xFFFFFFFF));
+      }
       for (int i = 7; i >= 0; i--) {
         unlockBuilder.addData(_uint32ToLE(iv[i] & 0xFFFFFFFF));
       }
 
-      // Lock: set up altstack (W only — K inlined) and run one round
+      // Lock: run one round (sliding window, W on main stack)
       var lockBuilder = ScriptBuilder();
-      lockBuilder.addData(wBlob);
-      lockBuilder.opCode(OpCodes.OP_TOALTSTACK);  // W
+      Sha256ScriptGen.emitCompressionRound(lockBuilder, 0,
+          wPickIdx: 27, expand: false);
 
-      Sha256ScriptGen.emitCompressionRound(lockBuilder, 0);
-
-      // Discard W
-      lockBuilder.opCode(OpCodes.OP_FROMALTSTACK); lockBuilder.opCode(OpCodes.OP_DROP);
+      // Drop 16 W values below state: save state, drop W, restore
+      for (int i = 0; i < 8; i++) {
+        lockBuilder.opCode(OpCodes.OP_TOALTSTACK);
+      }
+      for (int i = 0; i < 8; i++) {
+        lockBuilder.opCode(OpCodes.OP_2DROP);
+      }
+      for (int i = 0; i < 8; i++) {
+        lockBuilder.opCode(OpCodes.OP_FROMALTSTACK);
+      }
 
       // Verify: a'(top)...h'(bottom) as LE against TEMP[0]...TEMP[7]
       for (int i = 0; i < 8; i++) {

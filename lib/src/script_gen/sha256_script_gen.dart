@@ -487,119 +487,143 @@ class Sha256ScriptGen {
   }
 
   // =========================================================================
-  // Compression round (LE state words, BE blobs)
+  // Compression round (LE state words, sliding window W)
   // =========================================================================
 
-  /// One compression round with LE state words.
+  /// One compression round with LE state words and sliding window W.
   ///
-  /// Stack: a(0) b(1) c(2) d(3) e(4) f(5) g(6) h(7) — all 4-byte LE.
-  /// Altstack: [midstate_copy, W_blob(BE)] (W on top). K inlined as immediates.
-  /// After: a' b' c' d' e' f' g' h' (all LE). Altstack unchanged.
+  /// Stack: a(0) b(1) c(2) d(3) e(4) f(5) g(6) h(7) W_window(8+) — all LE.
+  /// Altstack: [midstate_copy].
+  /// After: a' b' c' d' e' f' g' h' W_window (all LE). Altstack unchanged.
   ///
-  /// Using LE state saves ~108 bytes/round by eliminating reverseBytes4
-  /// from addition conversions (14B per add vs 50B with BE).
-  static ScriptBuilder emitCompressionRound(ScriptBuilder b, int t) {
+  /// [wPickIdx] is the index of W[t] in the stack at the point of fetch
+  /// (after Σ1, Ch, h, K have been pushed = 4 extra items above state).
+  /// Rounds 0-15: 27-t. Rounds 16-63: 12.
+  ///
+  /// If [expand] is true, computes W[t+1] in the state rotation gap
+  /// (state on altstack, only W on main stack) with zero extra overhead.
+  static ScriptBuilder emitCompressionRound(ScriptBuilder b, int t,
+      {required int wPickIdx, bool expand = false}) {
     // ======== T1 = h + Σ1(e) + Ch(e,f,g) + K[t] + W[t] ========
 
     // Σ1(e): e at idx 4 — LE wrapped (LE→BE→Σ1→BE→LE)
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);
     emitBigSigma1LE(b);
-    // STACK: Σ1(LE) a b c d e f g h  (9 items, all LE)
 
-    // Ch(e,f,g): bitwise, endian-agnostic — works on LE directly
+    // Ch(e,f,g): bitwise, endian-agnostic
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // g
-    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // f (shifted by g push)
-    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // e (shifted by g,f push)
+    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // f
+    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // e
     emitCh(b);
-    // STACK: Ch(LE) Σ1 a b c d e f g h  (10 items)
 
     // h at idx 9
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);
-    // STACK: h Ch Σ1 a b c d e f g h  (11 items)
 
     // K[t] — inlined as 4-byte LE immediate
     emitPushKLE(b, t);
-    // STACK: K(LE) h Ch Σ1 a b c d e f g h  (12 items)
 
-    // W[t] — extracted as BE, converted to LE
-    emitFetchWLE(b, t);
-    // STACK: W(LE) K h Ch Σ1 a b c d e f g h  (13 items)
+    // W[t] — PICK from sliding window (4 extra items above state)
+    OpcodeHelpers.pushInt(b, wPickIdx);
+    b.opCode(OpCodes.OP_PICK);
 
-    // Sum 5 values using LE addition (saves 72B vs emitAddNBE)
+    // Sum 5 values: Σ1 + Ch + h + K + W
     emitAddNLE(b, 5);
-    // STACK: T1(LE) a b c d e f g h  (9 items)
+    // STACK: T1(LE) a b c d e f g h W_window
 
     // ======== T2 = Σ0(a) + Maj(a,b,c) ========
 
-    // Σ0(a): a at idx 1 — LE wrapped
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);
     emitBigSigma0LE(b);
-    // STACK: Σ0(LE) T1 a b c d e f g h  (10 items)
 
-    // Maj(a,b,c): bitwise, endian-agnostic
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // c
-    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // b (shifted)
-    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // a (shifted)
+    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // b
+    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // a
     emitMaj(b);
-    // STACK: Maj(LE) Σ0 T1 a b c d e f g h  (11 items)
 
-    // T2 = Σ0 + Maj (LE addition — saves 36B vs emitAdd32BE)
     emitAdd32LE(b);
-    // STACK: T2(LE) T1 a b c d e f g h  (10 items)
-    //        0      1  2 3 4 5 6 7 8 9
+    // STACK: T2 T1 a b c d e f g h W_window
 
     // ======== State rotation via altstack ========
-    // (Identical structure to BE version — just uses emitAdd32LE)
 
     // Compute e' = d + T1
-    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // d (idx 5)
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);   // T1 (idx 1+1=2)
+    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
     emitAdd32LE(b);
 
     // Compute a' = T1 + T2
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);   // T1 (idx 2)
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);   // T2 (shifted to idx 2)
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
     emitAdd32LE(b);
 
-    // Push a' = T1+T2 (idx 0)
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push b' = a (idx 3)
+    // Push new state to altstack: a' b' c' d' e' f' g' h'
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // a'
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push c' = b (idx 4)
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // b'=a
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push d' = c (idx 5)
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // c'=b
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push e' = d+T1 (idx 0)
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push f' = e (idx 6)
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // d'=c
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // e'=d+T1
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push g' = f (idx 7)
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // f'=e
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-
-    // Push h' = g (idx 8)
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // g'=f
     b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);
-    b.opCode(OpCodes.OP_TOALTSTACK);
+    b.opCode(OpCodes.OP_TOALTSTACK);                       // h'=g
 
-    // Drop old state + T2 + T1: 10 items = 5x 2DROP
+    // Drop old state + T2 + T1: 10 items
     b.opCode(OpCodes.OP_2DROP); b.opCode(OpCodes.OP_2DROP);
     b.opCode(OpCodes.OP_2DROP); b.opCode(OpCodes.OP_2DROP);
     b.opCode(OpCodes.OP_2DROP);
 
-    // Restore new state: a'(top) b' c' d' e' f' g' h'(bottom)
+    // === Gap: state on altstack, only W values on main stack ===
+    if (expand) {
+      _emitExpansionStep(b);
+    }
+
+    // Restore new state
     for (int i = 0; i < 8; i++) {
       b.opCode(OpCodes.OP_FROMALTSTACK);
     }
+    return b;
+  }
+
+  /// Computes W[t+1] from the sliding window during the state rotation gap.
+  ///
+  /// Pre: only W values on main stack. W[t] at idx 0 (newest), W[t-15] at idx 15.
+  /// Post: W[t+1] pushed on top. Window grows by 1.
+  /// Altstack: state items below; σ0 temp pushed/popped cleanly above.
+  ///
+  /// Fixed PICK indices: σ0 input at 14, σ1 input at 1, W[t-6] at 7, W[t-15] at 17.
+  static ScriptBuilder _emitExpansionStep(ScriptBuilder b) {
+    // σ0(W[t-14]): W[t-14] at idx 14 (note: t+1-15 = t-14)
+    OpcodeHelpers.pushInt(b, 14);
+    b.opCode(OpCodes.OP_PICK);
+    OpcodeHelpers.reverseBytes4(b);   // LE → BE
+    emitSmallSigma0(b);
+    OpcodeHelpers.reverseBytes4(b);   // BE → LE
+    b.opCode(OpCodes.OP_TOALTSTACK);
+
+    // σ1(W[t-1]): W[t-1] at idx 1 (note: t+1-2 = t-1)
+    b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);
+    OpcodeHelpers.reverseBytes4(b);
+    emitSmallSigma1(b);
+    OpcodeHelpers.reverseBytes4(b);
+    // Stack: σ1(0), W[t](1), W[t-1](2), ..., +1 item above window
+
+    // W[t-6] (= W[(t+1)-7]): was at idx 6, now at idx 7 (+1 for σ1)
+    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);
+
+    // W[t-15] (= W[(t+1)-16]): was at idx 15, now at idx 17 (+2 for σ1, W[t-6])
+    OpcodeHelpers.pushInt(b, 17);
+    b.opCode(OpCodes.OP_PICK);
+
+    // σ0 from altstack
+    b.opCode(OpCodes.OP_FROMALTSTACK);
+
+    // Sum 4 LE values → W[t+1]
+    emitAddNLE(b, 4);
+    // W[t+1] now at idx 0, window grown by 1
     return b;
   }
 
@@ -607,43 +631,62 @@ class Sha256ScriptGen {
   // Full SHA256 block
   // =========================================================================
 
-  /// One SHA256 block.
+  /// One SHA256 block using sliding window W.
   ///
   /// Pre: block(64B BE, top) midstate(32B BE, below).
   /// Post: new_hash(32B BE).
   ///
-  /// Internally uses LE state words during compression for efficiency.
-  /// W blob stored in LE. State is converted at boundaries.
+  /// W values kept on main stack (sliding window) instead of blob on altstack.
+  /// State in LE on top, W window in LE below. K constants inlined.
   static ScriptBuilder emitOneBlock(ScriptBuilder b) {
-    // Save midstate for final addition
-    b.opCode(OpCodes.OP_SWAP);
+    // Stack: block(64B, top) midstate(32B)
+    // Stash both midstate copies on altstack, then work with block.
+    b.opCode(OpCodes.OP_SWAP);        // midstate(top) block
     b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_TOALTSTACK);  // stash midstate copy
-    b.opCode(OpCodes.OP_SWAP);        // block(top) midstate
+    b.opCode(OpCodes.OP_TOALTSTACK);  // stash midstate copy for final addition
+    b.opCode(OpCodes.OP_TOALTSTACK);  // stash midstate for state init
+    // Stack: block. Altstack: [midstate_copy, midstate]
 
-    // Split block into 16 × 4-byte BE words
-    _emitSplitIntoWords(b, 16);
+    // Split block into 16 × 4-byte words (reversed: W[0] at bottom, W[15] on top)
+    _emitSplitIntoWordsReversed(b, 16);
 
-    // Message schedule: build W blob (all BE)
-    emitMessageScheduleBlob(b);
+    // Convert all 16 words from BE to LE
+    _emitConvertWordsToLE(b, 16);
+    // Stack: W[0](bottom) ... W[15](top) — all LE
 
-    // Stash W on altstack (K constants are inlined per round)
-    b.opCode(OpCodes.OP_TOALTSTACK);  // W → alt
-    // Altstack: midstate_copy, W
-
-    // Split midstate into 8 BE words, then convert each to LE
+    // Retrieve midstate, split into 8 BE words, convert to LE → state on top of W
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // pop midstate
     _emitSplitIntoWords(b, 8);
     _emitConvertWordsToLE(b, 8);
-    // Stack: H0_LE(top=a) ... H7_LE(h)
+    // Stack: W[0]..W[15]  a(top) b c d e f g h
+    // Altstack: [midstate_copy]
 
-    // 64 compression rounds (LE state, BE blobs)
+    // 64 compression rounds with sliding window
     for (int t = 0; t < 64; t++) {
-      emitCompressionRound(b, t);
-    }
-    // Stack: a'(LE) b' c' d' e' f' g' h'(LE)
+      // W[t] PICK index at fetch point (4 extra items above state: Σ1, Ch, h, K):
+      // Rounds 0-15: W[t] at state idx 8+(15-t), plus 4 extra = 27-t
+      // Rounds 16-63: W[t] always at state idx 8 (newest), plus 4 = 12
+      int wPickIdx = (t < 16) ? (27 - t) : 12;
 
-    // Discard W
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP);  // W
+      // Expand W[t+1] during rounds 15-62 (in the state rotation gap)
+      bool expand = (t >= 15 && t <= 62);
+
+      emitCompressionRound(b, t, wPickIdx: wPickIdx, expand: expand);
+    }
+    // Stack: a'(LE) b' c' d' e' f' g' h' W[0]..W[63] (72 items total)
+
+    // Save state to altstack, drop accumulated W values, restore state
+    for (int i = 0; i < 8; i++) {
+      b.opCode(OpCodes.OP_TOALTSTACK);
+    }
+    for (int i = 0; i < 32; i++) {
+      b.opCode(OpCodes.OP_2DROP);     // drop 64 W values
+    }
+    for (int i = 0; i < 8; i++) {
+      b.opCode(OpCodes.OP_FROMALTSTACK);
+    }
+    // Stack: a' b' c' d' e' f' g' h' (8 items, LE)
+    // Altstack: [midstate_copy]
 
     // Retrieve midstate copy, split into BE words, convert to LE
     b.opCode(OpCodes.OP_FROMALTSTACK);
@@ -656,7 +699,7 @@ class Sha256ScriptGen {
       int stateIdx = 8 - i;
       OpcodeHelpers.pushInt(b, stateIdx);
       b.opCode(OpCodes.OP_ROLL);
-      emitAdd32LE(b);               // LE addition (saves 36B per add vs BE)
+      emitAdd32LE(b);
       if (i < 7) {
         b.opCode(OpCodes.OP_TOALTSTACK);
       }
@@ -665,7 +708,6 @@ class Sha256ScriptGen {
     for (int i = 0; i < 7; i++) {
       b.opCode(OpCodes.OP_FROMALTSTACK);
     }
-    // Stack: result_H0(LE) ... result_H7(LE)
 
     // Convert LE results back to BE for output
     _emitConvertWordsToLE(b, 8);  // reverseBytes4 is its own inverse: LE→BE
@@ -708,6 +750,20 @@ class Sha256ScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);
     for (int i = 0; i < n; i++) {
       b.opCode(OpCodes.OP_FROMALTSTACK);
+    }
+    return b;
+  }
+
+  /// Splits a byte string into N × 4-byte words in reversed order.
+  ///
+  /// Pre: N*4 byte value on top. Post: N words, first at bottom, last on top.
+  /// Simple OP_4 OP_SPLIT loop — no altstack needed. Cost: 2*(N-1) bytes.
+  ///
+  /// Each split peels off the leftmost 4 bytes (word 0, 1, 2, ...) and leaves
+  /// them below the remainder, so word 0 ends up deepest and word N-1 on top.
+  static ScriptBuilder _emitSplitIntoWordsReversed(ScriptBuilder b, int n) {
+    for (int i = 0; i < n - 1; i++) {
+      b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_SPLIT);
     }
     return b;
   }
