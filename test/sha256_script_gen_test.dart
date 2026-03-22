@@ -489,12 +489,12 @@ void main() {
 
       var lockBuilder = ScriptBuilder();
       Sha256ScriptGen.emitMessageScheduleBlob(lockBuilder);
-      // Verify a few key words from the 256-byte blob
-      // Check W[16], W[31], W[47], W[63]
+      // Verify a few key words from the 256-byte LE blob
+      // Check W[16], W[31], W[47], W[63] — words are stored as LE
       for (var idx in [16, 31, 47, 63]) {
         lockBuilder.opCode(OpCodes.OP_DUP);
         Sha256ScriptGen.emitExtractWord(lockBuilder, idx * 4);
-        lockBuilder.addData(_uint32ToBE(w[idx]));
+        lockBuilder.addData(_uint32ToLE(w[idx]));
         lockBuilder.opCode(OpCodes.OP_EQUALVERIFY);
       }
       // Check total blob size = 256
@@ -541,13 +541,12 @@ void main() {
         print('  H[$i] = 0x${(TEMP[i] & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0')}');
       }
 
-      // Build W blob (BE) and K blob (BE)
+      // Build W blob (LE — matches message schedule output)
       var wBlob = Uint8List(256);
       for (int i = 0; i < 64; i++) {
         var bd = ByteData.sublistView(wBlob, i * 4, (i + 1) * 4);
-        bd.setUint32(0, w[i] & 0xFFFFFFFF, Endian.big);
+        bd.setUint32(0, w[i] & 0xFFFFFFFF, Endian.little);
       }
-      var kBlob = Sha256ScriptGen.kConstantsBlob;
 
       // Unlock: push state as LE words (h...a, a on top)
       var unlockBuilder = ScriptBuilder();
@@ -555,17 +554,14 @@ void main() {
         unlockBuilder.addData(_uint32ToLE(iv[i] & 0xFFFFFFFF));
       }
 
-      // Lock: set up altstack and run one round
+      // Lock: set up altstack (W only — K inlined) and run one round
       var lockBuilder = ScriptBuilder();
       lockBuilder.addData(wBlob);
       lockBuilder.opCode(OpCodes.OP_TOALTSTACK);  // W
-      lockBuilder.addData(kBlob);
-      lockBuilder.opCode(OpCodes.OP_TOALTSTACK);  // K
 
       Sha256ScriptGen.emitCompressionRound(lockBuilder, 0);
 
-      // Discard K and W
-      lockBuilder.opCode(OpCodes.OP_FROMALTSTACK); lockBuilder.opCode(OpCodes.OP_DROP);
+      // Discard W
       lockBuilder.opCode(OpCodes.OP_FROMALTSTACK); lockBuilder.opCode(OpCodes.OP_DROP);
 
       // Verify: a'(top)...h'(bottom) as LE against TEMP[0]...TEMP[7]

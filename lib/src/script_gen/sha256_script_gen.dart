@@ -90,7 +90,8 @@ class Sha256ScriptGen {
   /// Post: [... sum(4B BE)].
   ///
   /// Sequential approach: convert top, swap next up, convert, add, repeat.
-  /// Truncates after every 2 additions to prevent overflow.
+  /// No intermediate truncation needed — max N=5 values each ≤2^32 sum to
+  /// at most ~2^34.3, well within 5-byte NUM2BIN capacity (2^39).
   static ScriptBuilder emitAddNBE(ScriptBuilder b, int n) {
     if (n < 2) return b;
 
@@ -102,14 +103,6 @@ class Sha256ScriptGen {
       b.opCode(OpCodes.OP_SWAP);
       emitBEToNum(b);
       b.opCode(OpCodes.OP_ADD);
-
-      // Intermediate truncation every 2 additions
-      if (i < n - 1 && i % 2 == 0) {
-        OpcodeHelpers.truncate32(b);
-        b.addData(Uint8List.fromList([0x00]));
-        b.opCode(OpCodes.OP_CAT);
-        OpcodeHelpers.bin2num(b);
-      }
     }
 
     // Final truncate and convert back to BE
@@ -155,11 +148,12 @@ class Sha256ScriptGen {
     return b;
   }
 
-  /// Adds N values on top of stack (all 4-byte LE), with intermediate truncation.
+  /// Adds N values on top of stack (all 4-byte LE).
   ///
   /// Pre: [... v0 v1 ... v(n-1)] (v(n-1) on top), all 4-byte LE.
   /// Post: [... sum(4B LE)].
-  /// Cost: ~(4n + 5 + n) bytes vs ~(16n + 17 + n) for BE version.
+  /// No intermediate truncation needed — max N=5 values each ≤2^32 sum to
+  /// at most ~2^34.3, well within 5-byte NUM2BIN capacity (2^39).
   static ScriptBuilder emitAddNLE(ScriptBuilder b, int n) {
     if (n < 2) return b;
 
@@ -169,13 +163,6 @@ class Sha256ScriptGen {
       b.opCode(OpCodes.OP_SWAP);
       emitLEToNum(b);
       b.opCode(OpCodes.OP_ADD);
-
-      if (i < n - 1 && i % 2 == 0) {
-        OpcodeHelpers.truncate32(b);
-        b.addData(Uint8List.fromList([0x00]));
-        b.opCode(OpCodes.OP_CAT);
-        OpcodeHelpers.bin2num(b);
-      }
     }
 
     emitNumToLE(b);
@@ -250,76 +237,81 @@ class Sha256ScriptGen {
 
   /// Σ0(a) = ROTR(2,a) XOR ROTR(13,a) XOR ROTR(22,a)
   ///
+  /// Chained: ROTR(13)=ROTR(11,ROTR(2)), ROTR(22)=ROTR(9,ROTR(13)).
   /// Pre: a on top as 4-byte BE. Post: Σ0(a) on top as 4-byte BE.
   static ScriptBuilder emitBigSigma0(ScriptBuilder b) {
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_TOALTSTACK);   // stash a copy
-
+    // r2 = ROTR(2, a) — consumes a
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_OVER);
+    b.opCode(OpCodes.OP_SWAP);
     OpcodeHelpers.pushInt(b, 30);
     b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);           // ROTR(2,a)
+    b.opCode(OpCodes.OP_OR);           // r2
 
-    b.opCode(OpCodes.OP_OVER);
-    OpcodeHelpers.pushInt(b, 13);
-    b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
-    OpcodeHelpers.pushInt(b, 19);
-    b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);
-    b.opCode(OpCodes.OP_XOR);         // XOR ROTR(13,a)
+    b.opCode(OpCodes.OP_DUP);         // save r2
 
-    b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK); // recover original a
-
+    // r13 = ROTR(11, r2) — consumes copy
     b.opCode(OpCodes.OP_DUP);
-    OpcodeHelpers.pushInt(b, 22);
+    OpcodeHelpers.pushInt(b, 11);
     b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_OVER);
-    OpcodeHelpers.pushInt(b, 10);
+    b.opCode(OpCodes.OP_SWAP);
+    OpcodeHelpers.pushInt(b, 21);
     b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);           // ROTR(22,a)
-    b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_XOR);         // final XOR
+    b.opCode(OpCodes.OP_OR);           // r13
+
+    b.opCode(OpCodes.OP_DUP);         // save r13
+
+    // r22 = ROTR(9, r13) — consumes copy
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_RSHIFT);
+    b.opCode(OpCodes.OP_SWAP);
+    OpcodeHelpers.pushInt(b, 23);
+    b.opCode(OpCodes.OP_LSHIFT);
+    b.opCode(OpCodes.OP_OR);           // r22
+
+    // Stack: r2 r13 r22
+    b.opCode(OpCodes.OP_XOR);         // r2 (r13^r22)
+    b.opCode(OpCodes.OP_XOR);         // Σ0
     return b;
   }
 
   /// Σ1(e) = ROTR(6,e) XOR ROTR(11,e) XOR ROTR(25,e)
   ///
+  /// Chained: ROTR(11)=ROTR(5,ROTR(6)), ROTR(25)=ROTR(14,ROTR(11)).
   /// Pre: e on top as 4-byte BE. Post: Σ1(e) on top as 4-byte BE.
   static ScriptBuilder emitBigSigma1(ScriptBuilder b) {
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_TOALTSTACK);   // stash e copy
-
+    // r6 = ROTR(6, e) — consumes e
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_OVER);
+    b.opCode(OpCodes.OP_SWAP);
     OpcodeHelpers.pushInt(b, 26);
     b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);           // ROTR(6,e)
+    b.opCode(OpCodes.OP_OR);           // r6
 
-    b.opCode(OpCodes.OP_OVER);
-    OpcodeHelpers.pushInt(b, 11);
-    b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
-    OpcodeHelpers.pushInt(b, 21);
-    b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);
-    b.opCode(OpCodes.OP_XOR);         // XOR ROTR(11,e)
+    b.opCode(OpCodes.OP_DUP);         // save r6
 
-    b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_FROMALTSTACK); // recover original e
-
+    // r11 = ROTR(5, r6) — consumes copy
     b.opCode(OpCodes.OP_DUP);
-    OpcodeHelpers.pushInt(b, 25);
+    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_RSHIFT);
+    b.opCode(OpCodes.OP_SWAP);
+    OpcodeHelpers.pushInt(b, 27);
+    b.opCode(OpCodes.OP_LSHIFT);
+    b.opCode(OpCodes.OP_OR);           // r11
+
+    b.opCode(OpCodes.OP_DUP);         // save r11
+
+    // r25 = ROTR(14, r11) — consumes copy
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 14);
     b.opCode(OpCodes.OP_RSHIFT);
-    b.opCode(OpCodes.OP_OVER);
-    b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_LSHIFT);
-    b.opCode(OpCodes.OP_OR);           // ROTR(25,e)
-    b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
-    b.opCode(OpCodes.OP_XOR);         // final XOR
+    b.opCode(OpCodes.OP_SWAP);
+    OpcodeHelpers.pushInt(b, 18);
+    b.opCode(OpCodes.OP_LSHIFT);
+    b.opCode(OpCodes.OP_OR);           // r25
+
+    // Stack: r6 r11 r25
+    b.opCode(OpCodes.OP_XOR);         // r6 (r11^r25)
+    b.opCode(OpCodes.OP_XOR);         // Σ1
     return b;
   }
 
@@ -348,18 +340,16 @@ class Sha256ScriptGen {
   // Ch and Maj (bitwise, work on same-length byte arrays — BE or LE doesn't matter)
   // =========================================================================
 
-  /// Ch(e,f,g) = (e AND f) XOR ((NOT e) AND g)
+  /// Ch(e,f,g) = g XOR (e AND (f XOR g))
   ///
   /// Pre: stack [... g f e] (e on top), all 4-byte. Post: [... Ch]. Consumes all 3.
+  /// 6 opcodes (vs 8 for the (e&f)^(~e&g) form). Avoids OP_INVERT.
   static ScriptBuilder emitCh(ScriptBuilder b) {
-    b.opCode(OpCodes.OP_DUP);    // g f e e
-    b.opCode(OpCodes.OP_ROT);    // g e e f
-    b.opCode(OpCodes.OP_AND);    // g e (e&f)
-    b.opCode(OpCodes.OP_SWAP);   // g (e&f) e
-    b.opCode(OpCodes.OP_INVERT); // g (e&f) ~e
-    b.opCode(OpCodes.OP_ROT);    // (e&f) ~e g
-    b.opCode(OpCodes.OP_AND);    // (e&f) (~e&g)
-    b.opCode(OpCodes.OP_XOR);    // Ch
+    b.opCode(OpCodes.OP_SWAP);                             // g e f
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);   // g e f g
+    b.opCode(OpCodes.OP_XOR);                              // g e (f^g)
+    b.opCode(OpCodes.OP_AND);                              // g (e&(f^g))
+    b.opCode(OpCodes.OP_XOR);                              // g^(e&(f^g)) = Ch
     return b;
   }
 
@@ -403,120 +393,94 @@ class Sha256ScriptGen {
     return b;
   }
 
-  /// Fetches K[t] from K blob on altstack top.
-  static ScriptBuilder emitFetchK(ScriptBuilder b, int t) {
-    b.opCode(OpCodes.OP_FROMALTSTACK);
-    b.opCode(OpCodes.OP_DUP);
-    b.opCode(OpCodes.OP_TOALTSTACK);
-    emitExtractWord(b, t * 4);
+  /// Pushes K[t] as a 4-byte LE immediate (5 bytes of script per call).
+  ///
+  /// Replaces the former K blob extraction + reverseBytes4 pattern,
+  /// saving ~17 bytes per round vs the blob approach.
+  static ScriptBuilder emitPushKLE(ScriptBuilder b, int t) {
+    int k = PartialSha256.K[t];
+    var bytes = ByteData(4);
+    bytes.setUint32(0, k, Endian.little);
+    b.addData(bytes.buffer.asUint8List());
     return b;
   }
 
-  /// Fetches W[t] from W blob (below K blob on altstack).
+  /// Fetches W[t] from W blob on altstack top.
+  ///
+  /// Altstack: [midstate_copy, W_blob(BE)] (W on top).
   static ScriptBuilder emitFetchW(ScriptBuilder b, int t) {
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // K
     b.opCode(OpCodes.OP_FROMALTSTACK);  // W
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_TOALTSTACK);    // W back
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_TOALTSTACK);    // K back
     emitExtractWord(b, t * 4);
     return b;
   }
 
-  /// Fetches K[t] from K blob on altstack top, returns as 4-byte LE.
-  static ScriptBuilder emitFetchKLE(ScriptBuilder b, int t) {
-    emitFetchK(b, t);
-    OpcodeHelpers.reverseBytes4(b);   // BE → LE
-    return b;
-  }
-
-  /// Fetches W[t] from W blob (below K blob), returns as 4-byte LE.
+  /// Fetches W[t] from W blob on altstack, returns as 4-byte LE.
+  ///
+  /// W blob is stored in LE, so no endian conversion needed.
   static ScriptBuilder emitFetchWLE(ScriptBuilder b, int t) {
     emitFetchW(b, t);
-    OpcodeHelpers.reverseBytes4(b);   // BE → LE
     return b;
   }
 
   // =========================================================================
-  // Message schedule (blob-based, all BE)
+  // Message schedule (blob-based, LE storage)
   // =========================================================================
 
   /// Builds W[0..63] blob from 16 input words.
   ///
   /// Pre: 16 × 4-byte BE words on stack, W[0] on top, W[15] at bottom.
-  /// Post: W_blob (256 bytes BE) on stack.
+  /// Post: W_blob (256 bytes, LE words) on stack.
+  ///
+  /// Converts input words to LE during concatenation. Expansion uses LE
+  /// additions for efficiency; σ0/σ1 are temporarily converted to BE.
   static ScriptBuilder emitMessageScheduleBlob(ScriptBuilder b) {
-    // Concatenate W[0..15]: W0 is on top. SWAP+CAT appends each next word.
-    // OP_CAT: second_from_top || top. SWAP brings next word to top, blob below.
-    // So CAT gives blob || W[i]. ✓
+    // Convert W[0] (top) from BE to LE
+    OpcodeHelpers.reverseBytes4(b);
+
+    // Convert remaining words and concatenate into LE blob
     for (int i = 1; i < 16; i++) {
       b.opCode(OpCodes.OP_SWAP);
-      b.opCode(OpCodes.OP_CAT);
+      OpcodeHelpers.reverseBytes4(b);  // BE → LE
+      b.opCode(OpCodes.OP_CAT);       // blob || W[i]_LE
     }
-    // Stack: W_blob (64 bytes = W[0..15])
+    // Stack: W_blob (64 bytes, LE words)
 
-    // Expand W[16..63]
+    // Expand W[16..63] — blob in LE, sigma functions need BE
     for (int t = 16; t < 64; t++) {
       // W[t] = σ1(W[t-2]) + W[t-7] + σ0(W[t-15]) + W[t-16]
 
-      // σ0(W[t-15])
+      // σ0(W[t-15]): extract LE, convert to BE for σ0, back to LE
       emitExtractWordKeep(b, (t - 15) * 4);
+      OpcodeHelpers.reverseBytes4(b);  // LE → BE
       emitSmallSigma0(b);
+      OpcodeHelpers.reverseBytes4(b);  // BE → LE
       b.opCode(OpCodes.OP_TOALTSTACK);
 
-      // σ1(W[t-2])
+      // σ1(W[t-2]): extract LE, convert to BE for σ1, back to LE
       emitExtractWordKeep(b, (t - 2) * 4);
+      OpcodeHelpers.reverseBytes4(b);  // LE → BE
       emitSmallSigma1(b);
+      OpcodeHelpers.reverseBytes4(b);  // BE → LE
 
-      // W[t-7]
+      // W[t-7]: already LE from blob
       b.opCode(OpCodes.OP_OVER);
       emitExtractWord(b, (t - 7) * 4);
 
-      // W[t-16]
-      b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // blob is at idx 2
+      // W[t-16]: already LE from blob
+      b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
       emitExtractWord(b, (t - 16) * 4);
 
-      // σ0 from altstack
+      // σ0 from altstack (LE)
       b.opCode(OpCodes.OP_FROMALTSTACK);
 
-      // Sum all 4: σ1 + W[t-7] + W[t-16] + σ0
-      // Stack: σ0 W[t-16] W[t-7] σ1 blob
-      // Need to add all 4 values.
-      // Convert each to LE number, add, truncate, convert back to BE.
-      // Use emitAddNBE for 4 values:
-      // But they're scattered on the stack. Let me reorder first.
-      // Actually, all 4 values are on top of the blob:
-      //   σ0(top), W[t-16], W[t-7], σ1, blob
-      // Wait, let me re-trace the stack more carefully.
-
-      // After emitSmallSigma1: σ1 is on top, blob below.
-      // Stack: σ1 blob
-      // OVER: blob σ1 blob → no, OVER copies second item.
-      // Stack after OVER: blob_copy σ1 blob
-      // Wait: OP_OVER copies item at idx 1 to top.
-      // Stack was: σ1(top) blob. OVER → blob_copy σ1 blob. No!
-      // OVER: stack[-2] → copies it to top. So: σ1(idx0) blob(idx1).
-      // After OVER: blob(idx0) σ1(idx1) blob(idx2).
-      // Then emitExtractWord consumes blob copy, leaving W[t-7].
-      // Stack: W[t-7] σ1 blob
-
-      // Then: OP_2 OP_PICK: picks idx 2 = blob.
-      // Stack: blob_copy W[t-7] σ1 blob
-      // emitExtractWord consumes blob_copy, leaves W[t-16].
-      // Stack: W[t-16] W[t-7] σ1 blob
-
-      // Then FROMALTSTACK: σ0
-      // Stack: σ0 W[t-16] W[t-7] σ1 blob
-
-      // Now add all 4: σ1 + W[t-7] + σ0 + W[t-16]
-      // They're at positions 0-3, with blob at 4.
-      // We can use emitAddNBE(b, 4) which converts 4 top items.
-      emitAddNBE(b, 4);
-      // Stack: W[t](4B BE) blob
+      // Sum all 4 LE values
+      emitAddNLE(b, 4);
+      // Stack: W[t](4B LE) blob
 
       // Append to blob
-      b.opCode(OpCodes.OP_CAT);  // blob || W[t]
+      b.opCode(OpCodes.OP_CAT);  // blob || W[t]_LE
     }
 
     return b;
@@ -529,7 +493,7 @@ class Sha256ScriptGen {
   /// One compression round with LE state words.
   ///
   /// Stack: a(0) b(1) c(2) d(3) e(4) f(5) g(6) h(7) — all 4-byte LE.
-  /// Altstack: [W_blob(BE), K_blob(BE)] (K on top).
+  /// Altstack: [midstate_copy, W_blob(BE)] (W on top). K inlined as immediates.
   /// After: a' b' c' d' e' f' g' h' (all LE). Altstack unchanged.
   ///
   /// Using LE state saves ~108 bytes/round by eliminating reverseBytes4
@@ -553,8 +517,8 @@ class Sha256ScriptGen {
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);
     // STACK: h Ch Σ1 a b c d e f g h  (11 items)
 
-    // K[t] — extracted as BE, converted to LE
-    emitFetchKLE(b, t);
+    // K[t] — inlined as 4-byte LE immediate
+    emitPushKLE(b, t);
     // STACK: K(LE) h Ch Σ1 a b c d e f g h  (12 items)
 
     // W[t] — extracted as BE, converted to LE
@@ -649,7 +613,7 @@ class Sha256ScriptGen {
   /// Post: new_hash(32B BE).
   ///
   /// Internally uses LE state words during compression for efficiency.
-  /// Message schedule and blobs remain BE. State is converted at boundaries.
+  /// W blob stored in LE. State is converted at boundaries.
   static ScriptBuilder emitOneBlock(ScriptBuilder b) {
     // Save midstate for final addition
     b.opCode(OpCodes.OP_SWAP);
@@ -663,11 +627,9 @@ class Sha256ScriptGen {
     // Message schedule: build W blob (all BE)
     emitMessageScheduleBlob(b);
 
-    // Stash W (bottom) then K (top) on altstack
+    // Stash W on altstack (K constants are inlined per round)
     b.opCode(OpCodes.OP_TOALTSTACK);  // W → alt
-    b.addData(kConstantsBlob);
-    b.opCode(OpCodes.OP_TOALTSTACK);  // K → alt
-    // Altstack: midstate_copy, W, K
+    // Altstack: midstate_copy, W
 
     // Split midstate into 8 BE words, then convert each to LE
     _emitSplitIntoWords(b, 8);
@@ -680,8 +642,7 @@ class Sha256ScriptGen {
     }
     // Stack: a'(LE) b' c' d' e' f' g' h'(LE)
 
-    // Discard K and W
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP);  // K
+    // Discard W
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP);  // W
 
     // Retrieve midstate copy, split into BE words, convert to LE
