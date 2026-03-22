@@ -1,3 +1,7 @@
+## 1.4.0
+
+- Update dartsv dependency to ^3.0.0 (abstract TransactionSigner support)
+
 ## 1.3.0
 On-chain Identity Anchoring & Hand-optimized Scripts
 

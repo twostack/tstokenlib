@@ -9,3 +9,4 @@ pubspec.lock
 .idea
 .DS_Store
 *.iml
+pubspec_overrides.yaml
