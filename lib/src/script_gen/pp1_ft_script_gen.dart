@@ -59,7 +59,7 @@ class PP1FtScriptGen {
   static const int pp2ScriptCodeStart = 201;
 
   // PP3-FT (hand-optimized WitnessCheckScriptGen) byte offsets
-  static const int pp3PP2OutputIndexStart = 61348;
+  static const int pp3PP2OutputIndexStart = 48504;
 
   /// Generates the complete PP1_FT fungible token locking script.
   static SVScript generate({

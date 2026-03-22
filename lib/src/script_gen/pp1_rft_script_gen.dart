@@ -80,7 +80,7 @@ class PP1RftScriptGen {
   static const int pp2ScriptCodeStart = 201;
 
   // PP3-FT byte offsets
-  static const int pp3PP2OutputIndexStart = 61348;
+  static const int pp3PP2OutputIndexStart = 48504;
 
   /// Generates the complete PP1_RFT restricted fungible token locking script.
   ///
