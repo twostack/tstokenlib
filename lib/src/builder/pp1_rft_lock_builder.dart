@@ -29,6 +29,8 @@ import '../script_gen/pp1_rft_script_gen.dart';
 ///   rabinPubKeyHash - 20-byte hash160 of the Rabin public key
 ///   flags - transfer policy flags (0-255)
 ///   amount - the fungible token amount
+///   tokenSupply - total token supply (4-byte LE)
+///   merkleRoot - 32-byte Merkle root for whitelist tree
 class PP1RftLockBuilder extends LockingScriptBuilder {
 
   List<int> _recipientPKH;
@@ -36,6 +38,8 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
   List<int> _rabinPubKeyHash;
   int _flags;
   int _amount;
+  int _tokenSupply;
+  List<int> _merkleRoot;
 
   /// Reconstructs a [PP1RftLockBuilder] by parsing an existing script.
   PP1RftLockBuilder.fromScript(SVScript script)
@@ -44,10 +48,12 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
         _rabinPubKeyHash = [],
         _flags = 0,
         _amount = 0,
+        _tokenSupply = 0,
+        _merkleRoot = [],
         super.fromScript(script);
 
   /// Creates a PP1_RFT locking script builder.
-  PP1RftLockBuilder(this._recipientPKH, this._tokenId, this._rabinPubKeyHash, this._flags, this._amount) {
+  PP1RftLockBuilder(this._recipientPKH, this._tokenId, this._rabinPubKeyHash, this._flags, this._amount, this._tokenSupply, this._merkleRoot) {
     if (_recipientPKH.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient PKH must be 20 bytes");
     }
@@ -63,6 +69,12 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
     if (_amount < 0) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Amount must be non-negative");
     }
+    if (_merkleRoot.length != 32) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Merkle root must be 32 bytes");
+    }
+    if (_tokenSupply < 0) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Token supply must be non-negative");
+    }
   }
 
   @override
@@ -73,6 +85,8 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
       rabinPubKeyHash: _rabinPubKeyHash,
       flags: _flags,
       amount: _amount,
+      tokenSupply: _tokenSupply,
+      merkleRoot: _merkleRoot,
     );
   }
 
@@ -80,7 +94,7 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
   void parse(SVScript script) {
     var buf = script.buffer;
 
-    if (buf.length < PP1RftScriptGen.amountDataEnd) {
+    if (buf.length < PP1RftScriptGen.merkleRootDataEnd) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Script too short for PP1_RFT");
     }
     if (buf[0] != 0x14) {
@@ -93,6 +107,13 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
     _flags = buf[PP1RftScriptGen.flagsDataStart]; // only low byte used
     var amountBytesList = buf.sublist(PP1RftScriptGen.amountDataStart, PP1RftScriptGen.amountDataEnd);
     _amount = castToBigInt(amountBytesList, false, nMaxNumSize: 8).toInt();
+
+    // tokenSupply: 4-byte LE at bytes 90-93
+    var supplyBytesList = buf.sublist(PP1RftScriptGen.tokenSupplyDataStart, PP1RftScriptGen.tokenSupplyDataEnd);
+    _tokenSupply = supplyBytesList[0] | (supplyBytesList[1] << 8) | (supplyBytesList[2] << 16) | (supplyBytesList[3] << 24);
+
+    // merkleRoot: 32 bytes at 95-126
+    _merkleRoot = buf.sublist(PP1RftScriptGen.merkleRootDataStart, PP1RftScriptGen.merkleRootDataEnd).toList();
   }
 
   List<int> get recipientPKH => _recipientPKH;
@@ -100,4 +121,6 @@ class PP1RftLockBuilder extends LockingScriptBuilder {
   List<int> get rabinPubKeyHash => _rabinPubKeyHash;
   int get flags => _flags;
   int get amount => _amount;
+  int get tokenSupply => _tokenSupply;
+  List<int> get merkleRoot => _merkleRoot;
 }

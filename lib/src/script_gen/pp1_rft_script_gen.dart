@@ -28,19 +28,23 @@ import 'pp1_ft_script_gen.dart';
 /// - One-time redeem vs persistent redeem
 /// - Merkle tree whitelist (placeholder)
 ///
-/// Constructor param layout (89-byte header):
+/// Constructor param layout (127-byte header):
 /// ```
-/// Byte 0:     0x14 (pushdata 20)
-/// Bytes 1-20: ownerPKH
-/// Byte 21:    0x20 (pushdata 32)
-/// Bytes 22-53: tokenId
-/// Byte 54:    0x14 (pushdata 20)
-/// Bytes 55-74: rabinPubKeyHash
-/// Byte 75:    0x04 (pushdata 4)
-/// Bytes 76-79: flags (4-byte LE)
-/// Byte 80:    0x08 (pushdata 8)
-/// Bytes 81-88: amount (8-byte LE sign-magnitude)
-/// Byte 89+:   Script body
+/// Byte 0:       0x14 (pushdata 20)
+/// Bytes 1-20:   ownerPKH
+/// Byte 21:      0x20 (pushdata 32)
+/// Bytes 22-53:  tokenId
+/// Byte 54:      0x14 (pushdata 20)
+/// Bytes 55-74:  rabinPubKeyHash
+/// Byte 75:      0x04 (pushdata 4)
+/// Bytes 76-79:  flags (4-byte LE)
+/// Byte 80:      0x08 (pushdata 8)
+/// Bytes 81-88:  amount (8-byte LE sign-magnitude)
+/// Byte 89:      0x04 (pushdata 4)
+/// Bytes 90-93:  tokenSupply (4-byte LE)
+/// Byte 94:      0x20 (pushdata 32)
+/// Bytes 95-126: merkleRoot (32 bytes)
+/// Byte 127+:    Script body
 /// ```
 ///
 /// Flags byte layout:
@@ -68,19 +72,23 @@ class PP1RftScriptGen {
   static const int flagsDataEnd = 80;
   static const int amountDataStart = 81;
   static const int amountDataEnd = 89;
-  static const int scriptBodyStart = 89;
+  static const int tokenSupplyDataStart = 90;
+  static const int tokenSupplyDataEnd = 94;
+  static const int merkleRootDataStart = 95;
+  static const int merkleRootDataEnd = 127;
+  static const int scriptBodyStart = 127;
 
-  // PP2-FT compiled byte offsets (same as PP1FtScriptGen)
-  static const int pp2FundingOutpointStart = 119;
-  static const int pp2WitnessChangePKHStart = 156;
-  static const int pp2ChangeAmountStart = 177;
-  static const int pp2OwnerPKHStart = 178;
-  static const int pp2PP1_FTOutputIndexStart = 199;
-  static const int pp2PP2OutputIndexStart = 200;
-  static const int pp2ScriptCodeStart = 201;
+  // PP2-FT compiled byte offsets (same as PP1FtScriptGen + 40 for tokenSupply/merkleRoot)
+  static const int pp2FundingOutpointStart = 159;
+  static const int pp2WitnessChangePKHStart = 196;
+  static const int pp2ChangeAmountStart = 217;
+  static const int pp2OwnerPKHStart = 218;
+  static const int pp2PP1_FTOutputIndexStart = 239;
+  static const int pp2PP2OutputIndexStart = 240;
+  static const int pp2ScriptCodeStart = 241;
 
   // PP3-FT byte offsets
-  static const int pp3PP2OutputIndexStart = 48504;
+  static const int pp3PP2OutputIndexStart = 48544;
 
   /// Generates the complete PP1_RFT restricted fungible token locking script.
   ///
@@ -89,12 +97,16 @@ class PP1RftScriptGen {
   /// [rabinPubKeyHash] - 20-byte hash160 of the Rabin public key n
   /// [flags] - transfer policy flags (0-255)
   /// [amount] - the fungible token amount
+  /// [tokenSupply] - total token supply (4-byte LE)
+  /// [merkleRoot] - 32-byte Merkle root for whitelist tree
   static SVScript generate({
     required List<int> ownerPKH,
     required List<int> tokenId,
     required List<int> rabinPubKeyHash,
     required int flags,
     required int amount,
+    required int tokenSupply,
+    required List<int> merkleRoot,
   }) {
     var b = ScriptBuilder();
 
@@ -118,15 +130,26 @@ class PP1RftScriptGen {
     amountBytes[7] = val & 0x7F;
     b.addData(amountBytes);                          // 0x08 + 8 bytes
 
+    // tokenSupply as 4-byte LE
+    var supplyBytes = Uint8List(4);
+    var s = tokenSupply;
+    for (var i = 0; i < 4; i++) { supplyBytes[i] = s & 0xFF; s >>= 8; }
+    b.addData(supplyBytes);                          // 0x04 + 4 bytes
+
+    // merkleRoot (32 bytes)
+    b.addData(Uint8List.fromList(merkleRoot));       // 0x20 + 32 bytes
+
     // Move constructor params to altstack (LIFO order)
-    // Push order: amount last pushed → first to altstack
+    // Push order: merkleRoot last pushed → first to altstack
+    b.opCode(OpCodes.OP_TOALTSTACK);     // merkleRoot
+    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenSupply
     b.opCode(OpCodes.OP_TOALTSTACK);     // amount
     b.opCode(OpCodes.OP_TOALTSTACK);     // flags
     b.opCode(OpCodes.OP_TOALTSTACK);     // rabinPubKeyHash
     b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId
     b.opCode(OpCodes.OP_TOALTSTACK);     // ownerPKH
-    // Altstack bottom→top: [amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
-    // Pop order: ownerPKH, tokenId, rabinPubKeyHash, flags, amount
+    // Altstack bottom→top: [merkleRoot, tokenSupply, amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
+    // Pop order: ownerPKH, tokenId, rabinPubKeyHash, flags, amount, tokenSupply, merkleRoot
 
     _emitDispatch(b);
     return b.build();
@@ -202,6 +225,10 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // amount
     b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenSupply
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // merkleRoot
+    b.opCode(OpCodes.OP_DROP);
     // Stack: [ownerPubKey, ownerSig, ownerPKH]
 
     // P2PKH: hash160(ownerPubKey) == ownerPKH
@@ -219,7 +246,7 @@ class PP1RftScriptGen {
   // =========================================================================
 
   /// Stack: [ownerPubKey, ownerSig]
-  /// Altstack: [amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
+  /// Altstack: [merkleRoot, tokenSupply, amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
   ///
   /// Redeem is P2PKH auth only (same as burn). The transaction tool controls
   /// whether the output includes a continuation.
@@ -233,6 +260,10 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // flags
     b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);   // amount
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenSupply
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // merkleRoot
     b.opCode(OpCodes.OP_DROP);
     // Stack: [ownerPubKey, ownerSig, ownerPKH]
 
@@ -286,6 +317,10 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_0);
     b.opCode(OpCodes.OP_GREATERTHAN);
     b.opCode(OpCodes.OP_VERIFY);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenSupply → drop
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // merkleRoot → drop
+    b.opCode(OpCodes.OP_DROP);
     // Alt: [] (empty)
 
     // --- Phase 4: Rabin signature verification ---
@@ -377,48 +412,51 @@ class PP1RftScriptGen {
   // transferToken (selector=1) — FULL INDUCTIVE PROOF
   // =========================================================================
 
-  /// ScriptSig (11 items): [preImage, pp2Out, ownerPK, changePkh, changeAmt,
-  ///   ownerSig, scriptLHS, parentRawTx, padding, parentOutCnt, parentPP1Idx]
-  /// Altstack: [amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
+  /// ScriptSig (14 items): [preImage, pp2Out, ownerPK, changePkh, changeAmt,
+  ///   ownerSig, scriptLHS, parentRawTx, padding, parentOutCnt, parentPP1Idx,
+  ///   recipientPKH, merkleProof, merkleSides]
+  /// Altstack: [merkleRoot, tokenSupply, amount, flags, rabinPubKeyHash, tokenId, ownerPKH]
   ///
-  /// Strategy: Phase 1b drains extra altstack items (flags, rabinPKH) and
+  /// Strategy: Phase 1 does P2PKH auth (indices shifted +3 for new items).
+  /// Phase 1b drains flags/rabinPKH. Phase 1c does merkle verification and
   /// normalizes the altstack to [amount, tokenId] — matching FT exactly.
   /// Phases 2-16 then follow the FT transfer pattern with RFT byte offsets.
   static void _emitTransferToken(ScriptBuilder b) {
     // --- Phase 1: Get ownerPKH, do P2PKH auth ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
-    // Stack (12 items):
-    // idx: ownerPKH=0, pp1Idx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
-    //      sig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10, preImg=11
+    // Stack (15 items):
+    // idx: ownerPKH=0, merkleSides=1, merkleProof=2, recipientPKH=3,
+    //      pp1Idx=4, outCnt=5, pad=6, rawTx=7, lhs=8, sig=9,
+    //      chgAmt=10, chgPkh=11, ownerPK=12, pp2=13, preImg=14
 
-    b.opCode(OpCodes.OP_9);
+    OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // copy ownerPK
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_OVER);           // copy ownerPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    b.opCode(OpCodes.OP_6);
+    b.opCode(OpCodes.OP_9);
     b.opCode(OpCodes.OP_PICK);           // copy ownerSig
-    OpcodeHelpers.pushInt(b, 10);
+    OpcodeHelpers.pushInt(b, 13);
     b.opCode(OpCodes.OP_PICK);           // copy ownerPK (shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG);
     b.opCode(OpCodes.OP_VERIFY);
 
-    // --- Phase 1b: Transfer policy enforcement + altstack normalization ---
+    // --- Phase 1b: Transfer policy enforcement ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK);   // flags
-    // Stack (15): [..., ownerPKH, tokenId, rabinPKH, flags]
-    // idx: flags=0, rabinPKH=1, tokenId=2, ownerPKH=3, pp1Idx=4, outCnt=5,
-    //      pad=6, rawTx=7, lhs=8, sig=9, chgAmt=10, chgPkh=11, ownerPK=12, pp2=13, preImg=14
-    // Alt: [amount]
+    // Stack (18): flags=0, rabinPKH=1, tokenId=2, ownerPKH=3,
+    //   merkleSides=4, merkleProof=5, recipientPKH=6, pp1Idx=7, outCnt=8,
+    //   pad=9, rawTx=10, lhs=11, sig=12, chgAmt=13, chgPkh=14, ownerPK=15, pp2=16, preImg=17
+    // Alt: [merkleRoot, tokenSupply, amount]
 
     // Extract transfer policy: bits 0-1 = flags % 4
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_MOD);
-    // Stack (16): [..., flags, policy]
+    // Stack (19): policy=0, flags=1, ...
 
     // Non-transferable (policy == 2): fail
     b.opCode(OpCodes.OP_DUP);
@@ -429,26 +467,88 @@ class PP1RftScriptGen {
       b.opCode(OpCodes.OP_RETURN);
     b.opCode(OpCodes.OP_ENDIF);
 
-    // Self-transfer check (policy == 1): changePkh must == ownerPKH
+    // Self-transfer check (policy == 1): recipientPKH must == ownerPKH
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_EQUAL);
     b.opCode(OpCodes.OP_IF);
-      // Inside IF, stack (16): policy=0, flags=1, rabinPKH=2, tokenId=3, ownerPKH=4, ..., chgPkh=12
-      OpcodeHelpers.pushInt(b, 12);
-      b.opCode(OpCodes.OP_PICK);         // copy changePkh → stack 17
+      // Inside IF (19): policy=0, flags=1, rabinPKH=2, tokenId=3, ownerPKH=4,
+      //   merkleSides=5, merkleProof=6, recipientPKH=7, ...
+      b.opCode(OpCodes.OP_7);
+      b.opCode(OpCodes.OP_PICK);         // copy recipientPKH → 20
       b.opCode(OpCodes.OP_5);
-      b.opCode(OpCodes.OP_PICK);         // copy ownerPKH (shifted +1) → stack 18
-      b.opCode(OpCodes.OP_EQUALVERIFY);  // back to 16
+      b.opCode(OpCodes.OP_PICK);         // copy ownerPKH (shifted +1) → 21
+      b.opCode(OpCodes.OP_EQUALVERIFY);  // back to 19
     b.opCode(OpCodes.OP_ENDIF);
 
-    // Drop policy, flags, rabinPKH; push tokenId to alt
-    b.opCode(OpCodes.OP_DROP);           // drop policy → 15
-    b.opCode(OpCodes.OP_DROP);           // drop flags → 14
-    b.opCode(OpCodes.OP_DROP);           // drop rabinPKH → 13
-    // Stack (13): [..., ownerPKH, tokenId]
-    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId → alt → 12
-    // Stack (12): [..., ownerPKH]
+    // Drop policy, flags, rabinPKH
+    b.opCode(OpCodes.OP_DROP);           // drop policy → 18
+    b.opCode(OpCodes.OP_DROP);           // drop flags → 17
+    b.opCode(OpCodes.OP_DROP);           // drop rabinPKH → 16
+    // Stack (16): tokenId=0, ownerPKH=1, merkleSides=2, merkleProof=3,
+    //   recipientPKH=4, pp1Idx=5, ...
+    // Alt: [merkleRoot, tokenSupply, amount]
+
+    // --- Phase 1c: Merkle whitelist verification + altstack normalization ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // amount → stack (17)
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenSupply → stack (18)
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // merkleRoot → stack (19)
+    // merkleRoot=0, tokenSupply=1, amount=2, tokenId=3, ownerPKH=4,
+    //   merkleSides=5, merkleProof=6, recipientPKH=7, ...
+    // Alt: [] (empty)
+
+    // Drop tokenSupply
+    b.opCode(OpCodes.OP_SWAP);           // [tokenSupply, merkleRoot, amount, ...]
+    b.opCode(OpCodes.OP_DROP);           // → (18)
+    // merkleRoot=0, amount=1, tokenId=2, ownerPKH=3,
+    //   merkleSides=4, merkleProof=5, recipientPKH=6, ...
+
+    // Check if merkleRoot is all zeros (whitelist disabled)
+    b.opCode(OpCodes.OP_DUP);
+    b.addData(Uint8List.fromList(List<int>.filled(32, 0)));
+    b.opCode(OpCodes.OP_EQUAL);
+    b.opCode(OpCodes.OP_NOTIF);          // merkleRoot != zeros → whitelist enabled
+      // Compute currentHash = SHA256(recipientPKH)
+      b.opCode(OpCodes.OP_6);
+      b.opCode(OpCodes.OP_PICK);         // copy recipientPKH → (19)
+      b.opCode(OpCodes.OP_SHA256);       // → hash (19)
+      // hash=0, merkleRoot=1, amount=2, tokenId=3, ownerPKH=4,
+      //   merkleSides=5, merkleProof=6, recipientPKH=7, ...
+
+      // Build verification stack: [hash, proof, sides, root]
+      b.opCode(OpCodes.OP_1);
+      b.opCode(OpCodes.OP_PICK);         // merkleRoot → (20)
+      b.opCode(OpCodes.OP_6);
+      b.opCode(OpCodes.OP_PICK);         // merkleSides → (21)
+      b.opCode(OpCodes.OP_8);
+      b.opCode(OpCodes.OP_PICK);         // merkleProof → (22)
+      b.opCode(OpCodes.OP_3);
+      b.opCode(OpCodes.OP_ROLL);         // bring hash to top → (22)
+      _emitVerifyMerkleProof(b);         // consumes 4 → (18)
+    b.opCode(OpCodes.OP_ENDIF);
+
+    // Drop merkleRoot → (17)
+    b.opCode(OpCodes.OP_DROP);
+    // amount=0, tokenId=1, ownerPKH=2, merkleSides=3, merkleProof=4,
+    //   recipientPKH=5, pp1Idx=6, ...
+
+    // Remove recipientPKH, merkleProof, merkleSides from stack
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);           // remove recipientPKH → (16)
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);           // remove merkleProof → (15)
+    b.opCode(OpCodes.OP_3);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);           // remove merkleSides → (14)
+    // amount=0, tokenId=1, ownerPKH=2, pp1Idx=3, ...
+
+    // Push amount and tokenId to altstack
+    b.opCode(OpCodes.OP_TOALTSTACK);     // amount → alt → (13)
+    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId → alt → (12)
+    // Stack (12): ownerPKH=0, pp1Idx=1, outCnt=2, pad=3, rawTx=4, lhs=5,
+    //   sig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10, preImg=11
     // Alt: [amount, tokenId]
     // *** Stack and altstack now match FT layout exactly ***
 
@@ -750,45 +850,44 @@ class PP1RftScriptGen {
     PP1FtScriptGen.emitSplitVerifyParentOutpoint(b);
   }
 
-  /// Phase 1: P2PKH auth + Phase 1b: policy enforcement + altstack normalization.
-  /// Entry: 16 scriptSig items. Alt: [amount, flags, rabinPKH, tokenId, ownerPKH]
+  /// Phase 1: P2PKH auth + Phase 1b: policy enforcement + Phase 1c: merkle + normalize.
+  /// Entry: 18 scriptSig items. Alt: [merkleRoot, tokenSupply, amount, flags, rabinPKH, tokenId, ownerPKH]
   /// Exit: 17 items (ownerPKH at top). Alt: [amount, tokenId]
   static void _emitSplitAuth(ScriptBuilder b) {
-    // Phase 1: Pop ownerPKH, do P2PKH auth (same indices as FT split auth)
+    // Phase 1: Pop ownerPKH, do P2PKH auth (indices +2 for merkleProof, merkleSides)
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
-    // Stack (17): ownerPKH=0, pp1FtIdx=1, outCnt=2, myOutIdx=3, recipientPKH=4,
-    //   tokenChangeAmt=5, recipientAmt=6, padding=7, parentRawTx=8, scriptLHS=9,
-    //   ownerSig=10, changeAmt=11, changePkh=12, ownerPK=13, pp2ChangeOut=14,
-    //   pp2RecipOut=15, preImage=16
+    // Stack (19): ownerPKH=0, merkleSides=1, merkleProof=2, pp1FtIdx=3, outCnt=4,
+    //   myOutIdx=5, recipientPKH=6, tokenChangeAmt=7, recipientAmt=8, padding=9,
+    //   parentRawTx=10, scriptLHS=11, ownerSig=12, changeAmt=13, changePkh=14,
+    //   ownerPK=15, pp2ChangeOut=16, pp2RecipOut=17, preImage=18
 
-    OpcodeHelpers.pushInt(b, 13);
+    OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);           // copy ownerPK
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_OVER);           // copy ownerPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    OpcodeHelpers.pushInt(b, 10);
+    OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // copy ownerSig
-    OpcodeHelpers.pushInt(b, 14);
+    OpcodeHelpers.pushInt(b, 16);
     b.opCode(OpCodes.OP_PICK);           // copy ownerPK (shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG);
     b.opCode(OpCodes.OP_VERIFY);
 
-    // Phase 1b: Pop extra altstack items, enforce policy, normalize
+    // Phase 1b: Pop extra altstack items, enforce policy
     b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
     b.opCode(OpCodes.OP_FROMALTSTACK);   // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK);   // flags
-    // Stack (20): flags=0, rabinPKH=1, tokenId=2, ownerPKH=3, pp1FtIdx=4,
-    //   outCnt=5, myOutIdx=6, recipientPKH=7, ...
-    // Alt: [amount]
+    // Stack (22): flags=0, rabinPKH=1, tokenId=2, ownerPKH=3, merkleSides=4,
+    //   merkleProof=5, pp1FtIdx=6, outCnt=7, myOutIdx=8, recipientPKH=9, ...
+    // Alt: [merkleRoot, tokenSupply, amount]
 
     // Extract transfer policy: bits 0-1 = flags % 4
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_MOD);
-    // Stack (21): policy=0, flags=1, rabinPKH=2, tokenId=3, ownerPKH=4,
-    //   ..., recipientPKH=8, ...
+    // Stack (23): policy=0, flags=1, ..., recipientPKH=10, ...
 
     // Non-transferable (policy == 2): fail
     b.opCode(OpCodes.OP_DUP);
@@ -804,20 +903,75 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_EQUAL);
     b.opCode(OpCodes.OP_IF);
-      // policy=0, flags=1, rabinPKH=2, tokenId=3, ownerPKH=4, ..., recipientPKH=8
-      b.opCode(OpCodes.OP_8);
-      b.opCode(OpCodes.OP_PICK);         // copy recipientPKH
+      // (23): policy=0, ..., ownerPKH=4, ..., recipientPKH=10
+      OpcodeHelpers.pushInt(b, 10);
+      b.opCode(OpCodes.OP_PICK);         // copy recipientPKH → 24
       b.opCode(OpCodes.OP_5);
-      b.opCode(OpCodes.OP_PICK);         // copy ownerPKH (shifted +1)
-      b.opCode(OpCodes.OP_EQUALVERIFY);
+      b.opCode(OpCodes.OP_PICK);         // copy ownerPKH (shifted +1) → 25
+      b.opCode(OpCodes.OP_EQUALVERIFY);  // → 23
     b.opCode(OpCodes.OP_ENDIF);
 
-    // Drop policy, flags, rabinPKH; push tokenId to alt
-    b.opCode(OpCodes.OP_DROP);           // drop policy → 20
-    b.opCode(OpCodes.OP_DROP);           // drop flags → 19
-    b.opCode(OpCodes.OP_DROP);           // drop rabinPKH → 18
-    // Stack (18): tokenId=0, ownerPKH=1, ...
-    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId → alt → 17
+    // Drop policy, flags, rabinPKH
+    b.opCode(OpCodes.OP_DROP);           // drop policy → 22
+    b.opCode(OpCodes.OP_DROP);           // drop flags → 21
+    b.opCode(OpCodes.OP_DROP);           // drop rabinPKH → 20
+    // Stack (20): tokenId=0, ownerPKH=1, merkleSides=2, merkleProof=3,
+    //   pp1FtIdx=4, outCnt=5, myOutIdx=6, recipientPKH=7, ...
+    // Alt: [merkleRoot, tokenSupply, amount]
+
+    // --- Phase 1c: Merkle whitelist verification + altstack normalization ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // amount → (21)
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenSupply → (22)
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // merkleRoot → (23)
+    // merkleRoot=0, tokenSupply=1, amount=2, tokenId=3, ownerPKH=4,
+    //   merkleSides=5, merkleProof=6, pp1FtIdx=7, ..., recipientPKH=10, ...
+    // Alt: [] (empty)
+
+    // Drop tokenSupply
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_DROP);           // → (22)
+
+    // Check if merkleRoot is all zeros (whitelist disabled)
+    b.opCode(OpCodes.OP_DUP);
+    b.addData(Uint8List.fromList(List<int>.filled(32, 0)));
+    b.opCode(OpCodes.OP_EQUAL);
+    b.opCode(OpCodes.OP_NOTIF);          // merkleRoot != zeros → whitelist enabled
+      // Compute currentHash = SHA256(recipientPKH)
+      b.opCode(OpCodes.OP_9);
+      b.opCode(OpCodes.OP_PICK);         // copy recipientPKH → (23)
+      b.opCode(OpCodes.OP_SHA256);       // → hash (23)
+      // hash=0, merkleRoot=1, ..., merkleSides=5, merkleProof=6, ...
+
+      // Build verification stack: [hash, proof, sides, root]
+      b.opCode(OpCodes.OP_1);
+      b.opCode(OpCodes.OP_PICK);         // merkleRoot → (24)
+      b.opCode(OpCodes.OP_6);
+      b.opCode(OpCodes.OP_PICK);         // merkleSides → (25)
+      b.opCode(OpCodes.OP_8);
+      b.opCode(OpCodes.OP_PICK);         // merkleProof → (26)
+      b.opCode(OpCodes.OP_3);
+      b.opCode(OpCodes.OP_ROLL);         // bring hash to top → (26)
+      _emitVerifyMerkleProof(b);         // consumes 4 → (22)
+    b.opCode(OpCodes.OP_ENDIF);
+
+    // Drop merkleRoot → (21)
+    b.opCode(OpCodes.OP_DROP);
+    // amount=0, tokenId=1, ownerPKH=2, merkleSides=3, merkleProof=4,
+    //   pp1FtIdx=5, outCnt=6, myOutIdx=7, recipientPKH=8, ...
+
+    // Remove merkleProof and merkleSides from stack (recipientPKH stays for split)
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);           // remove merkleProof → (20)
+    b.opCode(OpCodes.OP_3);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);           // remove merkleSides → (19)
+    // amount=0, tokenId=1, ownerPKH=2, pp1FtIdx=3, outCnt=4,
+    //   myOutIdx=5, recipientPKH=6, ...
+
+    // Push amount and tokenId to altstack
+    b.opCode(OpCodes.OP_TOALTSTACK);     // amount → alt → (18)
+    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId → alt → (17)
     // Stack (17): ownerPKH at top. Alt: [amount, tokenId]
     // *** Matches FT split post-auth layout ***
   }
@@ -960,6 +1114,14 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_DROP);           // drop rabinPKH
     b.opCode(OpCodes.OP_FROMALTSTACK);   // flags
     b.opCode(OpCodes.OP_DROP);           // drop flags
+    // Alt: [merkleRoot, tokenSupply, amount]
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // amount
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenSupply
+    b.opCode(OpCodes.OP_DROP);           // drop tokenSupply
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // merkleRoot
+    b.opCode(OpCodes.OP_DROP);           // drop merkleRoot
+    // Alt: [] — amount on main stack
+    b.opCode(OpCodes.OP_TOALTSTACK);     // amount → alt
     // Stack: [..., ownerPKH, tokenId]. Alt: [amount]
     b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId → alt
     // Stack (15): ownerPKH at top. Alt: [amount, tokenId]
@@ -1273,6 +1435,67 @@ class PP1RftScriptGen {
     b.opCode(OpCodes.OP_EQUALVERIFY);     // outpoint4_txId == parentTxIdB
 
     b.opCode(OpCodes.OP_1);               // leave TRUE
+  }
+
+  // =========================================================================
+  // Merkle proof verification (unrolled 16-iteration loop)
+  // =========================================================================
+
+  /// Verifies a Merkle inclusion proof in-script.
+  ///
+  /// Entry stack (top→bottom): currentHash(32), merkleProof(N×32), merkleSides(N), merkleRoot(32)
+  /// Exit: all 4 items consumed, script fails (via EQUALVERIFY) if proof invalid.
+  ///
+  /// Each iteration extracts one 32-byte sibling from proof and one 1-byte side
+  /// from sides, concatenates in the correct order, and SHA256-hashes.
+  /// Iterations where proof is empty are no-ops (IF skipped).
+  /// After all iterations, verifies finalHash == merkleRoot.
+  static void _emitVerifyMerkleProof(ScriptBuilder b) {
+    for (var i = 0; i < 16; i++) {
+      // Check if proof still has bytes
+      b.opCode(OpCodes.OP_OVER);           // copy merkleProof
+      b.opCode(OpCodes.OP_SIZE);
+      b.opCode(OpCodes.OP_NIP);
+      b.opCode(OpCodes.OP_0);
+      b.opCode(OpCodes.OP_GREATERTHAN);
+      b.opCode(OpCodes.OP_IF);
+
+      // Extract 32-byte sibling from proof (SPLIT puts right/rest on top)
+      b.opCode(OpCodes.OP_SWAP);           // [proof, hash, sides, root]
+      OpcodeHelpers.pushInt(b, 32);
+      b.opCode(OpCodes.OP_SPLIT);          // [restProof, sibling, hash, sides, root]
+      b.opCode(OpCodes.OP_SWAP);           // [sibling, restProof, hash, sides, root]
+      b.opCode(OpCodes.OP_ROT);            // [hash, sibling, restProof, sides, root]
+
+      // Extract 1-byte side from sides
+      b.opCode(OpCodes.OP_3);
+      b.opCode(OpCodes.OP_ROLL);           // [sides, hash, sibling, restProof, root]
+      b.opCode(OpCodes.OP_1);
+      b.opCode(OpCodes.OP_SPLIT);          // [firstSide, restSides, hash, sibling, restProof, root]
+      b.opCode(OpCodes.OP_TOALTSTACK);     // stash restSides
+      b.opCode(OpCodes.OP_BIN2NUM);        // [sideNum, hash, sibling, restProof, root]
+
+      // side!=0 (isLeft=true): sibling on left → sibling‖hash
+      // side==0 (isLeft=false): sibling on right → hash‖sibling
+      b.opCode(OpCodes.OP_IF);             // side!=0
+        b.opCode(OpCodes.OP_CAT);          // [sibling‖hash, restProof, root]
+      b.opCode(OpCodes.OP_ELSE);           // side==0
+        b.opCode(OpCodes.OP_SWAP);         // [sibling, hash, restProof, root]
+        b.opCode(OpCodes.OP_CAT);          // [hash‖sibling, restProof, root]
+      b.opCode(OpCodes.OP_ENDIF);
+
+      b.opCode(OpCodes.OP_SHA256);         // [newHash, restProof, root]
+      b.opCode(OpCodes.OP_FROMALTSTACK);   // [restSides, newHash, restProof, root]
+      b.opCode(OpCodes.OP_ROT);            // [restProof, restSides, newHash, root]
+      b.opCode(OpCodes.OP_ROT);            // [newHash, restProof, restSides, root]
+
+      b.opCode(OpCodes.OP_ENDIF);
+    }
+
+    // After all iterations: [finalHash, emptyProof, emptySides, merkleRoot]
+    b.opCode(OpCodes.OP_NIP);              // remove emptyProof
+    b.opCode(OpCodes.OP_NIP);              // remove emptySides
+    b.opCode(OpCodes.OP_EQUALVERIFY);      // finalHash == merkleRoot
   }
 
   // =========================================================================

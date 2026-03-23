@@ -327,6 +327,8 @@ void exportPP1Rft() {
   var rabinPubKeyHash = List.filled(20, 0xCC);
   var flags = 0xDDDDDDDD;
   var amount = 0x0EEEEEEEEEEEEEEE; // bit 63 clear
+  var tokenSupply = 0x11111111;
+  var merkleRoot = List.filled(32, 0x22);
 
   var script = PP1RftScriptGen.generate(
     ownerPKH: ownerPKH,
@@ -334,6 +336,8 @@ void exportPP1Rft() {
     rabinPubKeyHash: rabinPubKeyHash,
     flags: flags,
     amount: amount,
+    tokenSupply: tokenSupply,
+    merkleRoot: merkleRoot,
   );
 
   var fullHex = hex.encode(script.buffer!);
@@ -363,6 +367,26 @@ void exportPP1Rft() {
   templateHex = templateHex.substring(0, amountIdx + 2) +
       '{{amount}}' +
       templateHex.substring(amountIdx + amountWithPrefix.length);
+
+  // Replace tokenSupply: pushdata prefix 0x04 + 4 bytes
+  var supplyEncodedHex = fullHex.substring(
+      PP1RftScriptGen.tokenSupplyDataStart * 2, PP1RftScriptGen.tokenSupplyDataEnd * 2);
+  var supplyWithPrefix = '04$supplyEncodedHex';
+  var supplyIdx = templateHex.indexOf(supplyWithPrefix);
+  if (supplyIdx == -1) throw Exception('Could not find tokenSupply sentinel');
+  templateHex = templateHex.substring(0, supplyIdx + 2) +
+      '{{tokenSupply}}' +
+      templateHex.substring(supplyIdx + supplyWithPrefix.length);
+
+  // Replace merkleRoot: pushdata prefix 0x20 + 32 bytes of 0x22 sentinel
+  var merkleRootEncodedHex = fullHex.substring(
+      PP1RftScriptGen.merkleRootDataStart * 2, PP1RftScriptGen.merkleRootDataEnd * 2);
+  var merkleRootWithPrefix = '20$merkleRootEncodedHex';
+  var merkleRootIdx = templateHex.indexOf(merkleRootWithPrefix);
+  if (merkleRootIdx == -1) throw Exception('Could not find merkleRoot sentinel');
+  templateHex = templateHex.substring(0, merkleRootIdx + 2) +
+      '{{merkleRoot}}' +
+      templateHex.substring(merkleRootIdx + merkleRootWithPrefix.length);
 
   writeTemplate('templates/ft/pp1_rft.json', {
     'name': 'PP1_RFT',
@@ -400,12 +424,24 @@ void exportPP1Rft() {
         'encoding': 'le_uint56',
         'description': '8-byte little-endian amount (7 bytes value + high byte with bit 7 clear). Max value: 2^55 - 1.',
       },
+      {
+        'name': 'tokenSupply',
+        'size': 4,
+        'encoding': 'le_uint32',
+        'description': '4-byte little-endian total token supply.',
+      },
+      {
+        'name': 'merkleRoot',
+        'size': 32,
+        'encoding': 'hex',
+        'description': '32-byte Merkle root for whitelist tree. All zeros if no whitelist.',
+      },
     ],
     'hex': templateHex,
     'metadata': {
       'generatedBy': 'PP1RftScriptGen',
       'sourceFile': 'lib/src/script_gen/pp1_rft_script_gen.dart',
-      'note': 'Pushdata prefixes are part of the static hex. Flags encoding: 4 bytes LE. Amount encoding: 8 bytes LE with bit 63 clear.',
+      'note': 'Pushdata prefixes are part of the static hex. Flags encoding: 4 bytes LE. Amount encoding: 8 bytes LE with bit 63 clear. TokenSupply: 4 bytes LE. MerkleRoot: 32 bytes.',
     },
   });
 }

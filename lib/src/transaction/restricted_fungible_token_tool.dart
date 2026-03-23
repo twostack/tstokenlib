@@ -72,6 +72,8 @@ class RestrictedFungibleTokenTool {
       List<int> rabinPubKeyHash,
       int flags,
       int amount,
+      int tokenSupply,
+      List<int> merkleRoot,
       {List<int>? metadataBytes,
        List<int>? identityTxId,
        SignatureWand? issuerWand}) async {
@@ -86,7 +88,7 @@ class RestrictedFungibleTokenTool {
     tokenTxBuilder.withFeePerKb(1);
 
     // Output 1: PP1_RFT
-    var pp1RftLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, amount);
+    var pp1RftLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, amount, tokenSupply, merkleRoot);
     tokenTxBuilder.spendToLockBuilder(pp1RftLocker, BigInt.one);
 
     // Output 2: PP2-FT
@@ -210,7 +212,9 @@ class RestrictedFungibleTokenTool {
        List<int>? ed25519PubKey,
        List<int>? parentTokenTxBytesB,
        int parentOutputCountB = 5,
-       int parentPP1FtIndexB = 1}
+       int parentPP1FtIndexB = 1,
+       List<int>? merkleProof,
+       List<int>? merkleSides}
   ) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -245,7 +249,8 @@ class RestrictedFungibleTokenTool {
         parentPP1FtIndex: parentPP1FtIndex,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
-        parentPP1FtIndexB: parentPP1FtIndexB);
+        parentPP1FtIndexB: parentPP1FtIndexB,
+        merkleProof: merkleProof, merkleSides: merkleSides);
 
     var witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp1FtIndex, pp2Index, ownerPubkey, pp1RftUnlocker, pp2FtUnlocker, witnessLocker);
@@ -259,7 +264,8 @@ class RestrictedFungibleTokenTool {
         parentPP1FtIndex: parentPP1FtIndex,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
-        parentPP1FtIndexB: parentPP1FtIndexB);
+        parentPP1FtIndexB: parentPP1FtIndexB,
+        merkleProof: merkleProof, merkleSides: merkleSides);
 
     witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
         pp1FtIndex, pp2Index, ownerPubkey, pp1RftUnlocker, pp2FtUnlocker, witnessLocker);
@@ -287,6 +293,8 @@ class RestrictedFungibleTokenTool {
       List<int> rabinPubKeyHash,
       int flags,
       int amount,
+      int tokenSupply,
+      List<int> merkleRoot,
       {int prevTripletBaseIndex = 1}
   ) {
 
@@ -295,7 +303,7 @@ class RestrictedFungibleTokenTool {
     var prevPP3Index = prevTripletBaseIndex + 2;
 
     // Build output lockers
-    var pp1RftLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, amount);
+    var pp1RftLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, amount, tokenSupply, merkleRoot);
     var pp2FtLocker = PP2FtLockBuilder(
         getOutpoint(recipientWitnessFundingTxId), recipientPKH, 1, recipientPKH, 1, 2);
     var pp3FtLocker = PartialWitnessFtLockBuilder(recipientPKH, 2);
@@ -368,6 +376,8 @@ class RestrictedFungibleTokenTool {
       List<int> rabinPubKeyHash,
       int flags,
       int totalAmount,
+      int tokenSupply,
+      List<int> merkleRoot,
       {int prevTripletBaseIndex = 1}
   ) {
 
@@ -378,13 +388,13 @@ class RestrictedFungibleTokenTool {
     var prevPP3Index = prevTripletBaseIndex + 2;
 
     // Recipient triplet (outputs 1,2,3)
-    var pp1RftRecipientLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, sendAmount);
+    var pp1RftRecipientLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, sendAmount, tokenSupply, merkleRoot);
     var pp2FtRecipientLocker = PP2FtLockBuilder(
         getOutpoint(recipientWitnessFundingTxId), recipientPKH, 1, recipientPKH, 1, 2);
     var pp3FtRecipientLocker = PartialWitnessFtLockBuilder(recipientPKH, 2);
 
     // Change triplet (outputs 4,5,6)
-    var pp1RftChangeLocker = PP1RftLockBuilder(senderPKH, tokenId, rabinPubKeyHash, flags, changeTokenAmount);
+    var pp1RftChangeLocker = PP1RftLockBuilder(senderPKH, tokenId, rabinPubKeyHash, flags, changeTokenAmount, tokenSupply, merkleRoot);
     var pp2FtChangeLocker = PP2FtLockBuilder(
         getOutpoint(changeWitnessFundingTxId), senderPKH, 1, senderPKH, 4, 5);
     var pp3FtChangeLocker = PartialWitnessFtLockBuilder(senderPKH, 5);
@@ -463,6 +473,8 @@ class RestrictedFungibleTokenTool {
       List<int> rabinPubKeyHash,
       int flags,
       int totalAmount,
+      int tokenSupply,
+      List<int> merkleRoot,
       {int prevTripletBaseIndexA = 1,
        int prevTripletBaseIndexB = 1}
   ) {
@@ -473,7 +485,7 @@ class RestrictedFungibleTokenTool {
     var prevPP3IndexB = prevTripletBaseIndexB + 2;
 
     // Build output lockers (single merged triplet)
-    var pp1RftLocker = PP1RftLockBuilder(ownerPKH, tokenId, rabinPubKeyHash, flags, totalAmount);
+    var pp1RftLocker = PP1RftLockBuilder(ownerPKH, tokenId, rabinPubKeyHash, flags, totalAmount, tokenSupply, merkleRoot);
     var pp2FtLocker = PP2FtLockBuilder(
         getOutpoint(mergedWitnessFundingTxId), ownerPKH, 1, ownerPKH, 1, 2);
     var pp3FtLocker = PartialWitnessFtLockBuilder(ownerPKH, 2);
@@ -529,7 +541,9 @@ class RestrictedFungibleTokenTool {
        List<int>? ed25519PubKey,
        List<int>? parentTokenTxBytesB,
        int parentOutputCountB = 5,
-       int parentPP1FtIndexB = 1}
+       int parentPP1FtIndexB = 1,
+       List<int>? merkleProof,
+       List<int>? merkleSides}
   ) {
     var pp2Index = tripletBaseIndex + 1;
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
@@ -541,10 +555,12 @@ class RestrictedFungibleTokenTool {
           identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == RestrictedFungibleTokenAction.TRANSFER) {
       var pp2Output = tokenTx.outputs[pp2Index].serialize();
+      var recipientPP1 = PP1RftLockBuilder.fromScript(tokenTx.outputs[tripletBaseIndex].script);
       return PP1RftUnlockBuilder.forTransfer(
           preImage, pp2Output, ownerPubkey, tokenChangePKH,
           tokenChangeAmount, tokenTxLHS, parentTokenTxBytes!,
-          paddingBytes, parentOutputCount, parentPP1FtIndex);
+          paddingBytes, parentOutputCount, parentPP1FtIndex,
+          recipientPP1.recipientPKH, merkleProof ?? [], merkleSides ?? []);
     } else if (action == RestrictedFungibleTokenAction.SPLIT_TRANSFER) {
       var pp2RecipientOutput = tokenTx.outputs[2].serialize();
       var pp2ChangeOutput = tokenTx.outputs[5].serialize();
@@ -558,7 +574,7 @@ class RestrictedFungibleTokenTool {
           parentTokenTxBytes!, paddingBytes,
           recipientPP1.amount, changePP1.amount,
           recipientPP1.recipientPKH, tripletBaseIndex, parentOutputCount,
-          parentPP1FtIndex);
+          parentPP1FtIndex, merkleProof ?? [], merkleSides ?? []);
     } else if (action == RestrictedFungibleTokenAction.MERGE) {
       var pp2Output = tokenTx.outputs[pp2Index].serialize();
       return PP1RftUnlockBuilder.forMerge(

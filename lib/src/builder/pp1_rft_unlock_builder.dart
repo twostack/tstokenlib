@@ -62,6 +62,11 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
   int? _parentPP1FtIndexA;
   int? _parentPP1FtIndexB;
 
+  // Merkle whitelist fields (transfer + split)
+  List<int>? _transferRecipientPKH;
+  List<int>? _merkleProof;
+  List<int>? _merkleSides;
+
   // Rabin identity binding fields (mint)
   List<int>? _rabinN;
   List<int>? _rabinS;
@@ -104,6 +109,9 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
     List<int> witnessPadding,
     int parentOutputCount,
     int parentPP1FtIndex,
+    List<int> transferRecipientPKH,
+    List<int> merkleProof,
+    List<int> merkleSides,
   ) : _preImage = preImage,
       _pp2Output = pp2Output,
       _ownerPubKey = ownerPubKey,
@@ -114,6 +122,9 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
       _witnessPadding = witnessPadding,
       _parentOutputCount = parentOutputCount,
       _parentPP1FtIndexA = parentPP1FtIndex,
+      _transferRecipientPKH = transferRecipientPKH,
+      _merkleProof = merkleProof,
+      _merkleSides = merkleSides,
       _action = RestrictedFungibleTokenAction.TRANSFER;
 
   /// Creates a PP1_RFT unlock builder for a split transfer.
@@ -133,6 +144,8 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
     int myOutputIndex,
     int parentOutputCount,
     int parentPP1FtIndex,
+    List<int> merkleProof,
+    List<int> merkleSides,
   ) : _preImage = preImage,
       _pp2Output = pp2RecipientOutput,
       _pp2ChangeOutput = pp2ChangeOutput,
@@ -148,6 +161,8 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
       _myOutputIndex = myOutputIndex,
       _parentOutputCount = parentOutputCount,
       _parentPP1FtIndexA = parentPP1FtIndex,
+      _merkleProof = merkleProof,
+      _merkleSides = merkleSides,
       _action = RestrictedFungibleTokenAction.SPLIT_TRANSFER;
 
   /// Creates a PP1_RFT unlock builder for merging two token UTXOs.
@@ -244,6 +259,9 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.number(this._parentOutputCount!);
       result.number(this._parentPP1FtIndexA!);
+      result.addData(Uint8List.fromList(_transferRecipientPKH!));
+      result.addData(Uint8List.fromList(_merkleProof ?? []));
+      result.addData(Uint8List.fromList(_merkleSides ?? []));
 
     } else if (_action == RestrictedFungibleTokenAction.SPLIT_TRANSFER) {
 
@@ -264,6 +282,8 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
       result.number(this._myOutputIndex!);
       result.number(this._parentOutputCount!);
       result.number(this._parentPP1FtIndexA!);
+      result.addData(Uint8List.fromList(_merkleProof ?? []));
+      result.addData(Uint8List.fromList(_merkleSides ?? []));
 
     } else if (_action == RestrictedFungibleTokenAction.MERGE) {
 

@@ -19,6 +19,7 @@ var alicePubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
 var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
 var testRabinPubKeyHash = List<int>.filled(20, 0xAB);
+var testMerkleRoot = List<int>.filled(32, 0x00);
 
 var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 
@@ -67,7 +68,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, testRabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, testRabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
 
       expect(mintTx.outputs.length, 5);
@@ -97,7 +98,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, testRabinPubKeyHash, 0x01, 500,
+        bobFundingTx.hash, testRabinPubKeyHash, 0x01, 500, 0, testMerkleRoot,
       );
 
       var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
@@ -110,13 +111,13 @@ void main() {
   });
 
   group('RFT lock builder parse roundtrip', () {
-    test('89-byte header roundtrip', () {
+    test('127-byte header roundtrip', () {
       var tokenId = List<int>.filled(32, 0xAA);
       var rabinPKH = testRabinPubKeyHash;
       var flags = 0x03;
       var amount = 1000;
 
-      var builder = PP1RftLockBuilder(bobPKH, tokenId, rabinPKH, flags, amount);
+      var builder = PP1RftLockBuilder(bobPKH, tokenId, rabinPKH, flags, amount, 0, testMerkleRoot);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1RftLockBuilder.fromScript(script);
@@ -133,7 +134,7 @@ void main() {
       var flags = 0x05;
       var amount = 100000000; // 100M
 
-      var builder = PP1RftLockBuilder(bobPKH, tokenId, rabinPKH, flags, amount);
+      var builder = PP1RftLockBuilder(bobPKH, tokenId, rabinPKH, flags, amount, 0, testMerkleRoot);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1RftLockBuilder.fromScript(script);
@@ -150,7 +151,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, testRabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, testRabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
 
       var burnFundingTx = getBobFundingTx();
@@ -177,7 +178,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, testRabinPubKeyHash, 0x01, 500,
+        bobFundingTx.hash, testRabinPubKeyHash, 0x01, 500, 0, testMerkleRoot,
       );
 
       var burnFundingTx = getBobFundingTx();
@@ -206,7 +207,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, testRabinPubKeyHash, 0x04, 1000,
+        bobFundingTx.hash, testRabinPubKeyHash, 0x04, 1000, 0, testMerkleRoot,
       );
 
       var redeemFundingTx = getBobFundingTx();
@@ -236,7 +237,7 @@ void main() {
 
         var mintTx = await service.createFungibleMintTxn(
           bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-          bobFundingTx.hash, testRabinPubKeyHash, flags, 1000,
+          bobFundingTx.hash, testRabinPubKeyHash, flags, 1000, 0, testMerkleRoot,
         );
 
         expect(mintTx.outputs.length, 5);
@@ -272,7 +273,7 @@ void main() {
 
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
 
       var mintWitnessTx = service.createRftWitnessTxn(
@@ -305,7 +306,7 @@ void main() {
       // Step 1: Mint 1000 RFT to Bob (flags=0x00, free transfer)
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
       var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId;
@@ -326,7 +327,7 @@ void main() {
       var transferTx = service.createRftTransferTxn(
         mintWitnessTx, mintTx, bobPub, aliceAddress,
         transferFundingTx, bobFundingSigner, bobPub,
-        aliceFundingTx.hash, tokenId, rabinPubKeyHash, 0x00, 1000,
+        aliceFundingTx.hash, tokenId, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
       expect(transferTx.outputs.length, 5);
 
@@ -384,7 +385,7 @@ void main() {
       // Mint with flags=0x01 (self-transfer only)
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, rabinPubKeyHash, 0x01, 1000,
+        bobFundingTx.hash, rabinPubKeyHash, 0x01, 1000, 0, testMerkleRoot,
       );
       var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId;
@@ -404,7 +405,7 @@ void main() {
       var transferTx = service.createRftTransferTxn(
         mintWitnessTx, mintTx, bobPub, bobAddress,
         transferFundingTx, bobFundingSigner, bobPub,
-        bobWitnessFundingTx.hash, tokenId, rabinPubKeyHash, 0x01, 1000,
+        bobWitnessFundingTx.hash, tokenId, rabinPubKeyHash, 0x01, 1000, 0, testMerkleRoot,
       );
 
       // Transfer witness (exercises transferToken with self-only policy)
@@ -445,7 +446,7 @@ void main() {
       // Step 1: Mint 1000 RFT to Bob (flags=0x00, free transfer)
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
       var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId;
@@ -468,7 +469,7 @@ void main() {
         mintWitnessTx, mintTx, bobPub, aliceAddress, 700,
         splitFundingTx, bobFundingSigner, bobPub,
         recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
-        tokenId, rabinPubKeyHash, 0x00, 1000,
+        tokenId, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
 
       expect(splitTx.outputs.length, 8, reason: 'Split should create 8 outputs');
@@ -562,7 +563,7 @@ void main() {
       // Step 1: Mint 1000 RFT to Bob
       var mintTx = await service.createFungibleMintTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
       var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
       var tokenId = pp1Lock.tokenId;
@@ -585,7 +586,7 @@ void main() {
         mintWitnessTx, mintTx, bobPub, bobAddress, 600,
         splitFundingTx, bobFundingSigner, bobPub,
         recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
-        tokenId, rabinPubKeyHash, 0x00, 1000,
+        tokenId, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
       );
       expect(splitTx.outputs.length, 8);
 
@@ -625,7 +626,7 @@ void main() {
         bobFundingSigner,
         mergeFundingTx, bobFundingSigner, bobPub,
         mergeWitnessFundingTx.hash,
-        tokenId, rabinPubKeyHash, 0x00, 1000,
+        tokenId, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
         prevTripletBaseIndexA: 1,
         prevTripletBaseIndexB: 4,
       );
@@ -726,6 +727,298 @@ void main() {
         var proof = tree.getProof(i);
         expect(MerkleTree.verifyProof(leaves[i], proof, tree.root), true);
       }
+    });
+  });
+
+  group('RFT whitelist enforcement', () {
+
+    List<int> serializeProof(List<MerkleProofEntry> proof) =>
+        proof.expand((e) => e.sibling).toList();
+    List<int> serializeSides(List<MerkleProofEntry> proof) =>
+        proof.map((e) => e.isLeft ? 1 : 0).toList();
+
+    test('transfer with valid proof succeeds', () async {
+      var service = RestrictedFungibleTokenTool();
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
+      var interp = Interpreter();
+      var bobFundingTx = getBobFundingTx();
+
+      // Build whitelist tree from 4 PKHs: bob, alice, charlie, dave
+      var charliePKH = List<int>.filled(20, 0xCC);
+      var davePKH = List<int>.filled(20, 0xDD);
+      var tree = MerkleTree([bobPKH, hex.decode(alicePubkeyHash), charliePKH, davePKH]);
+      var merkleRoot = tree.root.toList();
+
+      // Alice is at leaf index 1
+      var aliceProof = tree.getProof(1);
+      expect(MerkleTree.verifyProof(hex.decode(alicePubkeyHash), aliceProof, merkleRoot), true);
+
+      // Step 1: Mint with whitelist merkleRoot
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+      var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId;
+
+      // Step 2: Mint witness
+      var mintWitnessTx = service.createRftWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        RestrictedFungibleTokenAction.MINT,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+
+      // Step 3: Transfer to Alice with valid proof
+      var transferFundingTx = getBobFundingTx();
+      var aliceFundingTx = getAliceFundingTx();
+      var transferTx = service.createRftTransferTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress,
+        transferFundingTx, bobFundingSigner, bobPub,
+        aliceFundingTx.hash, tokenId, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+
+      // Step 4: Transfer witness with merkle proof
+      var aliceWitnessTx = service.createRftWitnessTxn(
+        aliceFundingSigner, aliceFundingTx, transferTx, alicePubKey, bobPubkeyHash,
+        RestrictedFungibleTokenAction.TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        merkleProof: serializeProof(aliceProof),
+        merkleSides: serializeSides(aliceProof),
+      );
+
+      expect(
+          () => interp.correctlySpends(
+              aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP1_RFT transfer with valid merkle proof should verify');
+    });
+
+    test('transfer to non-whitelisted fails', () async {
+      var service = RestrictedFungibleTokenTool();
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
+      var interp = Interpreter();
+      var bobFundingTx = getBobFundingTx();
+
+      // Build whitelist with bob and charlie only — alice is NOT in tree
+      var charliePKH = List<int>.filled(20, 0xCC);
+      var davePKH = List<int>.filled(20, 0xDD);
+      var tree = MerkleTree([bobPKH, charliePKH, davePKH, List<int>.filled(20, 0xEE)]);
+      var merkleRoot = tree.root.toList();
+
+      // Fabricate a fake proof for alice (use charlie's proof which won't work for alice)
+      var charlieProof = tree.getProof(1);
+
+      // Mint with whitelist
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+      var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId;
+
+      var mintWitnessTx = service.createRftWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        RestrictedFungibleTokenAction.MINT,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+
+      // Transfer to Alice (not whitelisted) with invalid proof
+      var transferFundingTx = getBobFundingTx();
+      var aliceFundingTx = getAliceFundingTx();
+      var transferTx = service.createRftTransferTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress,
+        transferFundingTx, bobFundingSigner, bobPub,
+        aliceFundingTx.hash, tokenId, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+
+      var aliceWitnessTx = service.createRftWitnessTxn(
+        aliceFundingSigner, aliceFundingTx, transferTx, alicePubKey, bobPubkeyHash,
+        RestrictedFungibleTokenAction.TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        merkleProof: serializeProof(charlieProof),
+        merkleSides: serializeSides(charlieProof),
+      );
+
+      expect(
+          () => interp.correctlySpends(
+              aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          throwsA(isA<ScriptException>()),
+          reason: 'PP1_RFT transfer with invalid merkle proof should fail');
+    });
+
+    test('split with 1-entry tree (empty proof, non-zero root) succeeds', () async {
+      var service = RestrictedFungibleTokenTool();
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
+      var interp = Interpreter();
+      var bobFundingTx = getBobFundingTx();
+
+      // 1-entry tree with just alice — root = SHA256(alicePKH), empty proof
+      var tree = MerkleTree([hex.decode(alicePubkeyHash)]);
+      var merkleRoot = tree.root.toList();
+
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+      var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId;
+
+      var mintWitnessTx = service.createRftWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        RestrictedFungibleTokenAction.MINT,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+
+      var splitFundingTx = getBobFundingTx();
+      var recipientWitnessFundingTx = getAliceFundingTx();
+      var changeWitnessFundingTx = getBobFundingTx();
+
+      var splitTx = service.createRftSplitTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress, 700,
+        splitFundingTx, bobFundingSigner, bobPub,
+        recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
+        tokenId, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+
+      // Empty proof for 1-entry tree
+      var aliceProof = tree.getProof(0);
+      expect(aliceProof.length, 0);
+
+      var recipientWitnessTx = service.createRftWitnessTxn(
+        aliceFundingSigner, recipientWitnessFundingTx, splitTx, alicePubKey, bobPubkeyHash,
+        RestrictedFungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 1,
+        parentPP1FtIndex: 1,
+        merkleProof: serializeProof(aliceProof),
+        merkleSides: serializeSides(aliceProof),
+      );
+
+      expect(
+          () => interp.correctlySpends(
+              recipientWitnessTx.inputs[1].script!, splitTx.outputs[1].script,
+              recipientWitnessTx, 1, verifyFlags, Coin.valueOf(splitTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP1_RFT split with 1-entry tree should verify');
+    });
+
+    test('split with valid proof succeeds', () async {
+      var service = RestrictedFungibleTokenTool();
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
+      var interp = Interpreter();
+      var bobFundingTx = getBobFundingTx();
+
+      // Build whitelist with both bob and alice
+      var charliePKH = List<int>.filled(20, 0xCC);
+      var davePKH = List<int>.filled(20, 0xDD);
+      var tree = MerkleTree([bobPKH, hex.decode(alicePubkeyHash), charliePKH, davePKH]);
+      var merkleRoot = tree.root.toList();
+
+      // Mint with whitelist
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+      var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId;
+
+      var mintWitnessTx = service.createRftWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        RestrictedFungibleTokenAction.MINT,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+
+      // Split 700 to Alice, 300 change to Bob
+      var splitFundingTx = getBobFundingTx();
+      var recipientWitnessFundingTx = getAliceFundingTx();
+      var changeWitnessFundingTx = getBobFundingTx();
+
+      var splitTx = service.createRftSplitTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress, 700,
+        splitFundingTx, bobFundingSigner, bobPub,
+        recipientWitnessFundingTx.hash, changeWitnessFundingTx.hash,
+        tokenId, rabinPubKeyHash, 0x00, 1000, 0, merkleRoot,
+      );
+
+      // Recipient witness with merkle proof for alice
+      var aliceProof = tree.getProof(1);
+
+      var recipientWitnessTx = service.createRftWitnessTxn(
+        aliceFundingSigner, recipientWitnessFundingTx, splitTx, alicePubKey, bobPubkeyHash,
+        RestrictedFungibleTokenAction.SPLIT_TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+        tripletBaseIndex: 1,
+        parentPP1FtIndex: 1,
+        merkleProof: serializeProof(aliceProof),
+        merkleSides: serializeSides(aliceProof),
+      );
+
+      expect(
+          () => interp.correctlySpends(
+              recipientWitnessTx.inputs[1].script!, splitTx.outputs[1].script,
+              recipientWitnessTx, 1, verifyFlags, Coin.valueOf(splitTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP1_RFT split with valid merkle proof should verify');
+    });
+
+    test('disabled whitelist (zeros root) still works with empty proof', () async {
+      var service = RestrictedFungibleTokenTool();
+      var bobFundingSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
+      var aliceFundingSigner = DefaultTransactionSigner(sigHashAll, alicePrivateKey);
+      var interp = Interpreter();
+      var bobFundingTx = getBobFundingTx();
+
+      // Mint with zero merkleRoot (whitelist disabled)
+      var mintTx = await service.createFungibleMintTxn(
+        bobFundingTx, bobFundingSigner, bobPub, bobAddress,
+        bobFundingTx.hash, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
+      );
+      var pp1Lock = PP1RftLockBuilder.fromScript(mintTx.outputs[1].script);
+      var tokenId = pp1Lock.tokenId;
+
+      var mintWitnessTx = service.createRftWitnessTxn(
+        bobFundingSigner, bobFundingTx, mintTx, bobPub, bobPubkeyHash,
+        RestrictedFungibleTokenAction.MINT,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+
+      // Transfer with empty proof (whitelist disabled)
+      var transferFundingTx = getBobFundingTx();
+      var aliceFundingTx = getAliceFundingTx();
+      var transferTx = service.createRftTransferTxn(
+        mintWitnessTx, mintTx, bobPub, aliceAddress,
+        transferFundingTx, bobFundingSigner, bobPub,
+        aliceFundingTx.hash, tokenId, rabinPubKeyHash, 0x00, 1000, 0, testMerkleRoot,
+      );
+
+      var aliceWitnessTx = service.createRftWitnessTxn(
+        aliceFundingSigner, aliceFundingTx, transferTx, alicePubKey, bobPubkeyHash,
+        RestrictedFungibleTokenAction.TRANSFER,
+        parentTokenTxBytes: hex.decode(mintTx.serialize()),
+        parentOutputCount: 5,
+      );
+
+      expect(
+          () => interp.correctlySpends(
+              aliceWitnessTx.inputs[1].script!, transferTx.outputs[1].script,
+              aliceWitnessTx, 1, verifyFlags, Coin.valueOf(transferTx.outputs[1].satoshis)),
+          returnsNormally,
+          reason: 'PP1_RFT transfer with disabled whitelist should verify');
     });
   });
 }
