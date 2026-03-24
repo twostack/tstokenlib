@@ -129,8 +129,10 @@ class PP2FtLockBuilder extends LockingScriptBuilder {
     var amountByte = paramBytes[offset];
     if (amountByte == 0x00) {
       _changeAmount = 0;
+      offset++;
     } else if (amountByte >= 0x51 && amountByte <= 0x60) {
       _changeAmount = amountByte - 0x50;
+      offset++;
     } else {
       var numLen = amountByte;
       offset++;
@@ -138,7 +140,6 @@ class PP2FtLockBuilder extends LockingScriptBuilder {
       _changeAmount = castToBigInt(numBytes, true).toInt();
       offset += numLen;
     }
-    offset++;
 
     // Read ownerPKH pushdata (expected: 0x14 = 20 bytes)
     var ownerPkhLen = paramBytes[offset];
@@ -150,8 +151,10 @@ class PP2FtLockBuilder extends LockingScriptBuilder {
     var pp1FtByte = paramBytes[offset];
     if (pp1FtByte == 0x00) {
       _pp1FtOutputIndex = 0;
+      offset++;
     } else if (pp1FtByte >= 0x51 && pp1FtByte <= 0x60) {
       _pp1FtOutputIndex = pp1FtByte - 0x50;
+      offset++;
     } else {
       var numLen = pp1FtByte;
       offset++;
@@ -159,7 +162,6 @@ class PP2FtLockBuilder extends LockingScriptBuilder {
       _pp1FtOutputIndex = castToBigInt(numBytes, true).toInt();
       offset += numLen;
     }
-    offset++;
 
     // Read pp2OutputIndex (script number encoding)
     var pp2Byte = paramBytes[offset];

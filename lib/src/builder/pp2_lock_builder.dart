@@ -136,8 +136,10 @@ class PP2LockBuilder extends LockingScriptBuilder{
     var amountByte = paramBytes[offset];
     if (amountByte == 0x00) {
       _changeAmount = 0;
+      offset++;
     } else if (amountByte >= 0x51 && amountByte <= 0x60) {
       _changeAmount = amountByte - 0x50;
+      offset++;
     } else {
       var numLen = amountByte;
       offset++;
@@ -145,7 +147,6 @@ class PP2LockBuilder extends LockingScriptBuilder{
       _changeAmount = castToBigInt(numBytes, true).toInt();
       offset += numLen;
     }
-    offset++;
 
     // Read ownerPKH pushdata (expected: 0x14 = 20 bytes)
     var ownerPkhLen = paramBytes[offset];
