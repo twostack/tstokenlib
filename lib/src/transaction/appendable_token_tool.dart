@@ -144,6 +144,7 @@ class AppendableTokenTool {
       SVPublicKey fundingPubKey,
       Address recipientAddress,
       List<int> witnessFundingTxId,
+      List<int> witnessChangePKH,
       List<int> issuerPKH,
       List<int> rabinPubKeyHash,
       int threshold,
@@ -159,17 +160,17 @@ class AppendableTokenTool {
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
     tokenTxBuilder.withFeePerKb(1);
 
-    // PP1_AT output
+    // PP1_AT output — ownerPKH is the token recipient
     var pp1Locker = PP1AtLockBuilder(recipientAddress, tokenId, issuerPKH, rabinPubKeyHash, 0, threshold, initialStampsHash);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
-    // PP2 output
+    // PP2 output — witnessChangePKH must match the witness TX output (signer's key)
     var outputWriter = ByteDataWriter();
     outputWriter.write(witnessFundingTxId);
     outputWriter.writeUint32(1, Endian.little);
     var fundingOutpoint = outputWriter.toBytes();
 
-    var pp2Locker = PP2LockBuilder(fundingOutpoint, hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
+    var pp2Locker = PP2LockBuilder(fundingOutpoint, witnessChangePKH, 1, hex.decode(recipientAddress.pubkeyHash160));
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
 
     // PartialWitness output
