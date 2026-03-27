@@ -26,7 +26,7 @@ import 'check_preimage_ocs.dart';
 /// script (~62KB) that uses [Sha256ScriptGen.emitOneBlock] for SHA256 computation.
 ///
 /// The generated script implements the same contract as `Tsl1WitnessCheck`:
-/// - `unlock(preImage, partialHash, witnessPartialPreImage, fundingTxId)`:
+/// - `unlock(preImage, partialHash, witnessPartialPreImage, fundingOutpoint)`:
 ///   Completes partial SHA256, verifies witness outpoint and hashPrevOuts,
 ///   then validates the preimage via checkPreimageOCS.
 /// - `burnToken(recipientPubKey, recipientSig)`:
@@ -77,17 +77,17 @@ class WitnessCheckScriptGen {
 
   /// Emits the unlock function body.
   ///
-  /// Stack at entry: [preImage, partialHash, witnessPreImage, fundingTxId, ownerPKH]
+  /// Stack at entry: [preImage, partialHash, witnessPreImage, fundingOutpoint, ownerPKH]
   /// Stack at exit: [TRUE] (from OP_CHECKSIG)
   static void _emitUnlockPath(ScriptBuilder b, int pp2OutputIndex) {
     // Drop ownerPKH (not needed for unlock)
     b.opCode(OpCodes.OP_DROP);
-    // Stack: [preImage, partialHash, witnessPreImage, fundingTxId]
+    // Stack: [preImage, partialHash, witnessPreImage, fundingOutpoint]
 
-    // Save fundingTxId to altstack
+    // Save fundingOutpoint to altstack
     b.opCode(OpCodes.OP_TOALTSTACK);
     // Stack: [preImage, partialHash, witnessPreImage]
-    // Altstack: [fundingTxId]
+    // Altstack: [fundingOutpoint]
 
     // Extract witnessPartialOutpoint (first 36 bytes of witnessPreImage)
     b.opCode(OpCodes.OP_DUP);
@@ -95,18 +95,18 @@ class WitnessCheckScriptGen {
     b.opCode(OpCodes.OP_SPLIT);
     b.opCode(OpCodes.OP_DROP);   // drop rest, keep first 36
     b.opCode(OpCodes.OP_TOALTSTACK);
-    // Altstack: [fundingTxId, witnessPartialOutpoint]
+    // Altstack: [fundingOutpoint, witnessPartialOutpoint]
 
     // Save preImage to altstack
     b.opCode(OpCodes.OP_ROT);    // [partialHash, witnessPreImage, preImage]
     b.opCode(OpCodes.OP_TOALTSTACK);
-    // Altstack: [fundingTxId, witnessPartialOutpoint, preImage]
+    // Altstack: [fundingOutpoint, witnessPartialOutpoint, preImage]
     // Stack: [partialHash, witnessPreImage]
 
     // === Partial SHA256 computation ===
     _emitPartialSha256(b);
     // Stack: [witnessHash(32B)]
-    // Altstack: [fundingTxId, witnessPartialOutpoint, preImage]
+    // Altstack: [fundingOutpoint, witnessPartialOutpoint, preImage]
 
     // Double SHA256: witnessTxId = sha256(witnessHash)
     b.opCode(OpCodes.OP_SHA256);
@@ -115,7 +115,7 @@ class WitnessCheckScriptGen {
     // === Outpoint verification ===
     _emitOutpointVerification(b, pp2OutputIndex);
     // Stack: [witnessTxId, preImage]
-    // Altstack: [fundingTxId]
+    // Altstack: [fundingOutpoint]
 
     // === HashPrevOuts verification ===
     _emitHashPrevOutsVerification(b);
@@ -176,14 +176,14 @@ class WitnessCheckScriptGen {
   /// Verifies the witness outpoint matches the expected PP2 output.
   ///
   /// Pre: [witnessTxId(32B)] on stack.
-  ///      Altstack: [fundingTxId, witnessPartialOutpoint, preImage]
+  ///      Altstack: [fundingOutpoint, witnessPartialOutpoint, preImage]
   /// Post: [witnessTxId, preImage] on stack.
-  ///       Altstack: [fundingTxId]
+  ///       Altstack: [fundingOutpoint]
   static void _emitOutpointVerification(ScriptBuilder b, int pp2OutputIndex) {
     // Recover preImage from altstack
     b.opCode(OpCodes.OP_FROMALTSTACK);
     // Stack: [witnessTxId, preImage]
-    // Altstack: [fundingTxId, witnessPartialOutpoint]
+    // Altstack: [fundingOutpoint, witnessPartialOutpoint]
 
     // Extract myOutpoint from preImage: bytes[68:104] (36 bytes)
     b.opCode(OpCodes.OP_DUP);
@@ -215,7 +215,7 @@ class WitnessCheckScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);  // get witnessPartialOutpoint
     b.opCode(OpCodes.OP_EQUALVERIFY);
     // Stack: [witnessTxId, preImage, myOutpoint]
-    // Altstack: [fundingTxId]
+    // Altstack: [fundingOutpoint]
 
     // Drop myOutpoint (no longer needed)
     b.opCode(OpCodes.OP_DROP);
@@ -228,14 +228,11 @@ class WitnessCheckScriptGen {
 
   /// Verifies hashPrevOuts in the preImage matches expected outpoints.
   ///
-  /// Pre: [witnessTxId, preImage] on stack. Altstack: [fundingTxId]
+  /// Pre: [witnessTxId, preImage] on stack. Altstack: [fundingOutpoint]
   /// Post: [preImage] on stack. Altstack: empty.
   static void _emitHashPrevOutsVerification(ScriptBuilder b) {
-    // Build prevOutpoint1 = fundingTxId + LE(1, 4)
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // get fundingTxId
-    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
-    b.opCode(OpCodes.OP_CAT);
-    // Stack: [witnessTxId, preImage, prevOutpoint1(36B)]
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingOutpoint (36 bytes, from scriptSig)
+    // Stack: [witnessTxId, preImage, fundingOutpoint(36B)]
 
     // Build prevOutpoint2 = witnessTxId + LE(0, 4)
     b.opCode(OpCodes.OP_2);

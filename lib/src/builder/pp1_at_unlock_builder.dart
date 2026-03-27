@@ -46,7 +46,7 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
   AppendableTokenAction? action;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
   List<int>? _stampMetadata;
 
   // Rabin identity binding fields (used during issuance)
@@ -71,7 +71,7 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
       this._prevTokenTx,
       this._witnessPadding,
       this.action,
-      this._witnessFundingTxId,
+      this._fundingOutpoint,
       {List<int>? stampMetadata,
        List<int>? rabinN,
        List<int>? rabinS,
@@ -114,10 +114,10 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
     var result = ScriptBuilder();
 
     if (action == AppendableTokenAction.ISSUANCE) {
-      // Stack: [preImage, fundingTxId, padding, issuerPubKey, issuerSig,
+      // Stack: [preImage, fundingOutpoint(36B), padding, issuerPubKey, issuerSig,
       //         rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey]
       result.addData(Uint8List.fromList(this._preImage!));
-      result.addData(Uint8List.fromList(this._witnessFundingTxId!));
+      result.addData(Uint8List.fromList(this._fundingOutpoint!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.addData(Uint8List.fromList(hex.decode(this._pubKey!.toHex())));
       result.addData(Uint8List.fromList(sigBytes));
@@ -201,7 +201,8 @@ class PP1AtUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
   List<int>? get witnessPadding => _witnessPadding;
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  /// The 36-byte funding outpoint (txid + vout) for the witness transaction.
+  List<int>? get fundingOutpoint => _fundingOutpoint;
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
   List<int>? get stampMetadata => _stampMetadata;

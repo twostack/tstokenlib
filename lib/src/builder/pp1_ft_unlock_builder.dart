@@ -47,7 +47,7 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _tokenLHS;
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
   FungibleTokenAction? _action;
   int? _recipientAmount;
   int? _tokenChangeAmount;
@@ -74,11 +74,11 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
   /// Creates a PP1_FT unlock builder for minting new tokens.
   ///
   /// [preImage] - The sighash preimage.
-  /// [witnessFundingTxId] - The funding transaction ID.
+  /// [fundingOutpoint] - The funding transaction ID.
   /// [witnessPadding] - Padding bytes for SHA256 calculation.
   PP1FtUnlockBuilder.forMint(
     List<int> preImage,
-    List<int> witnessFundingTxId,
+    List<int> fundingOutpoint,
     List<int> witnessPadding,
     {List<int>? rabinN,
      List<int>? rabinS,
@@ -86,7 +86,7 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
      List<int>? identityTxId,
      List<int>? ed25519PubKey}
   ) : _preImage = preImage,
-      _witnessFundingTxId = witnessFundingTxId,
+      _fundingOutpoint = fundingOutpoint,
       _witnessPadding = witnessPadding,
       _rabinN = rabinN,
       _rabinS = rabinS,
@@ -214,8 +214,8 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
   /// Padding bytes for the witness SHA256 calculation.
   List<int>? get witnessPadding => _witnessPadding;
 
-  /// The funding transaction ID for the witness.
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  /// The 36-byte funding outpoint (txid + vout) for the witness.
+  List<int>? get fundingOutpoint => _fundingOutpoint;
 
   /// The pubkey hash of the change output recipient.
   String? get changePKH => _changePKH;
@@ -258,7 +258,7 @@ class PP1FtUnlockBuilder extends UnlockingScriptBuilder {
     if (_action == FungibleTokenAction.MINT) {
 
       result.addData(Uint8List.fromList(this._preImage!));
-      result.addData(Uint8List.fromList(this._witnessFundingTxId!));
+      result.addData(Uint8List.fromList(this._fundingOutpoint!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.addData(Uint8List.fromList(this._rabinN!));
       result.addData(Uint8List.fromList(this._rabinS!));

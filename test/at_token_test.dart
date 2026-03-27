@@ -114,7 +114,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        bobFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -134,7 +134,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        bobFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       var pp1Lock = PP1AtLockBuilder.fromScript(issuanceTx.outputs[1].script);
@@ -156,7 +156,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        bobFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       var aliceFundingTx = getAliceFundingTx();
@@ -183,7 +183,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobFundingSigner, bobPub, bobAddress,
-        bobFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        bobFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       var aliceFundingTx = getAliceFundingTx();
@@ -293,7 +293,7 @@ void main() {
 
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        aliceFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       // Create witness with issuer (Alice) signing + Rabin identity binding
@@ -332,7 +332,7 @@ void main() {
       var aliceFundingTx = getAliceFundingTx();
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        aliceFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
       var tokenId = bobFundingTx.hash;
 
@@ -428,7 +428,7 @@ void main() {
       var aliceFundingTx = getAliceFundingTx();
       var issuanceTx = service.createTokenIssuanceTxn(
         bobFundingTx, bobSigner, bobPub, bobAddress,
-        aliceFundingTx.hash, issuerPKH, rabinPubKeyHash, 10,
+        aliceFundingTx.hash, hex.decode(bobPubkeyHash), issuerPKH, rabinPubKeyHash, 10,
       );
 
       // Step 2: Issue witness (Alice signs as issuer + Rabin identity)

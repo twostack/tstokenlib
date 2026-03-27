@@ -44,7 +44,7 @@ class PP1NftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
   TokenAction? action;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
 
   // Rabin identity binding fields (used during issuance)
   List<int>? _rabinN;           // Rabin public key n, encoded as script number bytes
@@ -71,7 +71,7 @@ class PP1NftUnlockBuilder extends UnlockingScriptBuilder {
       this._prevTokenTx,
       this._witnessPadding,
       this.action,
-      this._witnessFundingTxId,
+      this._fundingOutpoint,
       {List<int>? rabinN,
        List<int>? rabinS,
        int? rabinPadding,
@@ -114,7 +114,7 @@ class PP1NftUnlockBuilder extends UnlockingScriptBuilder {
     if (action == TokenAction.ISSUANCE) {
 
       result.addData(Uint8List.fromList(this._preImage!));
-      result.addData(Uint8List.fromList(this._witnessFundingTxId!));
+      result.addData(Uint8List.fromList(this._fundingOutpoint!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       // Rabin identity binding data
       result.addData(Uint8List.fromList(this._rabinN!));
@@ -190,8 +190,8 @@ class PP1NftUnlockBuilder extends UnlockingScriptBuilder {
   /// Padding bytes for the witness partial SHA256 calculation.
   List<int>? get witnessPadding => _witnessPadding;
 
-  /// The funding transaction ID for the witness transaction.
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  /// The 36-byte funding outpoint (txid + vout) for the witness transaction.
+  List<int>? get fundingOutpoint => _fundingOutpoint;
 
   /// The pubkey hash of the change output recipient.
   String? get changePKH => _changePKH;

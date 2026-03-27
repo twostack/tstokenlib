@@ -106,7 +106,11 @@ class TokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
 
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
-    var pp1UnlockBuilder = PP1NftUnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    var fundingOutpoint = Uint8List(36);
+    fundingOutpoint.setAll(0, fundingTx.hash);
+    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
+    var pp1UnlockBuilder = PP1NftUnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
         .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -118,7 +122,7 @@ class TokenTool {
     //updated padding bytes
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
-    pp1UnlockBuilder = PP1NftUnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    pp1UnlockBuilder = PP1NftUnlockBuilder( preImagePP1, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
@@ -270,11 +274,15 @@ class TokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage)  = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var transferFundingOutpoint = Uint8List(36);
+    transferFundingOutpoint.setAll(0, fundingTx.hash);
+    transferFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash
+        transferFundingOutpoint
     );
 
     var childTxn = TransactionBuilder()

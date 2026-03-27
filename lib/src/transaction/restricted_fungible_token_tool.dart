@@ -243,9 +243,13 @@ class RestrictedFungibleTokenTool {
     var paddingBytes = Uint8List(1);
 
     // Build PP1_RFT unlocker and rebuild with padding (two passes)
+    var fundingOutpoint = Uint8List(36);
+    fundingOutpoint.setAll(0, fundingTx.hash);
+    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp1RftUnlocker = _buildPP1RftUnlocker(action, preImage!, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentOutputCount, tripletBaseIndex, fundingOutpoint,
         parentPP1FtIndex: parentPP1FtIndex,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
@@ -260,7 +264,7 @@ class RestrictedFungibleTokenTool {
 
     pp1RftUnlocker = _buildPP1RftUnlocker(action, preImage, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentOutputCount, tripletBaseIndex, fundingOutpoint,
         parentPP1FtIndex: parentPP1FtIndex,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         parentTokenTxBytesB: parentTokenTxBytesB, parentOutputCountB: parentOutputCountB,
@@ -336,8 +340,12 @@ class RestrictedFungibleTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var transferFundingOutpoint = Uint8List(36);
+    transferFundingOutpoint.setAll(0, fundingTx.hash);
+    transferFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
-        sigPreImage!, partialHash, witnessPartialPreImage, fundingTx.hash);
+        sigPreImage!, partialHash, witnessPartialPreImage, transferFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
@@ -430,8 +438,12 @@ class RestrictedFungibleTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var splitFundingOutpoint = Uint8List(36);
+    splitFundingOutpoint.setAll(0, fundingTx.hash);
+    splitFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
-        sigPreImage!, partialHash, witnessPartialPreImage, fundingTx.hash);
+        sigPreImage!, partialHash, witnessPartialPreImage, splitFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
@@ -532,7 +544,7 @@ class RestrictedFungibleTokenTool {
       List<int> paddingBytes,
       int parentOutputCount,
       int tripletBaseIndex,
-      List<int> fundingTxHash,
+      List<int> fundingOutpoint,
       {int parentPP1FtIndex = 1,
        List<int>? rabinN,
        List<int>? rabinS,
@@ -550,7 +562,7 @@ class RestrictedFungibleTokenTool {
 
     if (action == RestrictedFungibleTokenAction.MINT) {
       // Rabin signature is pre-computed by the caller. The tool never sees the private key.
-      return PP1RftUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes,
+      return PP1RftUnlockBuilder.forMint(preImage, fundingOutpoint, paddingBytes,
           rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding!,
           identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == RestrictedFungibleTokenAction.TRANSFER) {

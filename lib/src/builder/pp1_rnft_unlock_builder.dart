@@ -43,7 +43,7 @@ class PP1RnftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
   RestrictedTokenAction? action;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
 
   // Rabin identity binding fields (used during issuance)
   List<int>? _rabinN;
@@ -67,7 +67,7 @@ class PP1RnftUnlockBuilder extends UnlockingScriptBuilder {
       this._prevTokenTx,
       this._witnessPadding,
       this.action,
-      this._witnessFundingTxId,
+      this._fundingOutpoint,
       {List<int>? rabinN,
        List<int>? rabinS,
        int? rabinPadding,
@@ -107,7 +107,7 @@ class PP1RnftUnlockBuilder extends UnlockingScriptBuilder {
 
     if (action == RestrictedTokenAction.ISSUANCE) {
       result.addData(Uint8List.fromList(this._preImage!));
-      result.addData(Uint8List.fromList(this._witnessFundingTxId!));
+      result.addData(Uint8List.fromList(this._fundingOutpoint!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.addData(Uint8List.fromList(this._rabinN!));
       result.addData(Uint8List.fromList(this._rabinS!));
@@ -170,7 +170,7 @@ class PP1RnftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
   List<int>? get witnessPadding => _witnessPadding;
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  List<int>? get fundingOutpoint => _fundingOutpoint;
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
 }

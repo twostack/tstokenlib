@@ -51,7 +51,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
   StateMachineAction? action;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
 
   // Enroll-specific
   List<int>? _eventData;
@@ -89,7 +89,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
       this._prevTokenTx,
       this._witnessPadding,
       this.action,
-      this._witnessFundingTxId,
+      this._fundingOutpoint,
       {List<int>? eventData,
       SVPublicKey? customerPubKey,
       List<int>? customerSigBytes,
@@ -142,10 +142,10 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
 
     switch (action!) {
       case StateMachineAction.CREATE:
-        // Stack: [preImage, fundingTxId, witnessPadding, rabinN, rabinS,
+        // Stack: [preImage, fundingOutpoint, witnessPadding, rabinN, rabinS,
         //         rabinPadding, identityTxId, ed25519PubKey, OP_0]
         result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_witnessFundingTxId!));
+        result.addData(Uint8List.fromList(_fundingOutpoint!));
         result.addData(Uint8List.fromList(_witnessPadding!));
         result.addData(Uint8List.fromList(_rabinN!));
         result.addData(Uint8List.fromList(_rabinS!));
@@ -291,7 +291,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
   List<int>? get witnessPadding => _witnessPadding;
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  List<int>? get fundingOutpoint => _fundingOutpoint;
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
   List<int>? get eventData => _eventData;

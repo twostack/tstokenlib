@@ -253,13 +253,13 @@ class PP1AtScriptGen {
   // issueToken (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingTxId, witnessPadding, issuerPubKey, issuerSig,
+  /// Stack: [preImage, fundingOutpoint, witnessPadding, issuerPubKey, issuerSig,
   ///         rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey]
   /// Altstack: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH, tokenId, ownerPKH]
   static void _emitIssueToken(ScriptBuilder b) {
     // Stack (10 items, top=0):
     //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
-    //   issuerSig=5, issuerPubKey=6, witnessPadding=7, fundingTxId=8, preImage=9
+    //   issuerSig=5, issuerPubKey=6, witnessPadding=7, fundingOutpoint=8, preImage=9
 
     // --- Phase 1: Validate witnessPadding length ---
     b.opCode(OpCodes.OP_7);
@@ -274,7 +274,7 @@ class PP1AtScriptGen {
     // Alt: [stampsHash, threshold, stampCount, rabinPubKeyHash, issuerPKH]
     // Stack (11 items):
     //   tokenId=0, ed25519PubKey=1, identityTxId=2, rabinPadding=3, rabinS=4,
-    //   rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8, fundingTxId=9, preImage=10
+    //   rabinN=5, issuerSig=6, issuerPubKey=7, witnessPadding=8, fundingOutpoint=9, preImage=10
 
     // --- Phase 3: Verify hash160(issuerPubKey) == issuerPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // issuerPKH
@@ -338,7 +338,7 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_BIN2NUM);        // hashNum (positive script number)
     // Stack: hashNum=0, rabinPadding=1, rabinS=2, rabinN=3,
-    //   issuerSig=4, issuerPubKey=5, witnessPadding=6, fundingTxId=7, preImage=8
+    //   issuerSig=4, issuerPubKey=5, witnessPadding=6, fundingOutpoint=7, preImage=8
 
     // Rabin verify: s^2 mod n == hashNum + rabinPadding
     b.opCode(OpCodes.OP_SWAP);           // [rabinPadding, hashNum, rabinS, rabinN, ...]
@@ -349,16 +349,16 @@ class PP1AtScriptGen {
     b.opCode(OpCodes.OP_ROT);            // [rabinN, s^2, (h+p), ...]
     b.opCode(OpCodes.OP_MOD);            // [(s^2 mod n), (h+p), ...]
     b.opCode(OpCodes.OP_NUMEQUALVERIFY); // verified!
-    // Stack: [issuerSig, issuerPubKey, witnessPadding, fundingTxId, preImage]
+    // Stack: [issuerSig, issuerPubKey, witnessPadding, fundingOutpoint, preImage]
 
     // --- Phase 6: Drop issuerSig, issuerPubKey, witnessPadding ---
     b.opCode(OpCodes.OP_DROP);          // issuerSig
     b.opCode(OpCodes.OP_DROP);          // issuerPubKey
     b.opCode(OpCodes.OP_DROP);          // witnessPadding
-    // Stack: [fundingTxId, preImage]
+    // Stack: [fundingOutpoint, preImage]
 
     // --- Phase 7: checkPreimageOCS + hashPrevouts ---
-    b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingTxId
+    b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingOutpoint
 
     // Extract hashPrevouts (bytes[4:36]) from preImage
     b.opCode(OpCodes.OP_DUP);
@@ -387,12 +387,7 @@ class PP1AtScriptGen {
     // Build hashPrevOuts and verify
     b.opCode(OpCodes.OP_FROMALTSTACK);  // currentTxId
     b.opCode(OpCodes.OP_FROMALTSTACK);  // hashPrevouts
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingTxId
-    // Stack: [currentTxId, hashPrevouts, fundingTxId]
-
-    // fundingOutpoint = fundingTxId + LE(1,4)
-    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
-    b.opCode(OpCodes.OP_CAT);           // fundingOutpoint
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingOutpoint (36 bytes, from scriptSig)
 
     b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_PICK);          // copy currentTxId

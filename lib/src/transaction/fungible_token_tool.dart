@@ -174,9 +174,13 @@ class FungibleTokenTool {
     var paddingBytes = Uint8List(1);
 
     // Build PP1_FT unlocker and rebuild with padding (two passes)
+    var fundingOutpoint = Uint8List(36);
+    fundingOutpoint.setAll(0, fundingTx.hash);
+    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp1FtUnlocker = _buildPP1FtUnlocker(action, preImage!, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentOutputCount, tripletBaseIndex, fundingOutpoint,
         parentTokenTxBytesB: parentTokenTxBytesB,
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
@@ -193,7 +197,7 @@ class FungibleTokenTool {
 
     pp1FtUnlocker = _buildPP1FtUnlocker(action, preImage, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        parentOutputCount, tripletBaseIndex, fundingTx.hash,
+        parentOutputCount, tripletBaseIndex, fundingOutpoint,
         parentTokenTxBytesB: parentTokenTxBytesB,
         parentOutputCountB: parentOutputCountB,
         parentPP1FtIndexA: parentPP1FtIndexA,
@@ -271,8 +275,12 @@ class FungibleTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var transferFundingOutpoint = Uint8List(36);
+    transferFundingOutpoint.setAll(0, fundingTx.hash);
+    transferFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
-        sigPreImage!, partialHash, witnessPartialPreImage, fundingTx.hash);
+        sigPreImage!, partialHash, witnessPartialPreImage, transferFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
@@ -367,8 +375,12 @@ class FungibleTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var splitFundingOutpoint = Uint8List(36);
+    splitFundingOutpoint.setAll(0, fundingTx.hash);
+    splitFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
-        sigPreImage!, partialHash, witnessPartialPreImage, fundingTx.hash);
+        sigPreImage!, partialHash, witnessPartialPreImage, splitFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
@@ -508,7 +520,7 @@ class FungibleTokenTool {
       List<int> paddingBytes,
       int parentOutputCount,
       int tripletBaseIndex,
-      List<int> fundingTxHash,
+      List<int> fundingOutpoint,
       {List<int>? parentTokenTxBytesB,
        int parentOutputCountB = 5,
        int parentPP1FtIndexA = 1,
@@ -523,7 +535,7 @@ class FungibleTokenTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     if (action == FungibleTokenAction.MINT) {
-      return PP1FtUnlockBuilder.forMint(preImage, fundingTxHash, paddingBytes,
+      return PP1FtUnlockBuilder.forMint(preImage, fundingOutpoint, paddingBytes,
           rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding!,
           identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     } else if (action == FungibleTokenAction.TRANSFER) {

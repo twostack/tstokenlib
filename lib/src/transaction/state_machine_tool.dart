@@ -170,11 +170,14 @@ class StateMachineTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     // Rabin signature is pre-computed by the caller. The tool never sees the private key.
+    var fundingOutpoint = Uint8List(36);
+    fundingOutpoint.setAll(0, fundingTx.hash);
+    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
 
     var pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1!, pp2Output, merchantPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, fundingTx.hash,
+        action, fundingOutpoint,
         eventData: eventData,
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
@@ -195,7 +198,7 @@ class StateMachineTool {
     pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1, pp2Output, merchantPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, fundingTx.hash,
+        action, fundingOutpoint,
         eventData: eventData,
         custRewardAmount: custRewardAmount,
         merchPayAmount: merchPayAmount,
@@ -260,10 +263,14 @@ class StateMachineTool {
     var pp2Output = tokenTx.outputs[2].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
+    var dualFundingOutpoint = Uint8List(36);
+    dualFundingOutpoint.setAll(0, fundingTx.hash);
+    dualFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1, pp2Output, merchantPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, fundingTx.hash,
+        action, dualFundingOutpoint,
         eventData: eventData,
         customerPubKey: customerPubkey,
         customerSigBytes: customerSigBytes);
@@ -280,7 +287,7 @@ class StateMachineTool {
     pp1UnlockBuilder = PP1SmUnlockBuilder(
         preImagePP1, pp2Output, merchantPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, fundingTx.hash,
+        action, dualFundingOutpoint,
         eventData: eventData,
         customerPubKey: customerPubkey,
         customerSigBytes: customerSigBytes);
@@ -364,11 +371,15 @@ class StateMachineTool {
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
         hex.decode(prevWitnessTx.serialize()), 2);
 
+    var enrollFundingOutpoint = Uint8List(36);
+    enrollFundingOutpoint.setAll(0, fundingTx.hash);
+    enrollFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        enrollFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -465,11 +476,15 @@ class StateMachineTool {
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
         hex.decode(prevWitnessTx.serialize()), 2);
 
+    var transitionFundingOutpoint = Uint8List(36);
+    transitionFundingOutpoint.setAll(0, fundingTx.hash);
+    transitionFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        transitionFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -574,11 +589,15 @@ class StateMachineTool {
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
         hex.decode(prevWitnessTx.serialize()), 2);
 
+    var settleFundingOutpoint = Uint8List(36);
+    settleFundingOutpoint.setAll(0, fundingTx.hash);
+    settleFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        settleFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -675,11 +694,15 @@ class StateMachineTool {
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
         hex.decode(prevWitnessTx.serialize()), 2);
 
+    var timeoutFundingOutpoint = Uint8List(36);
+    timeoutFundingOutpoint.setAll(0, fundingTx.hash);
+    timeoutFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        timeoutFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, lockTimeSeq, fundingUnlocker)

@@ -93,8 +93,12 @@ class AppendableTokenTool {
     var pp2Output = tokenTx.outputs[2].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
-    // Rabin signature is pre-computed by the caller. The tool never sees the private key.
-    var pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1!, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    // Build 36-byte funding outpoint (txid + LE vout) for PP1 hashPrevouts verification.
+    // Transaction.hash returns the txid in the same byte order used by serialized outpoints.
+    var fundingOutpoint = Uint8List(36);
+    fundingOutpoint.setAll(0, fundingTx.hash);
+    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    var pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1!, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         stampMetadata: stampMetadata,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
@@ -106,7 +110,7 @@ class AppendableTokenTool {
 
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
-    pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingTx.hash,
+    pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         stampMetadata: stampMetadata,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
@@ -239,11 +243,14 @@ class AppendableTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var ppFundingOutpoint = Uint8List(36);
+    ppFundingOutpoint.setAll(0, fundingTx.hash);
+    ppFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        ppFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -299,8 +306,10 @@ class AppendableTokenTool {
     var pp1LockBuilder = PP1AtLockBuilder(ownerAddress, prevPP1.tokenId!, prevPP1.issuerPKH!,
         prevPP1.rabinPubKeyHash!, newStampCount, prevPP1.threshold, newStampsHash.toList());
 
+    // PP2 witnessChangePKH must match the witness TX output (issuer signs the witness).
+    var issuerPKH = hex.decode(issuerAddress.pubkeyHash160);
     var pp2Locker = PP2LockBuilder(getOutpoint(issuerWitnessFundingTxId),
-        hex.decode(ownerAddress.pubkeyHash160), 1, hex.decode(ownerAddress.pubkeyHash160));
+        issuerPKH, 1, hex.decode(ownerAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(ownerAddress.pubkeyHash160));
 
     var metadataScript = prevTokenTx.outputs[4].script;
@@ -327,11 +336,14 @@ class AppendableTokenTool {
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(hex.decode(prevWitnessTx.serialize()), 2);
 
+    var ppFundingOutpoint = Uint8List(36);
+    ppFundingOutpoint.setAll(0, fundingTx.hash);
+    ppFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        fundingTx.hash);
+        ppFundingOutpoint);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)

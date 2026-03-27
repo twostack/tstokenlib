@@ -93,16 +93,14 @@ void main() {
       var preImage = List<int>.generate(100, (i) => i);
       var partialHash = List<int>.generate(32, (i) => i + 0x20);
       var partialWitnessPreImage = List<int>.generate(128, (i) => i + 0x40);
-      var fundingTxId = List<int>.generate(32, (i) => i + 0x80);
+      var fundingOutpoint = List<int>.generate(36, (i) => i + 0x80); // 36-byte outpoint
 
-      var builder = PartialWitnessUnlockBuilder(preImage, partialHash, partialWitnessPreImage, fundingTxId);
-      // Signing is needed before getScriptSig produces output — but parse works from raw script
-      // So we build the script manually as the builder would
+      var builder = PartialWitnessUnlockBuilder(preImage, partialHash, partialWitnessPreImage, fundingOutpoint);
       var scriptHex = ScriptBuilder()
           .addData(Uint8List.fromList(preImage))
           .addData(Uint8List.fromList(partialHash))
           .addData(Uint8List.fromList(partialWitnessPreImage))
-          .addData(Uint8List.fromList(fundingTxId))
+          .addData(Uint8List.fromList(fundingOutpoint))
           .build()
           .toHex();
 
@@ -113,7 +111,7 @@ void main() {
       expect(ListEquality().equals(parsed.partialHash, partialHash), true, reason: 'partialHash mismatch');
       expect(ListEquality().equals(parsed.partialWitnessPreImage, partialWitnessPreImage), true,
           reason: 'partialWitnessPreImage mismatch');
-      expect(ListEquality().equals(parsed.fundingTxId, fundingTxId), true, reason: 'fundingTxId mismatch');
+      expect(ListEquality().equals(parsed.fundingOutpoint, fundingOutpoint), true, reason: 'fundingOutpoint mismatch');
     });
 
     test('rejects script with too few chunks', () {

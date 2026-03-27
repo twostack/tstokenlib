@@ -191,13 +191,13 @@ class PP1SmScriptGen {
   // createFunnel (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingTxId, witnessPadding, rabinN, rabinS,
+  /// Stack: [preImage, fundingOutpoint, witnessPadding, rabinN, rabinS,
   ///         rabinPadding, identityTxId, ed25519PubKey]
   /// Altstack: [td, bm, ch, mc, state, rabinPKH, custPKH, merchPKH, tokenId, ownerPKH]
   static void _emitCreateFunnel(ScriptBuilder b) {
     // Stack (8 items, top=0):
     //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
-    //   witnessPadding=5, fundingTxId=6, preImage=7
+    //   witnessPadding=5, fundingOutpoint=6, preImage=7
 
     // --- Phase 1: Validate witnessPadding length ---
     b.opCode(OpCodes.OP_5);
@@ -210,7 +210,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId (keep for Rabin binding)
     b.opCode(OpCodes.OP_FROMALTSTACK);  // merchantPKH
     // Stack (11): merchPKH=0, tokenId=1, ownerPKH=2, ed25519PK=3, idTxId=4,
-    //   rabinPad=5, rabinS=6, rabinN=7, witnessPad=8, fundingTxId=9, preImage=10
+    //   rabinPad=5, rabinS=6, rabinN=7, witnessPad=8, fundingOutpoint=9, preImage=10
     // Alt: [td, bm, ch, mc, state, rabinPKH, custPKH]
 
     // Verify ownerPKH == merchantPKH
@@ -222,7 +222,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SWAP);           // [ownerPKH, tokenId, ...]
     b.opCode(OpCodes.OP_DROP);           // drop ownerPKH
     // Stack (9): tokenId=0, ed25519PK=1, idTxId=2, rabinPad=3, rabinS=4,
-    //   rabinN=5, witnessPad=6, fundingTxId=7, preImage=8
+    //   rabinN=5, witnessPad=6, fundingOutpoint=7, preImage=8
 
     // --- Pop + drop customerPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // customerPKH
@@ -231,7 +231,7 @@ class PP1SmScriptGen {
     // --- Phase 3: Verify hash160(rabinN) == rabinPubKeyHash ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // rabinPubKeyHash
     // Stack (10): rabinPKH=0, tokenId=1, ed25519PK=2, idTxId=3, rabinPad=4,
-    //   rabinS=5, rabinN=6, witnessPad=7, fundingTxId=8, preImage=9
+    //   rabinS=5, rabinN=6, witnessPad=7, fundingOutpoint=8, preImage=9
     b.opCode(OpCodes.OP_6);
     b.opCode(OpCodes.OP_PICK);           // copy rabinN
     b.opCode(OpCodes.OP_HASH160);
@@ -258,7 +258,7 @@ class PP1SmScriptGen {
 
     // --- Phase 5: Rabin signature verification ---
     // Stack (9): tokenId=0, ed25519PK=1, idTxId=2, rabinPad=3, rabinS=4,
-    //   rabinN=5, witnessPad=6, fundingTxId=7, preImage=8
+    //   rabinN=5, witnessPad=6, fundingOutpoint=7, preImage=8
     // Compute sha256(identityTxId || ed25519PubKey || tokenId)
     b.opCode(OpCodes.OP_ROT);            // [idTxId, tokenId, ed25519PK, ...]
     b.opCode(OpCodes.OP_ROT);            // [ed25519PK, idTxId, tokenId, ...]
@@ -279,14 +279,14 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_ROT);            // [rabinN, s^2, (h+p), ...]
     b.opCode(OpCodes.OP_MOD);            // [(s^2 mod n), (h+p), ...]
     b.opCode(OpCodes.OP_NUMEQUALVERIFY); // verified!
-    // Stack: [witnessPadding, fundingTxId, preImage]
+    // Stack: [witnessPadding, fundingOutpoint, preImage]
 
     // --- Phase 6: Drop witnessPadding ---
     b.opCode(OpCodes.OP_DROP);
-    // Stack: [fundingTxId, preImage]
+    // Stack: [fundingOutpoint, preImage]
 
     // checkPreimageOCS + hashPrevouts
-    b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingTxId
+    b.opCode(OpCodes.OP_TOALTSTACK);    // save fundingOutpoint
 
     // Extract hashPrevouts [4:36]
     b.opCode(OpCodes.OP_DUP);
@@ -309,11 +309,7 @@ class PP1SmScriptGen {
 
     b.opCode(OpCodes.OP_FROMALTSTACK);  // currentTxId
     b.opCode(OpCodes.OP_FROMALTSTACK);  // hashPrevouts
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingTxId
-
-    // fundingOutpoint
-    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
-    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingOutpoint (36 bytes, from scriptSig)
     // pp1Outpoint
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);
     b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));

@@ -48,7 +48,7 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _tokenLHS;
   List<int>? _prevTokenTx;
   List<int>? _witnessPadding;
-  List<int>? _witnessFundingTxId;
+  List<int>? _fundingOutpoint;
   RestrictedFungibleTokenAction? _action;
   int? _recipientAmount;
   int? _tokenChangeAmount;
@@ -80,7 +80,7 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
   /// Creates a PP1_RFT unlock builder for minting new tokens.
   PP1RftUnlockBuilder.forMint(
     List<int> preImage,
-    List<int> witnessFundingTxId,
+    List<int> fundingOutpoint,
     List<int> witnessPadding,
     {List<int>? rabinN,
      List<int>? rabinS,
@@ -88,7 +88,7 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
      List<int>? identityTxId,
      List<int>? ed25519PubKey}
   ) : _preImage = preImage,
-      _witnessFundingTxId = witnessFundingTxId,
+      _fundingOutpoint = fundingOutpoint,
       _witnessPadding = witnessPadding,
       _rabinN = rabinN,
       _rabinS = rabinS,
@@ -215,7 +215,7 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
   List<int>? get witnessPadding => _witnessPadding;
-  List<int>? get witnessFundingTxId => _witnessFundingTxId;
+  List<int>? get fundingOutpoint => _fundingOutpoint;
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
   RestrictedFungibleTokenAction? get action => _action;
@@ -237,7 +237,7 @@ class PP1RftUnlockBuilder extends UnlockingScriptBuilder {
     if (_action == RestrictedFungibleTokenAction.MINT) {
 
       result.addData(Uint8List.fromList(this._preImage!));
-      result.addData(Uint8List.fromList(this._witnessFundingTxId!));
+      result.addData(Uint8List.fromList(this._fundingOutpoint!));
       result.addData(Uint8List.fromList(this._witnessPadding!));
       result.addData(Uint8List.fromList(this._rabinN!));
       result.addData(Uint8List.fromList(this._rabinS!));

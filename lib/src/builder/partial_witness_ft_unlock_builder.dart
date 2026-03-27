@@ -24,14 +24,14 @@ import 'pp1_ft_unlock_builder.dart';
 /// of a fungible token transaction.
 ///
 /// Supports normal unlock (pushes preimage, partial hash, witness preimage, and
-/// funding TxID with OP_0 selector) and burn (pushes owner pubkey + signature
+/// funding outpoint with OP_0 selector) and burn (pushes owner pubkey + signature
 /// with OP_1 selector).
 class PartialWitnessFtUnlockBuilder extends UnlockingScriptBuilder {
 
   List<int>? _preImage;
   List<int>? _partialHash;
   List<int>? _partialWitnessPreImage;
-  List<int>? _fundingTxId;
+  List<int>? _fundingOutpoint;
   SVPublicKey? _ownerPubKey;
   FungibleTokenAction? _action;
 
@@ -40,16 +40,16 @@ class PartialWitnessFtUnlockBuilder extends UnlockingScriptBuilder {
   /// [preImage] - The sighash preimage of this transaction.
   /// [partialHash] - The intermediate SHA256 hash state.
   /// [partialWitnessPreImage] - The remaining preimage bytes for the witness.
-  /// [fundingTxId] - The transaction ID funding the witness.
+  /// [fundingOutpoint] - The 36-byte outpoint (txid + vout) funding the witness.
   PartialWitnessFtUnlockBuilder(
     List<int> preImage,
     List<int> partialHash,
     List<int> partialWitnessPreImage,
-    List<int> fundingTxId,
+    List<int> fundingOutpoint,
   ) : _preImage = preImage,
       _partialHash = partialHash,
       _partialWitnessPreImage = partialWitnessPreImage,
-      _fundingTxId = fundingTxId;
+      _fundingOutpoint = fundingOutpoint;
 
   /// Creates a partial witness FT unlock builder for burning a token.
   PartialWitnessFtUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
@@ -68,8 +68,8 @@ class PartialWitnessFtUnlockBuilder extends UnlockingScriptBuilder {
   /// The remaining preimage bytes for the witness partial SHA256.
   List<int>? get partialWitnessPreImage => _partialWitnessPreImage;
 
-  /// The transaction ID funding the witness.
-  List<int>? get fundingTxId => _fundingTxId;
+  /// The 36-byte outpoint (txid + vout) funding the witness.
+  List<int>? get fundingOutpoint => _fundingOutpoint;
 
   @override
   SVScript getScriptSig() {
@@ -90,7 +90,7 @@ class PartialWitnessFtUnlockBuilder extends UnlockingScriptBuilder {
         .addData(Uint8List.fromList(_preImage!))
         .addData(Uint8List.fromList(_partialHash!))
         .addData(Uint8List.fromList(_partialWitnessPreImage!))
-        .addData(Uint8List.fromList(_fundingTxId!))
+        .addData(Uint8List.fromList(_fundingOutpoint!))
         .opCode(OpCodes.OP_0); // function selector: unlock=0
 
     var result = builder.build();
@@ -108,7 +108,7 @@ class PartialWitnessFtUnlockBuilder extends UnlockingScriptBuilder {
     _preImage = chunkList[0].buf;
     _partialHash = chunkList[1].buf;
     _partialWitnessPreImage = chunkList[2].buf;
-    _fundingTxId = chunkList[3].buf;
+    _fundingOutpoint = chunkList[3].buf;
   }
 
 }

@@ -155,7 +155,7 @@ void main() {
       // Last chunk should be OP_0
       expect(chunks.last.opcodenum, OpCodes.OP_0,
           reason: 'MINT should end with OP_0');
-      // Should have 9 chunks: preImage, fundingTxId, padding, rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey, OP_0
+      // Should have 9 chunks: preImage, fundingOutpoint, padding, rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey, OP_0
       expect(chunks.length, 9);
     });
 
@@ -217,14 +217,14 @@ void main() {
       var preImage = List<int>.generate(50, (i) => i);
       var partialHash = List<int>.generate(32, (i) => i + 0x10);
       var partialWitnessPreImage = List<int>.generate(128, (i) => i + 0x20);
-      var fundingTxId = List<int>.generate(32, (i) => i + 0x30);
+      var fundingOutpoint = List<int>.generate(36, (i) => i + 0x30);
 
       var builder = PartialWitnessFtUnlockBuilder(
-          preImage, partialHash, partialWitnessPreImage, fundingTxId);
+          preImage, partialHash, partialWitnessPreImage, fundingOutpoint);
       var script = builder.getScriptSig();
       var chunks = script.chunks;
 
-      // 5 chunks: preImage, partialHash, witnessPreImage, fundingTxId, OP_0
+      // 5 chunks: preImage, partialHash, witnessPreImage, fundingOutpoint, OP_0
       expect(chunks.length, 5);
       expect(chunks.last.opcodenum, OpCodes.OP_0);
     });
@@ -233,10 +233,10 @@ void main() {
       var preImage = List<int>.generate(50, (i) => i);
       var partialHash = List<int>.generate(32, (i) => i + 0x10);
       var partialWitnessPreImage = List<int>.generate(128, (i) => i + 0x20);
-      var fundingTxId = List<int>.generate(32, (i) => i + 0x30);
+      var fundingOutpoint = List<int>.generate(36, (i) => i + 0x30);
 
       var builder = PartialWitnessFtUnlockBuilder(
-          preImage, partialHash, partialWitnessPreImage, fundingTxId);
+          preImage, partialHash, partialWitnessPreImage, fundingOutpoint);
       var script = builder.getScriptSig();
 
       var parsed = PartialWitnessFtUnlockBuilder.fromScript(script);
@@ -244,7 +244,7 @@ void main() {
       expect(ListEquality().equals(parsed.preImage, preImage), true);
       expect(ListEquality().equals(parsed.partialHash, partialHash), true);
       expect(ListEquality().equals(parsed.partialWitnessPreImage, partialWitnessPreImage), true);
-      expect(ListEquality().equals(parsed.fundingTxId, fundingTxId), true);
+      expect(ListEquality().equals(parsed.fundingOutpoint, fundingOutpoint), true);
     });
   });
 }
