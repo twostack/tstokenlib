@@ -21,7 +21,7 @@ The library supports six token archetypes:
 | **Restricted NFT** | `RestrictedTokenTool` | NFT with transfer policy flags and redemption |
 | **Restricted Fungible** | `RestrictedFungibleTokenTool` | Fungible token with transfer policy restrictions |
 | **Appendable** | `AppendableTokenTool` | Stamp-accumulating token with threshold redemption (e.g., loyalty cards) |
-| **State Machine** | `StateMachineTool` | Multi-party workflows with explicit state transitions and milestones |
+| **State Machine** | `StateMachineTool` | Multi-party workflows with explicit state transitions and checkpoints |
 
 All token types support the full lifecycle: minting, witness creation, transfers, and burns.
 Fungible types additionally support splitting and merging. Restricted types add transfer policy
@@ -469,7 +469,7 @@ var redeemTx = tool.createRedeemTokenTxn(
 ## State Machine Tokens
 
 The `StateMachineTool` class models multi-party workflows with explicit state transitions.
-It supports merchant/customer actors, transition rules via bitmask, milestone tracking,
+It supports operator/counterparty actors, transition rules via bitmask, checkpoint tracking,
 and timeout handling via nLockTime.
 
 ### State Machine Lifecycle
@@ -479,9 +479,9 @@ States: INIT (0) -> ACTIVE (1) -> CONFIRMED (2) -> CONVERTED (3) -> SETTLED (4)
 ```dart
 var tool = StateMachineTool();
 
-// Create — merchant issues in INIT state
+// Create — operator issues in INIT state
 var createTx = await tool.createTokenIssuanceTxn(
-    fundingTx, fundingSigner, merchantPubKey, merchantAddress,
+    fundingTx, fundingSigner, operatorPubKey, operatorAddress,
     fundingTx.hash,
     rabinPubKeyHash,
     initialState: 0,               // INIT
@@ -489,20 +489,20 @@ var createTx = await tool.createTokenIssuanceTxn(
     timeoutHeight: 800000,         // nLockTime for timeout
 );
 
-// Enroll — customer takes ownership (INIT -> ACTIVE)
+// Enroll — counterparty takes ownership (INIT -> ACTIVE)
 var enrollTx = tool.createEnrollTxn(
     witnessTx, tokenTx,
-    merchantPubKey, customerAddress,
+    operatorPubKey, counterpartyAddress,
     fundingTx, fundingSigner, fundingPubKey,
-    customerFundingTx.hash, tokenId,
+    counterpartyFundingTx.hash, tokenId,
 );
 
 // Confirm — dual-sig transition (ACTIVE -> CONFIRMED)
 var confirmWitnessTx = tool.createDualWitnessTxn(
-    merchantSigner, customerSigner,
+    operatorSigner, counterpartySigner,
     fundingTx, tokenTx,
-    merchantPubKey, customerPubKey,
-    merchantPubkeyHash,
+    operatorPubKey, counterpartyPubKey,
+    operatorPubkeyHash,
     StateMachineAction.CONFIRM,
 );
 
@@ -518,8 +518,8 @@ var transitionTx = tool.createTransitionTxn(
 
 // Timeout — single-sig, requires nLockTime
 var timeoutWitnessTx = tool.createWitnessTxn(
-    merchantSigner, fundingTx, tokenTx,
-    merchantPubKey, merchantPubkeyHash,
+    operatorSigner, fundingTx, tokenTx,
+    operatorPubKey, operatorPubkeyHash,
     StateMachineAction.TIMEOUT,
 );
 ```

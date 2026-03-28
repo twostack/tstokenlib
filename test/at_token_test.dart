@@ -286,7 +286,7 @@ void main() {
       var service = AppendableTokenTool();
       var issuerPKH = hex.decode(alicePubkeyHash);
 
-      // Create issuance transaction (Bob is customer, Alice is issuer)
+      // Create issuance transaction (Bob is counterparty, Alice is issuer)
       var bobFundingTx = getBobFundingTx();
       var bobSigner = DefaultTransactionSigner(sigHashAll, bobPrivateKey);
       var aliceFundingTx = getAliceFundingTx();

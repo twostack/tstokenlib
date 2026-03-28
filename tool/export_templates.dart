@@ -556,11 +556,11 @@ void exportPP1At() {
 void exportPP1Sm() {
   var ownerPKH = List.filled(20, 0xAA);
   var tokenId = List.filled(32, 0xBB);
-  var merchantPKH = List.filled(20, 0xCC);
-  var customerPKH = List.filled(20, 0xDD);
+  var operatorPKH = List.filled(20, 0xCC);
+  var counterpartyPKH = List.filled(20, 0xDD);
   var rabinPubKeyHash = List.filled(20, 0x99);
   var currentState = 0x11;
-  var milestoneCount = 0x22;
+  var checkpointCount = 0x22;
   var commitmentHash = List.filled(32, 0xEE);
   var transitionBitmask = 0x33;
   var timeoutDelta = 0x44444444;
@@ -568,11 +568,11 @@ void exportPP1Sm() {
   var script = PP1SmScriptGen.generate(
     ownerPKH: ownerPKH,
     tokenId: tokenId,
-    merchantPKH: merchantPKH,
-    customerPKH: customerPKH,
+    operatorPKH: operatorPKH,
+    counterpartyPKH: counterpartyPKH,
     rabinPubKeyHash: rabinPubKeyHash,
     currentState: currentState,
-    milestoneCount: milestoneCount,
+    checkpointCount: checkpointCount,
     commitmentHash: commitmentHash,
     transitionBitmask: transitionBitmask,
     timeoutDelta: timeoutDelta,
@@ -584,15 +584,15 @@ void exportPP1Sm() {
   var templateHex = templatizeHex(fullHex, {
     'ownerPKH': _SentinelRegion(PP1SmScriptGen.pkhDataStart, 20, 0xAA),
     'tokenId': _SentinelRegion(PP1SmScriptGen.tokenIdDataStart, 32, 0xBB),
-    'merchantPKH': _SentinelRegion(PP1SmScriptGen.merchantPKHDataStart, 20, 0xCC),
-    'customerPKH': _SentinelRegion(PP1SmScriptGen.customerPKHDataStart, 20, 0xDD),
+    'operatorPKH': _SentinelRegion(PP1SmScriptGen.operatorPKHDataStart, 20, 0xCC),
+    'counterpartyPKH': _SentinelRegion(PP1SmScriptGen.counterpartyPKHDataStart, 20, 0xDD),
     'rabinPubKeyHash': _SentinelRegion(PP1SmScriptGen.rabinPKHDataStart, 20, 0x99),
     'commitmentHash': _SentinelRegion(PP1SmScriptGen.commitmentHashDataStart, 32, 0xEE),
   });
 
   // Replace 1-byte and 4-byte fields using context from adjacent placeholders.
   // The header layout after multi-byte templatization:
-  //   ...{{customerPKH}} 01 <currentState> 01 <milestoneCount> 20 {{commitmentHash}} 01 <bitmask> 04 <timeoutDelta> ...
+  //   ...{{counterpartyPKH}} 01 <currentState> 01 <checkpointCount> 20 {{commitmentHash}} 01 <bitmask> 04 <timeoutDelta> ...
 
   // currentState (1 byte, sentinel 0x11): after {{rabinPubKeyHash}}, prefix 0x01
   var stateHex = fullHex.substring(PP1SmScriptGen.currentStateDataStart * 2,
@@ -601,12 +601,12 @@ void exportPP1Sm() {
       '{{rabinPubKeyHash}}01$stateHex',
       '{{rabinPubKeyHash}}01{{currentState}}');
 
-  // milestoneCount (1 byte, sentinel 0x22): after {{currentState}}, prefix 0x01
-  var mcHex = fullHex.substring(PP1SmScriptGen.milestoneCountDataStart * 2,
-      PP1SmScriptGen.milestoneCountDataEnd * 2);
+  // checkpointCount (1 byte, sentinel 0x22): after {{currentState}}, prefix 0x01
+  var mcHex = fullHex.substring(PP1SmScriptGen.checkpointCountDataStart * 2,
+      PP1SmScriptGen.checkpointCountDataEnd * 2);
   templateHex = templateHex.replaceFirst(
       '{{currentState}}01${mcHex}20',
-      '{{currentState}}01{{milestoneCount}}20');
+      '{{currentState}}01{{checkpointCount}}20');
 
   // transitionBitmask (1 byte, sentinel 0x33): after {{commitmentHash}}, prefix 0x01
   var bmHex = fullHex.substring(PP1SmScriptGen.transitionBitmaskDataStart * 2,
@@ -641,16 +641,16 @@ void exportPP1Sm() {
         'description': '32-byte unique token identifier (genesis txid, immutable)',
       },
       {
-        'name': 'merchantPKH',
+        'name': 'operatorPKH',
         'size': 20,
         'encoding': 'hex',
-        'description': '20-byte pubkey hash of the merchant (immutable)',
+        'description': '20-byte pubkey hash of the operator (immutable)',
       },
       {
-        'name': 'customerPKH',
+        'name': 'counterpartyPKH',
         'size': 20,
         'encoding': 'hex',
-        'description': '20-byte pubkey hash of the customer (immutable)',
+        'description': '20-byte pubkey hash of the counterparty (immutable)',
       },
       {
         'name': 'rabinPubKeyHash',
@@ -665,10 +665,10 @@ void exportPP1Sm() {
         'description': '1-byte state value: 0x00=created, 0x01=enrolled, 0x02=progressing, 0x03=converting, 0x04=settled, 0x05=expired (mutable)',
       },
       {
-        'name': 'milestoneCount',
+        'name': 'checkpointCount',
         'size': 1,
         'encoding': 'hex_byte',
-        'description': '1-byte milestone counter (mutable, incremented on confirm)',
+        'description': '1-byte checkpoint counter (mutable, incremented on confirm)',
       },
       {
         'name': 'commitmentHash',

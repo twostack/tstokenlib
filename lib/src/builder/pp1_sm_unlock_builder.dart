@@ -22,9 +22,9 @@ import 'package:dartsv/dartsv.dart';
 enum StateMachineAction {
   /// Initial funnel creation.
   CREATE,
-  /// Enroll a customer (INIT→ACTIVE).
+  /// Enroll a counterparty (INIT→ACTIVE).
   ENROLL,
-  /// Confirm a milestone (ACTIVE/PROGRESSING→PROGRESSING).
+  /// Confirm a checkpoint (ACTIVE/PROGRESSING→PROGRESSING).
   CONFIRM,
   /// Convert to settlement phase (PROGRESSING→CONVERTING).
   CONVERT,
@@ -44,7 +44,7 @@ enum StateMachineAction {
 class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _preImage;
   List<int>? _pp2Output;
-  SVPublicKey? _merchantPubKey;
+  SVPublicKey? _operatorPubKey;
   String? _changePKH;
   BigInt? _changeAmount;
   List<int>? _tokenLHS;
@@ -57,15 +57,15 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _eventData;
 
   // Confirm/Convert-specific (dual-sig)
-  SVPublicKey? _customerPubKey;
-  List<int>? _customerSigBytes;
+  SVPublicKey? _counterpartyPubKey;
+  List<int>? _counterpartySigBytes;
 
   // Settle-specific
-  BigInt? _custRewardAmount;
-  BigInt? _merchPayAmount;
+  BigInt? _counterpartyShareAmount;
+  BigInt? _operatorShareAmount;
 
   // Timeout-specific
-  BigInt? _refundAmount;
+  BigInt? _recoveryAmount;
 
   List<int>? _sigBytes;
 
@@ -82,7 +82,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   PP1SmUnlockBuilder(
       this._preImage,
       this._pp2Output,
-      this._merchantPubKey,
+      this._operatorPubKey,
       this._changePKH,
       this._changeAmount,
       this._tokenLHS,
@@ -91,22 +91,22 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
       this.action,
       this._fundingOutpoint,
       {List<int>? eventData,
-      SVPublicKey? customerPubKey,
-      List<int>? customerSigBytes,
-      BigInt? custRewardAmount,
-      BigInt? merchPayAmount,
-      BigInt? refundAmount,
+      SVPublicKey? counterpartyPubKey,
+      List<int>? counterpartySigBytes,
+      BigInt? counterpartyShareAmount,
+      BigInt? operatorShareAmount,
+      BigInt? recoveryAmount,
       List<int>? rabinN,
       List<int>? rabinS,
       int? rabinPadding,
       List<int>? identityTxId,
       List<int>? ed25519PubKey})
       : _eventData = eventData,
-        _customerPubKey = customerPubKey,
-        _customerSigBytes = customerSigBytes,
-        _custRewardAmount = custRewardAmount,
-        _merchPayAmount = merchPayAmount,
-        _refundAmount = refundAmount,
+        _counterpartyPubKey = counterpartyPubKey,
+        _counterpartySigBytes = counterpartySigBytes,
+        _counterpartyShareAmount = counterpartyShareAmount,
+        _operatorShareAmount = operatorShareAmount,
+        _recoveryAmount = recoveryAmount,
         _rabinN = rabinN,
         _rabinS = rabinS,
         _rabinPadding = rabinPadding,
@@ -115,7 +115,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
 
   /// Creates a PP1_SM unlock builder for burning a token.
   PP1SmUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
-      : _merchantPubKey = ownerPubKey,
+      : _operatorPubKey = ownerPubKey,
         action = StateMachineAction.BURN;
 
   PP1SmUnlockBuilder.fromScript(SVScript script,
@@ -155,11 +155,11 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
         break;
 
       case StateMachineAction.ENROLL:
-        // Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt,
-        //   merchantSig, eventData, scriptLHS, parentRawTx, padding, OP_1]
+        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
+        //   operatorSig, eventData, scriptLHS, parentRawTx, padding, OP_1]
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
         result.number(_changeAmount!.toInt());
         result.addData(Uint8List.fromList(sigBytes));
@@ -170,17 +170,17 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
         break;
 
       case StateMachineAction.CONFIRM:
-        // Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt,
-        //   merchantSig, customerPK, customerSig, milestoneData,
+        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
+        //   operatorSig, counterpartyPK, counterpartySig, checkpointData,
         //   scriptLHS, parentRawTx, padding, OP_2]
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
         result.number(_changeAmount!.toInt());
         result.addData(Uint8List.fromList(sigBytes));
-        result.addData(Uint8List.fromList(hex.decode(_customerPubKey!.toHex())));
-        result.addData(Uint8List.fromList(_customerSigBytes!));
+        result.addData(Uint8List.fromList(hex.decode(_counterpartyPubKey!.toHex())));
+        result.addData(Uint8List.fromList(_counterpartySigBytes!));
         result.addData(Uint8List.fromList(_eventData!));
         result.addData(Uint8List.fromList(_tokenLHS!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
@@ -191,12 +191,12 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
         // Same layout as confirm with conversionData
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
         result.number(_changeAmount!.toInt());
         result.addData(Uint8List.fromList(sigBytes));
-        result.addData(Uint8List.fromList(hex.decode(_customerPubKey!.toHex())));
-        result.addData(Uint8List.fromList(_customerSigBytes!));
+        result.addData(Uint8List.fromList(hex.decode(_counterpartyPubKey!.toHex())));
+        result.addData(Uint8List.fromList(_counterpartySigBytes!));
         result.addData(Uint8List.fromList(_eventData!));
         result.addData(Uint8List.fromList(_tokenLHS!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
@@ -204,17 +204,17 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
         break;
 
       case StateMachineAction.SETTLE:
-        // Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt,
-        //   merchantSig, custRewardAmt, merchPayAmt, settlementData,
+        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
+        //   operatorSig, counterpartyShareAmt, operatorShareAmt, settlementData,
         //   scriptLHS, parentRawTx, padding, OP_4]
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
         result.number(_changeAmount!.toInt());
         result.addData(Uint8List.fromList(sigBytes));
-        result.number(_custRewardAmount!.toInt());
-        result.number(_merchPayAmount!.toInt());
+        result.number(_counterpartyShareAmount!.toInt());
+        result.number(_operatorShareAmount!.toInt());
         result.addData(Uint8List.fromList(_eventData!));
         result.addData(Uint8List.fromList(_tokenLHS!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
@@ -222,15 +222,15 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
         break;
 
       case StateMachineAction.TIMEOUT:
-        // Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt,
-        //   merchantSig, refundAmount, scriptLHS, parentRawTx, padding, OP_5]
+        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
+        //   operatorSig, recoveryAmount, scriptLHS, parentRawTx, padding, OP_5]
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
         result.number(_changeAmount!.toInt());
         result.addData(Uint8List.fromList(sigBytes));
-        result.number(_refundAmount!.toInt());
+        result.number(_recoveryAmount!.toInt());
         result.addData(Uint8List.fromList(_tokenLHS!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
         result.addData(Uint8List.fromList(_witnessPadding!));
@@ -238,7 +238,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
 
       case StateMachineAction.BURN:
         // Stack: [ownerPubKey, ownerSig, OP_6]
-        result.addData(Uint8List.fromList(hex.decode(_merchantPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
         result.addData(Uint8List.fromList(sigBytes));
         break;
     }
@@ -276,7 +276,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
     var chunkList = script.chunks;
     _preImage = chunkList[0].buf;
     _pp2Output = chunkList[1].buf;
-    _merchantPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);
+    _operatorPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);
     _changePKH = hex.encode(chunkList[3].buf ?? [00]);
     _changeAmount = castToBigInt(chunkList[4].buf ?? [], true);
     _sigBytes = chunkList[5].buf;
@@ -286,7 +286,7 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   }
 
   List<int>? get pp2Output => _pp2Output;
-  SVPublicKey? get merchantPubKey => _merchantPubKey;
+  SVPublicKey? get operatorPubKey => _operatorPubKey;
   BigInt? get changeAmount => _changeAmount;
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
@@ -295,9 +295,9 @@ class PP1SmUnlockBuilder extends UnlockingScriptBuilder {
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
   List<int>? get eventData => _eventData;
-  SVPublicKey? get customerPubKey => _customerPubKey;
-  List<int>? get customerSigBytes => _customerSigBytes;
-  BigInt? get custRewardAmount => _custRewardAmount;
-  BigInt? get merchPayAmount => _merchPayAmount;
-  BigInt? get refundAmount => _refundAmount;
+  SVPublicKey? get counterpartyPubKey => _counterpartyPubKey;
+  List<int>? get counterpartySigBytes => _counterpartySigBytes;
+  BigInt? get counterpartyShareAmount => _counterpartyShareAmount;
+  BigInt? get operatorShareAmount => _operatorShareAmount;
+  BigInt? get recoveryAmount => _recoveryAmount;
 }

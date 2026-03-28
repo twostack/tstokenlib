@@ -27,7 +27,7 @@ Language-agnostic script templates for the TSL1 Token Protocol. These templates 
 
 | Template | Description | Parameters |
 |----------|-------------|------------|
-| [pp1_sm.json](sm/README.md) | State machine token (7 ops) | ownerPKH, tokenId, merchantPKH, customerPKH, currentState, milestoneCount, commitmentHash, transitionBitmask, timeoutDelta |
+| [pp1_sm.json](sm/README.md) | State machine token (7 ops) | ownerPKH, tokenId, operatorPKH, counterpartyPKH, currentState, checkpointCount, commitmentHash, transitionBitmask, timeoutDelta |
 
 ### Utility (`utility/`)
 
@@ -64,7 +64,7 @@ Each `.json` descriptor contains:
 | Encoding | Used By | Description |
 |----------|---------|-------------|
 | `hex` | PP1_NFT, PP1_FT, PP1_RNFT, PP1_RFT, PP1_AT, PP1_SM, PP3, ModP2PKH | Raw hex bytes. Pushdata prefix is in the static hex. |
-| `hex_byte` | PP1_SM (currentState, milestoneCount, transitionBitmask) | Single byte as 2 hex chars. Prefix `0x01` is in static hex. |
+| `hex_byte` | PP1_SM (currentState, checkpointCount, transitionBitmask) | Single byte as 2 hex chars. Prefix `0x01` is in static hex. |
 | `le_uint32` | PP1_RNFT/RFT flags, PP1_AT stampCount/threshold, PP1_SM timeoutDelta | 4-byte little-endian unsigned integer. |
 | `le_uint56` | PP1_FT/RFT amount | 8-byte LE, bit 63 clear. Max: 2^55 - 1. |
 | `script_pushdata` | PP2, PP2-FT, HODL | Includes Bitcoin pushdata length prefix. |

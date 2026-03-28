@@ -136,7 +136,7 @@ class AppendableTokenTool {
   /// Change, PP1_AT, PP2, PartialWitness, Metadata.
   ///
   /// [tokenFundingTx] funds the issuance; its txid becomes the initial tokenId.
-  /// [recipientAddress] is the initial card holder (customer).
+  /// [recipientAddress] is the initial card holder (counterparty).
   /// [witnessFundingTxId] txid of the transaction that will fund the first witness.
   /// [issuerPKH] is the 20-byte hash160 of the issuer's (shop) public key.
   /// [rabinPubKeyHash] is the 20-byte hash160 of the Rabin public key for identity anchoring.

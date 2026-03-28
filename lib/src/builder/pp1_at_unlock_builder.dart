@@ -26,7 +26,7 @@ enum AppendableTokenAction {
   STAMP,
   /// Redeem the card reward (owner signs, threshold check).
   REDEEM,
-  /// Transfer ownership to a new customer (owner signs).
+  /// Transfer ownership to a new counterparty (owner signs).
   TRANSFER,
   /// Burn the token (owner signs).
   BURN

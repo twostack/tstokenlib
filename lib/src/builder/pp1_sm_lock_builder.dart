@@ -25,10 +25,10 @@ import '../script_gen/pp1_sm_script_gen.dart';
 /// ```
 /// [0:1]     0x14  [1:21]    ownerPKH (mutable — "next expected actor")
 /// [21:22]   0x20  [22:54]   tokenId (immutable)
-/// [54:55]   0x14  [55:75]   merchantPKH (immutable)
-/// [75:76]   0x14  [76:96]   customerPKH (immutable)
+/// [54:55]   0x14  [55:75]   operatorPKH (immutable)
+/// [75:76]   0x14  [76:96]   counterpartyPKH (immutable)
 /// [96:97]   0x01  [97:98]   currentState (mutable — 0x00-0x05)
-/// [98:99]   0x01  [99:100]  milestoneCount (mutable)
+/// [98:99]   0x01  [99:100]  checkpointCount (mutable)
 /// [100:101] 0x20  [101:133] commitmentHash (mutable — rolling SHA256)
 /// [133:134] 0x01  [134:135] transitionBitmask (immutable)
 /// [135:136] 0x04  [136:140] timeoutDelta (immutable — 4-byte LE)
@@ -37,28 +37,28 @@ import '../script_gen/pp1_sm_script_gen.dart';
 class PP1SmLockBuilder extends LockingScriptBuilder {
   Address? _ownerAddress;
   List<int>? _tokenId;
-  List<int>? _merchantPKH;
-  List<int>? _customerPKH;
+  List<int>? _operatorPKH;
+  List<int>? _counterpartyPKH;
   List<int>? _rabinPubKeyHash;
   int _currentState;
-  int _milestoneCount;
+  int _checkpointCount;
   List<int>? _commitmentHash;
   int _transitionBitmask;
   int _timeoutDelta;
   NetworkType? networkType;
 
   PP1SmLockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST})
-      : _currentState = 0, _milestoneCount = 0, _transitionBitmask = 0,
+      : _currentState = 0, _checkpointCount = 0, _transitionBitmask = 0,
         _timeoutDelta = 0, super.fromScript(script);
 
   PP1SmLockBuilder(
       this._ownerAddress,
       this._tokenId,
-      this._merchantPKH,
-      this._customerPKH,
+      this._operatorPKH,
+      this._counterpartyPKH,
       this._rabinPubKeyHash,
       this._currentState,
-      this._milestoneCount,
+      this._checkpointCount,
       this._commitmentHash,
       this._transitionBitmask,
       this._timeoutDelta,
@@ -69,11 +69,11 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
     if (_tokenId == null || _tokenId!.length != 32) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Token ID must be 32 bytes");
     }
-    if (_merchantPKH == null || _merchantPKH!.length != 20) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Merchant PKH must be 20 bytes");
+    if (_operatorPKH == null || _operatorPKH!.length != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Operator PKH must be 20 bytes");
     }
-    if (_customerPKH == null || _customerPKH!.length != 20) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Customer PKH must be 20 bytes");
+    if (_counterpartyPKH == null || _counterpartyPKH!.length != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Counterparty PKH must be 20 bytes");
     }
     if (_rabinPubKeyHash == null || _rabinPubKeyHash!.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin pubkey hash must be 20 bytes");
@@ -89,11 +89,11 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
     return PP1SmScriptGen.generate(
       ownerPKH: ownerPKH,
       tokenId: _tokenId!,
-      merchantPKH: _merchantPKH!,
-      customerPKH: _customerPKH!,
+      operatorPKH: _operatorPKH!,
+      counterpartyPKH: _counterpartyPKH!,
       rabinPubKeyHash: _rabinPubKeyHash!,
       currentState: _currentState,
-      milestoneCount: _milestoneCount,
+      checkpointCount: _checkpointCount,
       commitmentHash: _commitmentHash!,
       transitionBitmask: _transitionBitmask,
       timeoutDelta: _timeoutDelta,
@@ -115,11 +115,11 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
         hex.encode(buf.sublist(PP1SmScriptGen.pkhDataStart, PP1SmScriptGen.pkhDataEnd).toList()),
         networkType ?? NetworkType.TEST);
     _tokenId = buf.sublist(PP1SmScriptGen.tokenIdDataStart, PP1SmScriptGen.tokenIdDataEnd).toList();
-    _merchantPKH = buf.sublist(PP1SmScriptGen.merchantPKHDataStart, PP1SmScriptGen.merchantPKHDataEnd).toList();
-    _customerPKH = buf.sublist(PP1SmScriptGen.customerPKHDataStart, PP1SmScriptGen.customerPKHDataEnd).toList();
+    _operatorPKH = buf.sublist(PP1SmScriptGen.operatorPKHDataStart, PP1SmScriptGen.operatorPKHDataEnd).toList();
+    _counterpartyPKH = buf.sublist(PP1SmScriptGen.counterpartyPKHDataStart, PP1SmScriptGen.counterpartyPKHDataEnd).toList();
     _rabinPubKeyHash = buf.sublist(PP1SmScriptGen.rabinPKHDataStart, PP1SmScriptGen.rabinPKHDataEnd).toList();
     _currentState = buf[PP1SmScriptGen.currentStateDataStart];
-    _milestoneCount = buf[PP1SmScriptGen.milestoneCountDataStart];
+    _checkpointCount = buf[PP1SmScriptGen.checkpointCountDataStart];
     _commitmentHash = buf.sublist(PP1SmScriptGen.commitmentHashDataStart, PP1SmScriptGen.commitmentHashDataEnd).toList();
     _transitionBitmask = buf[PP1SmScriptGen.transitionBitmaskDataStart];
 
@@ -129,11 +129,11 @@ class PP1SmLockBuilder extends LockingScriptBuilder {
 
   Address? get ownerAddress => _ownerAddress;
   List<int>? get tokenId => _tokenId;
-  List<int>? get merchantPKH => _merchantPKH;
-  List<int>? get customerPKH => _customerPKH;
+  List<int>? get operatorPKH => _operatorPKH;
+  List<int>? get counterpartyPKH => _counterpartyPKH;
   List<int>? get rabinPubKeyHash => _rabinPubKeyHash;
   int get currentState => _currentState;
-  int get milestoneCount => _milestoneCount;
+  int get checkpointCount => _checkpointCount;
   List<int>? get commitmentHash => _commitmentHash;
   int get transitionBitmask => _transitionBitmask;
   int get timeoutDelta => _timeoutDelta;

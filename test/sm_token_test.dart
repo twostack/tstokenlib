@@ -8,18 +8,18 @@ import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sm_script_gen.dart';
 
 // Merchant identity (Bob)
-var merchantWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
-SVPrivateKey merchantPrivateKey = SVPrivateKey.fromWIF(merchantWif);
-var merchantPub = merchantPrivateKey.publicKey;
-Address merchantAddress = Address.fromPublicKey(merchantPub, NetworkType.TEST);
-var merchantPubkeyHash = "650c4adb156f19e36a755c820d892cda108299c4";
+var operatorWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
+SVPrivateKey operatorPrivateKey = SVPrivateKey.fromWIF(operatorWif);
+var operatorPub = operatorPrivateKey.publicKey;
+Address operatorAddress = Address.fromPublicKey(operatorPub, NetworkType.TEST);
+var operatorPubkeyHash = "650c4adb156f19e36a755c820d892cda108299c4";
 
 // Customer identity (Alice)
-var customerWif = "cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5";
-SVPrivateKey customerPrivateKey = SVPrivateKey.fromWIF(customerWif);
-SVPublicKey customerPub = customerPrivateKey.publicKey;
-var customerAddress = Address.fromPublicKey(customerPub, NetworkType.TEST);
-var customerPubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
+var counterpartyWif = "cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5";
+SVPrivateKey counterpartyPrivateKey = SVPrivateKey.fromWIF(counterpartyWif);
+SVPublicKey counterpartyPub = counterpartyPrivateKey.publicKey;
+var counterpartyAddress = Address.fromPublicKey(counterpartyPub, NetworkType.TEST);
+var counterpartyPubkeyHash = "f5d33ee198ad13840ce410ba96e149e463a6c352";
 
 var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 var verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
@@ -33,13 +33,13 @@ late List<int> rabinNBytes;
 late List<int> rabinSBytes;
 late int rabinPaddingValue;
 
-Transaction getMerchantFundingTx() {
+Transaction getOperatorFundingTx() {
   var rawTx =
       "0200000001cf5ae107ead0a5117ea2124aacb61d0d700de05a937ed3e48c9245bfab19dd8c000000004847304402206edac55dd4f791a611e05a6d946862ca45d914d0cdf391bfd982399c3d84ea4602205a196505d536b3646834051793acd5d9e820249979c94d0a4252298d0ffe9a7041feffffff0200196bee000000001976a914da217dfa3513d4224802556228d07b278af36b0388ac00ca9a3b000000001976a914650c4adb156f19e36a755c820d892cda108299c488ac65000000";
   return Transaction.fromHex(rawTx);
 }
 
-Transaction getCustomerFundingTx() {
+Transaction getCounterpartyFundingTx() {
   var rawTx =
       "0200000001be954a6129f555008a8678e9654ab14feb5b38c8cafa64c8aad29131a3c40f2e000000004948304502210092f4c484895bc20b938d109b871e7f860560e6dc72c684a41a28a9863645637202204f86ab76eb5ac67d678f6a426f917e356d5ec15f7f79c210fd4ac6d40644772641feffffff0200196bee000000001976a91490dca3b694773f8cbed80fe7634c6ee3807ca81588ac00ca9a3b000000001976a914f5d33ee198ad13840ce410ba96e149e463a6c35288ac6b000000";
   return Transaction.fromHex(rawTx);
@@ -50,7 +50,7 @@ void main() {
     rabinKeyPair = Rabin.generateKeyPair(1024);
     rabinNBytes = Rabin.bigIntToScriptNum(rabinKeyPair.n).toList();
     rabinPubKeyHash = hash160(rabinNBytes);
-    var tokenId = getMerchantFundingTx().hash;
+    var tokenId = getOperatorFundingTx().hash;
     var msg = Rabin.sha256ToScriptInt([...dummyIdentityTxId, ...dummyEd25519PubKey, ...tokenId]);
     var sig = Rabin.sign(msg, rabinKeyPair.p, rabinKeyPair.q);
     rabinSBytes = Rabin.bigIntToScriptNum(sig.s).toList();
@@ -60,21 +60,21 @@ void main() {
   group('SM lock builder parse roundtrip', () {
     test('140-byte header roundtrip with initial state', () {
       var tokenId = List<int>.filled(32, 0xAA);
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var commitmentHash = List<int>.filled(32, 0x00);
 
       var builder = PP1SmLockBuilder(
-          merchantAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
+          operatorAddress, tokenId, operatorPKH, counterpartyPKH, dummyRabinPKH,
           0, 0, commitmentHash, 0x3F, 86400);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1SmLockBuilder.fromScript(script);
       expect(parsed.tokenId, tokenId);
-      expect(parsed.merchantPKH, merchPKH);
-      expect(parsed.customerPKH, custPKH);
+      expect(parsed.operatorPKH, operatorPKH);
+      expect(parsed.counterpartyPKH, counterpartyPKH);
       expect(parsed.currentState, 0);
-      expect(parsed.milestoneCount, 0);
+      expect(parsed.checkpointCount, 0);
       expect(parsed.commitmentHash, commitmentHash);
       expect(parsed.transitionBitmask, 0x3F);
       expect(parsed.timeoutDelta, 86400);
@@ -82,18 +82,18 @@ void main() {
 
     test('140-byte header roundtrip with active state', () {
       var tokenId = List<int>.filled(32, 0xBB);
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var commitmentHash = List<int>.generate(32, (i) => i + 1);
 
       var builder = PP1SmLockBuilder(
-          customerAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
+          counterpartyAddress, tokenId, operatorPKH, counterpartyPKH, dummyRabinPKH,
           1, 3, commitmentHash, 0x1F, 172800);
       var script = builder.getScriptPubkey();
 
       var parsed = PP1SmLockBuilder.fromScript(script);
       expect(parsed.currentState, 1);
-      expect(parsed.milestoneCount, 3);
+      expect(parsed.checkpointCount, 3);
       expect(parsed.commitmentHash, commitmentHash);
       expect(parsed.transitionBitmask, 0x1F);
       expect(parsed.timeoutDelta, 172800);
@@ -101,29 +101,29 @@ void main() {
 
     test('script header byte offsets match constants', () {
       var tokenId = List<int>.filled(32, 0xCC);
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var commitmentHash = List<int>.filled(32, 0xFF);
 
       var builder = PP1SmLockBuilder(
-          merchantAddress, tokenId, merchPKH, custPKH, dummyRabinPKH,
+          operatorAddress, tokenId, operatorPKH, counterpartyPKH, dummyRabinPKH,
           2, 5, commitmentHash, 0x3F, 3600);
       var script = builder.getScriptPubkey();
       var buf = script.buffer;
 
       expect(buf[0], 0x14);   // ownerPKH pushdata
       expect(buf[21], 0x20);  // tokenId pushdata
-      expect(buf[54], 0x14);  // merchantPKH pushdata
-      expect(buf[75], 0x14);  // customerPKH pushdata
+      expect(buf[54], 0x14);  // operatorPKH pushdata
+      expect(buf[75], 0x14);  // counterpartyPKH pushdata
       expect(buf[96], 0x14);  // rabinPubKeyHash pushdata
       expect(buf[117], 0x01); // currentState pushdata
-      expect(buf[119], 0x01); // milestoneCount pushdata
+      expect(buf[119], 0x01); // checkpointCount pushdata
       expect(buf[121], 0x20); // commitmentHash pushdata
       expect(buf[154], 0x01); // transitionBitmask pushdata
       expect(buf[156], 0x04); // timeoutDelta pushdata
 
       expect(buf[118], 2);    // currentState value
-      expect(buf[120], 5);    // milestoneCount value
+      expect(buf[120], 5);    // checkpointCount value
       expect(buf[155], 0x3F); // transitionBitmask value
       expect(buf[157], 0x10); // timeoutDelta byte 0
       expect(buf[158], 0x0E); // timeoutDelta byte 1
@@ -133,15 +133,15 @@ void main() {
 
     test('validation rejects wrong-length tokenId', () {
       expect(() => PP1SmLockBuilder(
-          merchantAddress, [1, 2, 3], hex.decode(merchantPubkeyHash),
-          hex.decode(customerPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
+          operatorAddress, [1, 2, 3], hex.decode(operatorPubkeyHash),
+          hex.decode(counterpartyPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
           throwsA(isA<ScriptException>()));
     });
 
-    test('validation rejects wrong-length merchantPKH', () {
+    test('validation rejects wrong-length operatorPKH', () {
       expect(() => PP1SmLockBuilder(
-          merchantAddress, List<int>.filled(32, 0), [1, 2],
-          hex.decode(customerPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
+          operatorAddress, List<int>.filled(32, 0), [1, 2],
+          hex.decode(counterpartyPubkeyHash), dummyRabinPKH, 0, 0, List<int>.filled(32, 0), 0x3F, 0),
           throwsA(isA<ScriptException>()));
     });
   });
@@ -149,13 +149,13 @@ void main() {
   group('SM script generation', () {
     test('generate produces script with correct header size', () {
       var script = PP1SmScriptGen.generate(
-        ownerPKH: hex.decode(merchantPubkeyHash),
+        ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
-        merchantPKH: hex.decode(merchantPubkeyHash),
-        customerPKH: hex.decode(customerPubkeyHash),
+        operatorPKH: hex.decode(operatorPubkeyHash),
+        counterpartyPKH: hex.decode(counterpartyPubkeyHash),
         rabinPubKeyHash: dummyRabinPKH,
         currentState: 0,
-        milestoneCount: 0,
+        checkpointCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
         transitionBitmask: 0x3F,
         timeoutDelta: 86400,
@@ -172,15 +172,15 @@ void main() {
   group('SM issuance transaction', () {
     test('creates 5-output issuance', () {
       var service = StateMachineTool();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400,
-        merchantFundingTx.hash, rabinPubKeyHash,
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400,
+        operatorFundingTx.hash, rabinPubKeyHash,
       );
 
       expect(issuanceTx.outputs.length, 5);
@@ -194,23 +194,23 @@ void main() {
 
     test('PP1_SM output contains correct initial fields', () {
       var service = StateMachineTool();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400,
-        merchantFundingTx.hash, rabinPubKeyHash,
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400,
+        operatorFundingTx.hash, rabinPubKeyHash,
       );
 
       var pp1Lock = PP1SmLockBuilder.fromScript(issuanceTx.outputs[1].script);
-      expect(pp1Lock.tokenId, merchantFundingTx.hash);
-      expect(pp1Lock.merchantPKH, merchPKH);
-      expect(pp1Lock.customerPKH, custPKH);
+      expect(pp1Lock.tokenId, operatorFundingTx.hash);
+      expect(pp1Lock.operatorPKH, operatorPKH);
+      expect(pp1Lock.counterpartyPKH, counterpartyPKH);
       expect(pp1Lock.currentState, 0);
-      expect(pp1Lock.milestoneCount, 0);
+      expect(pp1Lock.checkpointCount, 0);
       expect(pp1Lock.commitmentHash, List<int>.filled(32, 0));
       expect(pp1Lock.transitionBitmask, 0x3F);
       expect(pp1Lock.timeoutDelta, 86400);
@@ -221,33 +221,33 @@ void main() {
     test('burn succeeds on SETTLED state token', () {
       // Build a token in SETTLED state (0x04)
       var pp1Script = PP1SmScriptGen.generate(
-        ownerPKH: hex.decode(merchantPubkeyHash),
+        ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
-        merchantPKH: hex.decode(merchantPubkeyHash),
-        customerPKH: hex.decode(customerPubkeyHash),
+        operatorPKH: hex.decode(operatorPubkeyHash),
+        counterpartyPKH: hex.decode(counterpartyPubkeyHash),
         rabinPubKeyHash: dummyRabinPKH,
         currentState: 4, // SETTLED
-        milestoneCount: 3,
+        checkpointCount: 3,
         commitmentHash: List<int>.filled(32, 0x11),
         transitionBitmask: 0x3F,
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
-          .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
-          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(merchantAddress), BigInt.from(999000000))
+          .spendFromTxnWithSigner(operatorSigner, getOperatorFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(operatorAddress), BigInt.from(999000000))
           .spendToLockBuilder(pp1Locker, BigInt.one)
           .build(false);
 
-      var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var burnUnlocker = PP1SmUnlockBuilder.forBurn(operatorPub);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var burnTx = TransactionBuilder()
-          .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
-          .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
-          .sendChangeToPKH(merchantAddress)
+          .spendFromTxnWithSigner(counterpartySigner, counterpartyFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(counterpartyPub))
+          .spendFromTxnWithSigner(operatorSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
+          .sendChangeToPKH(operatorAddress)
           .withFee(BigInt.from(135))
           .build(false);
 
@@ -258,33 +258,33 @@ void main() {
 
     test('burn succeeds on EXPIRED state token', () {
       var pp1Script = PP1SmScriptGen.generate(
-        ownerPKH: hex.decode(merchantPubkeyHash),
+        ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
-        merchantPKH: hex.decode(merchantPubkeyHash),
-        customerPKH: hex.decode(customerPubkeyHash),
+        operatorPKH: hex.decode(operatorPubkeyHash),
+        counterpartyPKH: hex.decode(counterpartyPubkeyHash),
         rabinPubKeyHash: dummyRabinPKH,
         currentState: 5, // EXPIRED
-        milestoneCount: 0,
+        checkpointCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
         transitionBitmask: 0x3F,
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
-          .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
-          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(merchantAddress), BigInt.from(999000000))
+          .spendFromTxnWithSigner(operatorSigner, getOperatorFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(operatorAddress), BigInt.from(999000000))
           .spendToLockBuilder(pp1Locker, BigInt.one)
           .build(false);
 
-      var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var burnUnlocker = PP1SmUnlockBuilder.forBurn(operatorPub);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var burnTx = TransactionBuilder()
-          .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
-          .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
-          .sendChangeToPKH(merchantAddress)
+          .spendFromTxnWithSigner(counterpartySigner, counterpartyFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(counterpartyPub))
+          .spendFromTxnWithSigner(operatorSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
+          .sendChangeToPKH(operatorAddress)
           .withFee(BigInt.from(135))
           .build(false);
 
@@ -295,33 +295,33 @@ void main() {
 
     test('burn fails on INIT state token', () {
       var pp1Script = PP1SmScriptGen.generate(
-        ownerPKH: hex.decode(merchantPubkeyHash),
+        ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
-        merchantPKH: hex.decode(merchantPubkeyHash),
-        customerPKH: hex.decode(customerPubkeyHash),
+        operatorPKH: hex.decode(operatorPubkeyHash),
+        counterpartyPKH: hex.decode(counterpartyPubkeyHash),
         rabinPubKeyHash: dummyRabinPKH,
         currentState: 0, // INIT — not terminal
-        milestoneCount: 0,
+        checkpointCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
         transitionBitmask: 0x3F,
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
-          .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
-          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(merchantAddress), BigInt.from(999000000))
+          .spendFromTxnWithSigner(operatorSigner, getOperatorFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(operatorAddress), BigInt.from(999000000))
           .spendToLockBuilder(pp1Locker, BigInt.one)
           .build(false);
 
-      var burnUnlocker = PP1SmUnlockBuilder.forBurn(merchantPub);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var burnUnlocker = PP1SmUnlockBuilder.forBurn(operatorPub);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var burnTx = TransactionBuilder()
-          .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
-          .spendFromTxnWithSigner(merchantSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
-          .sendChangeToPKH(merchantAddress)
+          .spendFromTxnWithSigner(counterpartySigner, counterpartyFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(counterpartyPub))
+          .spendFromTxnWithSigner(operatorSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
+          .sendChangeToPKH(operatorAddress)
           .withFee(BigInt.from(135))
           .build(false);
 
@@ -335,34 +335,34 @@ void main() {
 
     test('burn fails with wrong key', () {
       var pp1Script = PP1SmScriptGen.generate(
-        ownerPKH: hex.decode(merchantPubkeyHash),
+        ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
-        merchantPKH: hex.decode(merchantPubkeyHash),
-        customerPKH: hex.decode(customerPubkeyHash),
+        operatorPKH: hex.decode(operatorPubkeyHash),
+        counterpartyPKH: hex.decode(counterpartyPubkeyHash),
         rabinPubKeyHash: dummyRabinPKH,
         currentState: 4,
-        milestoneCount: 0,
+        checkpointCount: 0,
         commitmentHash: List<int>.filled(32, 0x00),
         transitionBitmask: 0x3F,
         timeoutDelta: 86400,
       );
 
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       var pp1Locker = DefaultLockBuilder.fromScript(pp1Script);
       var parentTx = TransactionBuilder()
-          .spendFromTxnWithSigner(merchantSigner, getMerchantFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(merchantPub))
-          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(merchantAddress), BigInt.from(999000000))
+          .spendFromTxnWithSigner(operatorSigner, getOperatorFundingTx(), 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(operatorAddress), BigInt.from(999000000))
           .spendToLockBuilder(pp1Locker, BigInt.one)
           .build(false);
 
-      // Try to burn with customer key (should fail — ownerPKH is merchantPKH)
-      var burnUnlocker = PP1SmUnlockBuilder.forBurn(customerPub);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      // Try to burn with counterparty key (should fail — ownerPKH is operatorPKH)
+      var burnUnlocker = PP1SmUnlockBuilder.forBurn(counterpartyPub);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var burnTx = TransactionBuilder()
-          .spendFromTxnWithSigner(customerSigner, customerFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(customerPub))
-          .spendFromTxnWithSigner(customerSigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
-          .sendChangeToPKH(customerAddress)
+          .spendFromTxnWithSigner(counterpartySigner, counterpartyFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(counterpartyPub))
+          .spendFromTxnWithSigner(counterpartySigner, parentTx, 1, TransactionInput.MAX_SEQ_NUMBER, burnUnlocker)
+          .sendChangeToPKH(counterpartyAddress)
           .withFee(BigInt.from(135))
           .build(false);
 
@@ -376,29 +376,29 @@ void main() {
   });
 
   group('SM create witness', () {
-    test('create witness verifies with merchant signature', () {
+    test('create witness verifies with operator signature', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
 
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerFundingTx = getCustomerFundingTx();
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash, rabinPubKeyHash,
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400,
+        counterpartyFundingTx.hash, rabinPubKeyHash,
       );
 
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var witnessTx = service.createWitnessTxn(
-        customerSigner,
-        customerFundingTx,
+        counterpartySigner,
+        counterpartyFundingTx,
         issuanceTx,
-        hex.decode(merchantFundingTx.serialize()),
-        customerPub,
-        customerPubkeyHash,
+        hex.decode(operatorFundingTx.serialize()),
+        counterpartyPub,
+        counterpartyPubkeyHash,
         StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
@@ -416,30 +416,30 @@ void main() {
   group('SM enroll', () {
     test('enroll lifecycle: issue → create witness → enroll → enroll witness', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
 
       // Step 1: Issue token
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerFundingTx = getCustomerFundingTx();
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash, rabinPubKeyHash,
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400,
+        counterpartyFundingTx.hash, rabinPubKeyHash,
       );
 
-      // Step 2: Create witness (merchant signs, dispatches OP_0)
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      // Step 2: Create witness (operator signs, dispatches OP_0)
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var createWitnessTx = service.createWitnessTxn(
-        customerSigner,
-        customerFundingTx,
+        counterpartySigner,
+        counterpartyFundingTx,
         issuanceTx,
-        hex.decode(merchantFundingTx.serialize()),
-        customerPub,
-        customerPubkeyHash,
+        hex.decode(operatorFundingTx.serialize()),
+        counterpartyPub,
+        counterpartyPubkeyHash,
         StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
@@ -454,14 +454,14 @@ void main() {
           returnsNormally,
           reason: 'Create witness should verify');
 
-      // Step 3: Enroll (merchant signs, spending PP3 from issuance)
-      var enrollFundingTx = getMerchantFundingTx(); // reuse for simplicity
-      var enrollWitnessFundingTx = getCustomerFundingTx();
+      // Step 3: Enroll (operator signs, spending PP3 from issuance)
+      var enrollFundingTx = getOperatorFundingTx(); // reuse for simplicity
+      var enrollWitnessFundingTx = getCounterpartyFundingTx();
       var eventData = List<int>.generate(20, (i) => i + 0x10);
 
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        enrollFundingTx, merchantSigner, merchantPub,
+        createWitnessTx, issuanceTx, operatorPub,
+        enrollFundingTx, operatorSigner, operatorPub,
         enrollWitnessFundingTx.hash, eventData,
       );
 
@@ -470,9 +470,9 @@ void main() {
       // Verify PP1_SM header in enroll tx
       var enrollPP1 = PP1SmLockBuilder.fromScript(enrollTx.outputs[1].script);
       expect(enrollPP1.currentState, 1); // ACTIVE
-      expect(enrollPP1.milestoneCount, 0);
-      expect(enrollPP1.merchantPKH, merchPKH);
-      expect(enrollPP1.customerPKH, custPKH);
+      expect(enrollPP1.checkpointCount, 0);
+      expect(enrollPP1.operatorPKH, operatorPKH);
+      expect(enrollPP1.counterpartyPKH, counterpartyPKH);
 
       // Verify commitment hash = SHA256(parentCH || SHA256(eventData))
       var parentCH = List<int>.filled(32, 0); // initial
@@ -488,14 +488,14 @@ void main() {
           returnsNormally,
           reason: 'PartialWitness spending in enroll should verify');
 
-      // Step 4: Enroll witness (merchant signs PP1_SM with OP_1 dispatch)
+      // Step 4: Enroll witness (operator signs PP1_SM with OP_1 dispatch)
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner,
+        operatorSigner,
         enrollWitnessFundingTx,
         enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub,
-        merchantPubkeyHash,
+        operatorPub,
+        operatorPubkeyHash,
         StateMachineAction.ENROLL,
         eventData: eventData,
       );
@@ -513,27 +513,27 @@ void main() {
   group('SM confirm', () {
     test('confirm lifecycle: issue → create → enroll → confirm (dual-sig)', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
 
       // Step 1: Issue
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400,
-        customerFundingTx.hash, rabinPubKeyHash,
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400,
+        counterpartyFundingTx.hash, rabinPubKeyHash,
       );
 
       // Step 2: Create witness
       var createWitnessTx = service.createWitnessTxn(
-        customerSigner, customerFundingTx, issuanceTx,
-        hex.decode(merchantFundingTx.serialize()),
-        customerPub, customerPubkeyHash,
+        counterpartySigner, counterpartyFundingTx, issuanceTx,
+        hex.decode(operatorFundingTx.serialize()),
+        counterpartyPub, counterpartyPubkeyHash,
         StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
         identityTxId: dummyIdentityTxId,
@@ -541,44 +541,44 @@ void main() {
       );
 
       // Step 3: Enroll
-      var enrollFundingTx = getMerchantFundingTx();
-      var enrollWitnessFundingTx = getCustomerFundingTx();
+      var enrollFundingTx = getOperatorFundingTx();
+      var enrollWitnessFundingTx = getCounterpartyFundingTx();
       var enrollEventData = List<int>.generate(20, (i) => i + 0x10);
 
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        enrollFundingTx, merchantSigner, merchantPub,
+        createWitnessTx, issuanceTx, operatorPub,
+        enrollFundingTx, operatorSigner, operatorPub,
         enrollWitnessFundingTx.hash, enrollEventData,
       );
 
       // Step 4: Enroll witness
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner, enrollWitnessFundingTx, enrollTx,
+        operatorSigner, enrollWitnessFundingTx, enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub, merchantPubkeyHash,
+        operatorPub, operatorPubkeyHash,
         StateMachineAction.ENROLL,
         eventData: enrollEventData,
       );
 
       // Step 5: Confirm (dual-sig, ACTIVE→PROGRESSING)
-      var confirmFundingTx = getMerchantFundingTx();
-      var confirmWitnessFundingTx = getCustomerFundingTx();
-      var milestoneData = List<int>.generate(16, (i) => i + 0x20);
+      var confirmFundingTx = getOperatorFundingTx();
+      var confirmWitnessFundingTx = getCounterpartyFundingTx();
+      var checkpointData = List<int>.generate(16, (i) => i + 0x20);
 
       var confirmTx = service.createTransitionTxn(
-        enrollWitnessTx, enrollTx, merchantPub,
-        confirmFundingTx, merchantSigner, merchantPub,
+        enrollWitnessTx, enrollTx, operatorPub,
+        confirmFundingTx, operatorSigner, operatorPub,
         confirmWitnessFundingTx.hash,
         2, // POST-transition state: PROGRESSING
-        custPKH, // customer remains next actor
+        counterpartyPKH, // counterparty remains next actor
         incrementMilestone: true,
-        eventData: milestoneData,
+        eventData: checkpointData,
       );
 
       expect(confirmTx.outputs.length, 5);
       var confirmPP1 = PP1SmLockBuilder.fromScript(confirmTx.outputs[1].script);
       expect(confirmPP1.currentState, 2);
-      expect(confirmPP1.milestoneCount, 1);
+      expect(confirmPP1.checkpointCount, 1);
 
       // Verify PP3 spending in confirm
       expect(
@@ -590,13 +590,13 @@ void main() {
 
       // Step 6: Confirm witness (dual-sig)
       var confirmWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
+        operatorSigner, counterpartyPrivateKey,
         confirmWitnessFundingTx, confirmTx,
         hex.decode(enrollTx.serialize()),
-        merchantPub, customerPub,
-        merchantPubkeyHash,
+        operatorPub, counterpartyPub,
+        operatorPubkeyHash,
         StateMachineAction.CONFIRM,
-        milestoneData,
+        checkpointData,
       );
 
       // Verify confirm witness PP1_SM spending
@@ -612,65 +612,65 @@ void main() {
   group('SM convert', () {
     test('convert lifecycle: ...confirm → convert (dual-sig)', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
 
       // Abbreviated setup: issue → create → enroll → enroll witness → confirm → confirm witness
-      var merchantFundingTx = getMerchantFundingTx();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerFundingTx = getCustomerFundingTx();
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var operatorFundingTx = getOperatorFundingTx();
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartyFundingTx = getCounterpartyFundingTx();
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        merchantFundingTx, merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, customerFundingTx.hash, rabinPubKeyHash);
+        operatorFundingTx, operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400, counterpartyFundingTx.hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
-        customerSigner, customerFundingTx, issuanceTx,
-        hex.decode(merchantFundingTx.serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        counterpartySigner, counterpartyFundingTx, issuanceTx,
+        hex.decode(operatorFundingTx.serialize()),
+        counterpartyPub, counterpartyPubkeyHash, StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, List<int>.generate(20, (i) => i));
+        createWitnessTx, issuanceTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, List<int>.generate(20, (i) => i));
 
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), enrollTx,
+        operatorSigner, getCounterpartyFundingTx(), enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub, merchantPubkeyHash, StateMachineAction.ENROLL,
+        operatorPub, operatorPubkeyHash, StateMachineAction.ENROLL,
         eventData: List<int>.generate(20, (i) => i));
 
       var confirmTx = service.createTransitionTxn(
-        enrollWitnessTx, enrollTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash,
-        2, custPKH, incrementMilestone: true,
+        enrollWitnessTx, enrollTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash,
+        2, counterpartyPKH, incrementMilestone: true,
         eventData: List<int>.generate(16, (i) => i + 0x20));
 
       var confirmWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), confirmTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
+        operatorPub, counterpartyPub, operatorPubkeyHash,
         StateMachineAction.CONFIRM,
         List<int>.generate(16, (i) => i + 0x20));
 
       // Step: Convert (PROGRESSING→CONVERTING, dual-sig)
       var conversionData = List<int>.generate(12, (i) => i + 0x30);
       var convertTx = service.createTransitionTxn(
-        confirmWitnessTx, confirmTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash,
+        confirmWitnessTx, confirmTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash,
         3, // POST-transition: CONVERTING
-        merchPKH, // merchant takes over for settlement phase
+        operatorPKH, // operator takes over for settlement phase
         eventData: conversionData);
 
       var convertPP1 = PP1SmLockBuilder.fromScript(convertTx.outputs[1].script);
       expect(convertPP1.currentState, 3);
-      expect(convertPP1.milestoneCount, 1); // unchanged from confirm
+      expect(convertPP1.checkpointCount, 1); // unchanged from confirm
 
       // Verify PP3 spending
       expect(
@@ -682,10 +682,10 @@ void main() {
 
       // Convert witness (dual-sig)
       var convertWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), convertTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
+        operatorPub, counterpartyPub, operatorPubkeyHash,
         StateMachineAction.CONVERT, conversionData);
 
       expect(
@@ -700,76 +700,76 @@ void main() {
   group('SM settle', () {
     test('settle lifecycle: ...convert → settle (single-sig, 7-output)', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
 
       // Setup: issue → create → enroll → enroll witness → confirm → confirm witness → convert → convert witness
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
+        getOperatorFundingTx(), operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400, getCounterpartyFundingTx().hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
-        customerSigner, getCustomerFundingTx(), issuanceTx,
-        hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        counterpartySigner, getCounterpartyFundingTx(), issuanceTx,
+        hex.decode(getOperatorFundingTx().serialize()),
+        counterpartyPub, counterpartyPubkeyHash, StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, enrollEventData);
+        createWitnessTx, issuanceTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, enrollEventData);
 
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), enrollTx,
+        operatorSigner, getCounterpartyFundingTx(), enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub, merchantPubkeyHash, StateMachineAction.ENROLL,
+        operatorPub, operatorPubkeyHash, StateMachineAction.ENROLL,
         eventData: enrollEventData);
 
-      var milestoneData = List<int>.generate(16, (i) => i + 0x20);
+      var checkpointData = List<int>.generate(16, (i) => i + 0x20);
       var confirmTx = service.createTransitionTxn(
-        enrollWitnessTx, enrollTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, 2, custPKH,
-        incrementMilestone: true, eventData: milestoneData);
+        enrollWitnessTx, enrollTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, 2, counterpartyPKH,
+        incrementMilestone: true, eventData: checkpointData);
 
       var confirmWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), confirmTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
-        StateMachineAction.CONFIRM, milestoneData);
+        operatorPub, counterpartyPub, operatorPubkeyHash,
+        StateMachineAction.CONFIRM, checkpointData);
 
       var conversionData = List<int>.generate(12, (i) => i + 0x30);
       var convertTx = service.createTransitionTxn(
-        confirmWitnessTx, confirmTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, 3, merchPKH,
+        confirmWitnessTx, confirmTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, 3, operatorPKH,
         eventData: conversionData);
 
       var convertWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), convertTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
+        operatorPub, counterpartyPub, operatorPubkeyHash,
         StateMachineAction.CONVERT, conversionData);
 
       // Step: Settle (CONVERTING→SETTLED, single-sig, 7-output)
       var settlementData = List<int>.generate(10, (i) => i + 0x40);
-      var custRewardAmount = BigInt.from(1000);
-      var merchPayAmount = BigInt.from(2000);
+      var counterpartyShareAmount = BigInt.from(1000);
+      var operatorShareAmount = BigInt.from(2000);
       var settleTx = service.createSettleTxn(
-        convertWitnessTx, convertTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash,
-        custRewardAmount, merchPayAmount,
+        convertWitnessTx, convertTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash,
+        counterpartyShareAmount, operatorShareAmount,
         eventData: settlementData);
 
-      // Settle tx has 7 outputs: change(0), custReward(1), merchPay(2),
+      // Settle tx has 7 outputs: change(0), counterpartyShare(1), operatorShare(2),
       //   PP1(3), PP2(4), PP3(5), metadata(6)
       expect(settleTx.outputs.length, 7);
       var settlePP1 = PP1SmLockBuilder.fromScript(settleTx.outputs[3].script);
@@ -785,13 +785,13 @@ void main() {
 
       // Settle witness (single-sig, PP1 at output 3, PP2 at output 4)
       var settleWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), settleTx,
+        operatorSigner, getCounterpartyFundingTx(), settleTx,
         hex.decode(convertTx.serialize()),
-        merchantPub, merchantPubkeyHash,
+        operatorPub, operatorPubkeyHash,
         StateMachineAction.SETTLE,
         eventData: settlementData,
-        custRewardAmount: custRewardAmount,
-        merchPayAmount: merchPayAmount,
+        counterpartyShareAmount: counterpartyShareAmount,
+        operatorShareAmount: operatorShareAmount,
         pp1OutputIndex: 3,
         pp2OutputIndex: 4);
 
@@ -807,46 +807,46 @@ void main() {
   group('SM timeout', () {
     test('timeout lifecycle: ...enroll → timeout (single-sig, 6-output)', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
 
       // Setup: issue → create → enroll → enroll witness
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
 
       var issuanceTx = service.createTokenIssuanceTxn(
-        getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
+        getOperatorFundingTx(), operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400, getCounterpartyFundingTx().hash, rabinPubKeyHash);
 
       var createWitnessTx = service.createWitnessTxn(
-        DefaultTransactionSigner(sigHashAll, customerPrivateKey),
-        getCustomerFundingTx(), issuanceTx,
-        hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
+        getCounterpartyFundingTx(), issuanceTx,
+        hex.decode(getOperatorFundingTx().serialize()),
+        counterpartyPub, counterpartyPubkeyHash, StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
 
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, enrollEventData);
+        createWitnessTx, issuanceTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, enrollEventData);
 
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), enrollTx,
+        operatorSigner, getCounterpartyFundingTx(), enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub, merchantPubkeyHash, StateMachineAction.ENROLL,
+        operatorPub, operatorPubkeyHash, StateMachineAction.ENROLL,
         eventData: enrollEventData);
 
       // Timeout (ENROLLED→EXPIRED, single-sig, 6-output)
-      var refundAmount = BigInt.from(1500);
+      var recoveryAmount = BigInt.from(1500);
       var timeoutNLockTime = 86400; // must be >= timeoutDelta
       var timeoutTx = service.createTimeoutTxn(
-        enrollWitnessTx, enrollTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash,
-        refundAmount, timeoutNLockTime);
+        enrollWitnessTx, enrollTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash,
+        recoveryAmount, timeoutNLockTime);
 
-      // Timeout tx has 6 outputs: change(0), merchRefund(1), PP1(2), PP2(3), PP3(4), metadata(5)
+      // Timeout tx has 6 outputs: change(0), operatorRecovery(1), PP1(2), PP2(3), PP3(4), metadata(5)
       expect(timeoutTx.outputs.length, 6);
       var timeoutPP1 = PP1SmLockBuilder.fromScript(timeoutTx.outputs[2].script);
       expect(timeoutPP1.currentState, 5);
@@ -862,11 +862,11 @@ void main() {
 
       // Timeout witness (single-sig, PP1 at output 2, PP2 at output 3)
       var timeoutWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), timeoutTx,
+        operatorSigner, getCounterpartyFundingTx(), timeoutTx,
         hex.decode(enrollTx.serialize()),
-        merchantPub, merchantPubkeyHash,
+        operatorPub, operatorPubkeyHash,
         StateMachineAction.TIMEOUT,
-        refundAmount: refundAmount,
+        recoveryAmount: recoveryAmount,
         nLockTime: timeoutNLockTime,
         pp1OutputIndex: 2,
         pp2OutputIndex: 3);
@@ -883,24 +883,24 @@ void main() {
   group('SM full lifecycle', () {
     test('create → enroll → confirm → convert → settle → burn', () {
       var service = StateMachineTool();
-      var merchPKH = hex.decode(merchantPubkeyHash);
-      var custPKH = hex.decode(customerPubkeyHash);
+      var operatorPKH = hex.decode(operatorPubkeyHash);
+      var counterpartyPKH = hex.decode(counterpartyPubkeyHash);
       var interp = Interpreter();
-      var merchantSigner = DefaultTransactionSigner(sigHashAll, merchantPrivateKey);
-      var customerSigner = DefaultTransactionSigner(sigHashAll, customerPrivateKey);
+      var operatorSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      var counterpartySigner = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
 
       // Step 1: Issue (CREATE state)
       var issuanceTx = service.createTokenIssuanceTxn(
-        getMerchantFundingTx(), merchantSigner, merchantPub, merchantAddress,
-        merchPKH, custPKH, 0x3F, 86400, getCustomerFundingTx().hash, rabinPubKeyHash);
+        getOperatorFundingTx(), operatorSigner, operatorPub, operatorAddress,
+        operatorPKH, counterpartyPKH, 0x3F, 86400, getCounterpartyFundingTx().hash, rabinPubKeyHash);
       var issuePP1 = PP1SmLockBuilder.fromScript(issuanceTx.outputs[1].script);
       expect(issuePP1.currentState, 0, reason: 'Issue: state=CREATED');
 
       // Step 2: Create witness
       var createWitnessTx = service.createWitnessTxn(
-        customerSigner, getCustomerFundingTx(), issuanceTx,
-        hex.decode(getMerchantFundingTx().serialize()),
-        customerPub, customerPubkeyHash, StateMachineAction.CREATE,
+        counterpartySigner, getCounterpartyFundingTx(), issuanceTx,
+        hex.decode(getOperatorFundingTx().serialize()),
+        counterpartyPub, counterpartyPubkeyHash, StateMachineAction.CREATE,
         rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue, identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey);
       expect(
           () => interp.correctlySpends(
@@ -911,17 +911,17 @@ void main() {
       // Step 3: Enroll (CREATED→ENROLLED)
       var enrollEventData = List<int>.generate(20, (i) => i);
       var enrollTx = service.createEnrollTxn(
-        createWitnessTx, issuanceTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, enrollEventData);
+        createWitnessTx, issuanceTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, enrollEventData);
       var enrollPP1 = PP1SmLockBuilder.fromScript(enrollTx.outputs[1].script);
       expect(enrollPP1.currentState, 1, reason: 'Enroll: state=ENROLLED');
 
       // Step 4: Enroll witness
       var enrollWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), enrollTx,
+        operatorSigner, getCounterpartyFundingTx(), enrollTx,
         hex.decode(issuanceTx.serialize()),
-        merchantPub, merchantPubkeyHash, StateMachineAction.ENROLL,
+        operatorPub, operatorPubkeyHash, StateMachineAction.ENROLL,
         eventData: enrollEventData);
       expect(
           () => interp.correctlySpends(
@@ -929,24 +929,24 @@ void main() {
               enrollWitnessTx, 1, verifyFlags, Coin.valueOf(BigInt.one)),
           returnsNormally, reason: 'Enroll witness');
 
-      // Step 5: Confirm (ENROLLED→PROGRESSING, dual-sig, milestone++)
-      var milestoneData = List<int>.generate(16, (i) => i + 0x20);
+      // Step 5: Confirm (ENROLLED→PROGRESSING, dual-sig, checkpoint++)
+      var checkpointData = List<int>.generate(16, (i) => i + 0x20);
       var confirmTx = service.createTransitionTxn(
-        enrollWitnessTx, enrollTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, 2, custPKH,
-        incrementMilestone: true, eventData: milestoneData);
+        enrollWitnessTx, enrollTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, 2, counterpartyPKH,
+        incrementMilestone: true, eventData: checkpointData);
       var confirmPP1 = PP1SmLockBuilder.fromScript(confirmTx.outputs[1].script);
       expect(confirmPP1.currentState, 2, reason: 'Confirm: state=PROGRESSING');
-      expect(confirmPP1.milestoneCount, 1, reason: 'Confirm: milestone=1');
+      expect(confirmPP1.checkpointCount, 1, reason: 'Confirm: checkpoint=1');
 
       // Step 6: Confirm witness (dual-sig)
       var confirmWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), confirmTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
-        StateMachineAction.CONFIRM, milestoneData);
+        operatorPub, counterpartyPub, operatorPubkeyHash,
+        StateMachineAction.CONFIRM, checkpointData);
       expect(
           () => interp.correctlySpends(
               confirmWitnessTx.inputs[1].script!, confirmTx.outputs[1].script,
@@ -956,19 +956,19 @@ void main() {
       // Step 7: Convert (PROGRESSING→CONVERTING, dual-sig)
       var conversionData = List<int>.generate(12, (i) => i + 0x30);
       var convertTx = service.createTransitionTxn(
-        confirmWitnessTx, confirmTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash, 3, merchPKH,
+        confirmWitnessTx, confirmTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash, 3, operatorPKH,
         eventData: conversionData);
       var convertPP1 = PP1SmLockBuilder.fromScript(convertTx.outputs[1].script);
       expect(convertPP1.currentState, 3, reason: 'Convert: state=CONVERTING');
 
       // Step 8: Convert witness (dual-sig)
       var convertWitnessTx = service.createDualWitnessTxn(
-        merchantSigner, customerPrivateKey,
-        getCustomerFundingTx(), convertTx,
+        operatorSigner, counterpartyPrivateKey,
+        getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
-        merchantPub, customerPub, merchantPubkeyHash,
+        operatorPub, counterpartyPub, operatorPubkeyHash,
         StateMachineAction.CONVERT, conversionData);
       expect(
           () => interp.correctlySpends(
@@ -978,13 +978,13 @@ void main() {
 
       // Step 9: Settle (CONVERTING→SETTLED, single-sig, 7-output)
       var settlementData = List<int>.generate(10, (i) => i + 0x40);
-      var custRewardAmount = BigInt.from(1000);
-      var merchPayAmount = BigInt.from(2000);
+      var counterpartyShareAmount = BigInt.from(1000);
+      var operatorShareAmount = BigInt.from(2000);
       var settleTx = service.createSettleTxn(
-        convertWitnessTx, convertTx, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
-        getCustomerFundingTx().hash,
-        custRewardAmount, merchPayAmount,
+        convertWitnessTx, convertTx, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
+        getCounterpartyFundingTx().hash,
+        counterpartyShareAmount, operatorShareAmount,
         eventData: settlementData);
       var settlePP1 = PP1SmLockBuilder.fromScript(settleTx.outputs[3].script);
       expect(settlePP1.currentState, 4, reason: 'Settle: state=SETTLED');
@@ -992,13 +992,13 @@ void main() {
 
       // Step 10: Settle witness
       var settleWitnessTx = service.createWitnessTxn(
-        merchantSigner, getCustomerFundingTx(), settleTx,
+        operatorSigner, getCounterpartyFundingTx(), settleTx,
         hex.decode(convertTx.serialize()),
-        merchantPub, merchantPubkeyHash,
+        operatorPub, operatorPubkeyHash,
         StateMachineAction.SETTLE,
         eventData: settlementData,
-        custRewardAmount: custRewardAmount,
-        merchPayAmount: merchPayAmount,
+        counterpartyShareAmount: counterpartyShareAmount,
+        operatorShareAmount: operatorShareAmount,
         pp1OutputIndex: 3, pp2OutputIndex: 4);
       expect(
           () => interp.correctlySpends(
@@ -1009,8 +1009,8 @@ void main() {
       // Step 11: Burn (SETTLED→burned, owner spends with P2PKH)
       // After settle: PP1 at 3, PP2 at 4, PP3 at 5
       var burnTx = service.createBurnTokenTxn(
-        settleTx, merchantSigner, merchantPub,
-        getMerchantFundingTx(), merchantSigner, merchantPub,
+        settleTx, operatorSigner, operatorPub,
+        getOperatorFundingTx(), operatorSigner, operatorPub,
         pp1OutputIndex: 3, pp2OutputIndex: 4, pp3OutputIndex: 5);
       expect(
           () => interp.correctlySpends(

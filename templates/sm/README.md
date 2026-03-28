@@ -5,7 +5,7 @@
 A multi-party stateful token supporting 7 operations across a defined lifecycle. The script enforces state transitions, dual-signature authorization, rolling commitment hashes, and nLockTime-based timeouts entirely on-chain.
 
 ### Use Cases
-- Escrow agreements with milestone-based releases
+- Escrow agreements with checkpoint-based releases
 - Service contracts (freelance, SLA-backed)
 - Layaway / installment purchase plans
 - Insurance claim workflows
@@ -24,11 +24,11 @@ CREATED(0) → ENROLLED(1) → PROGRESSING(2) → CONVERTING(3) → SETTLED(4)
 | Op Code | Operation | Auth | Description |
 |---------|-----------|------|-------------|
 | OP_0 | Create | preimage (OCS) | Initialize the token from a funding UTXO |
-| OP_1 | Enroll | merchant sig | Customer enrolls, merchant approves |
-| OP_2 | Confirm | dual sig | Record a milestone (merchant + customer) |
+| OP_1 | Enroll | operator sig | Counterparty enrolls, operator approves |
+| OP_2 | Confirm | dual sig | Record a checkpoint (operator + counterparty) |
 | OP_3 | Convert | dual sig | Move to settlement phase |
-| OP_4 | Settle | merchant sig | Distribute rewards and payment (7 outputs) |
-| OP_5 | Timeout | merchant sig | Refund on expiration via nLockTime (6 outputs) |
+| OP_4 | Settle | operator sig | Distribute rewards and payment (7 outputs) |
+| OP_5 | Timeout | operator sig | Refund on expiration via nLockTime (6 outputs) |
 | OP_6 | Burn | owner sig | Destroy token in terminal state (P2PKH spend) |
 
 ### Parameters
@@ -37,10 +37,10 @@ CREATED(0) → ENROLLED(1) → PROGRESSING(2) → CONVERTING(3) → SETTLED(4)
 |------|------|----------|-------------|
 | `ownerPKH` | 20 | `hex` | Current owner / next expected actor (mutable) |
 | `tokenId` | 32 | `hex` | Unique token identifier, genesis txid (immutable) |
-| `merchantPKH` | 20 | `hex` | Merchant pubkey hash (immutable) |
-| `customerPKH` | 20 | `hex` | Customer pubkey hash (immutable) |
+| `operatorPKH` | 20 | `hex` | Operator pubkey hash (immutable) |
+| `counterpartyPKH` | 20 | `hex` | Counterparty pubkey hash (immutable) |
 | `currentState` | 1 | `hex_byte` | State value 0x00-0x05 (mutable) |
-| `milestoneCount` | 1 | `hex_byte` | Milestone counter, incremented on confirm (mutable) |
+| `checkpointCount` | 1 | `hex_byte` | Checkpoint counter, incremented on confirm (mutable) |
 | `commitmentHash` | 32 | `hex` | Rolling SHA256 commitment hash (mutable) |
 | `transitionBitmask` | 1 | `hex_byte` | Enables/disables transitions (immutable) |
 | `timeoutDelta` | 4 | `le_uint32` | nLockTime timeout delta in blocks/seconds (immutable) |
@@ -54,13 +54,13 @@ Offset  Prefix  Field              Mutability
 [21:22] 0x20    —
 [22:54]         tokenId            immutable
 [54:55] 0x14    —
-[55:75]         merchantPKH        immutable
+[55:75]         operatorPKH        immutable
 [75:76] 0x14    —
-[76:96]         customerPKH        immutable
+[76:96]         counterpartyPKH        immutable
 [96:97] 0x01    —
 [97:98]         currentState       mutable
 [98:99] 0x01    —
-[99:100]        milestoneCount     mutable
+[99:100]        checkpointCount     mutable
 [100:101] 0x20  —
 [101:133]       commitmentHash     mutable
 [133:134] 0x01  —
@@ -75,7 +75,7 @@ Offset  Prefix  Field              Mutability
 On each state transition, 4 header regions are rewritten:
 - `ownerPKH` [1:21] — set to the next expected actor
 - `currentState` [97:98] — post-transition state value
-- `milestoneCount` [99:100] — incremented on confirm operations
+- `checkpointCount` [99:100] — incremented on confirm operations
 - `commitmentHash` [101:133] — `SHA256(prevHash || SHA256(sig(s) || eventData))`
 
 ### Encoding Details
@@ -117,5 +117,5 @@ Value `0x3F` (binary `00111111`) enables all transitions.
 | Operation | Outputs |
 |-----------|---------|
 | Standard (create, enroll, confirm, convert) | 5: change, PP1_SM, PP2, PP3, metadata |
-| Timeout | 6: change, merchantRefund(P2PKH), PP1_SM, PP2, PP3, metadata |
-| Settle | 7: change, customerReward(P2PKH), merchantPayment(P2PKH), PP1_SM, PP2, PP3, metadata |
+| Timeout | 6: change, operatorRecovery(P2PKH), PP1_SM, PP2, PP3, metadata |
+| Settle | 7: change, counterpartyShare(P2PKH), operatorShare(P2PKH), PP1_SM, PP2, PP3, metadata |

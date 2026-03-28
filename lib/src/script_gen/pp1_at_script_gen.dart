@@ -28,7 +28,7 @@ import 'pp1_ft_script_gen.dart';
 /// Constructor param layout (139-byte header):
 /// ```
 /// Byte 0:        0x14 (pushdata 20)
-/// Bytes 1-20:    ownerPKH (customer)
+/// Bytes 1-20:    ownerPKH (counterparty)
 /// Byte 21:       0x20 (pushdata 32)
 /// Bytes 22-53:   tokenId
 /// Byte 54:       0x14 (pushdata 20)

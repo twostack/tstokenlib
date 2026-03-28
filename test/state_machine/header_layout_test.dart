@@ -39,8 +39,8 @@ void main() {
       expect(f.isMutable, isFalse);
     });
 
-    test('merchantPKH at offset 54, data [55:75]', () {
-      final f = layout.getField('merchantPKH');
+    test('operatorPKH at offset 54, data [55:75]', () {
+      final f = layout.getField('operatorPKH');
       expect(f.offset, 54);
       expect(f.dataStart, 55);
       expect(f.dataEnd, 75);
@@ -48,8 +48,8 @@ void main() {
       expect(f.isMutable, isFalse);
     });
 
-    test('customerPKH at offset 75, data [76:96]', () {
-      final f = layout.getField('customerPKH');
+    test('counterpartyPKH at offset 75, data [76:96]', () {
+      final f = layout.getField('counterpartyPKH');
       expect(f.offset, 75);
       expect(f.dataStart, 76);
       expect(f.dataEnd, 96);
@@ -75,8 +75,8 @@ void main() {
       expect(f.isMutable, isTrue);
     });
 
-    test('milestoneCount at offset 119, data [120:121]', () {
-      final f = layout.getField('milestoneCount');
+    test('checkpointCount at offset 119, data [120:121]', () {
+      final f = layout.getField('checkpointCount');
       expect(f.offset, 119);
       expect(f.dataStart, 120);
       expect(f.dataEnd, 121);
@@ -113,8 +113,8 @@ void main() {
 
     test('altstack order matches PP1_SM push order', () {
       expect(layout.altstackOrder, [
-        'ownerPKH', 'tokenId', 'merchantPKH', 'customerPKH', 'rabinPKH',
-        'currentState', 'milestoneCount', 'commitmentHash',
+        'ownerPKH', 'tokenId', 'operatorPKH', 'counterpartyPKH', 'rabinPKH',
+        'currentState', 'checkpointCount', 'commitmentHash',
         'transitionBitmask', 'timeoutDelta',
       ]);
     });
@@ -130,7 +130,7 @@ void main() {
       expect(stateRegion.dataStart, 118);
       expect(stateRegion.dataEnd, 119);
 
-      final mcRegion = layout.mutableRegions.firstWhere((r) => r.fieldName == 'milestoneCount');
+      final mcRegion = layout.mutableRegions.firstWhere((r) => r.fieldName == 'checkpointCount');
       expect(mcRegion.dataStart, 120);
       expect(mcRegion.dataEnd, 121);
 

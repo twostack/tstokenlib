@@ -8,8 +8,8 @@ StateMachineDefinition buildPP1SmFunnel() {
     name: 'PP1_SM_Funnel',
     description: 'The PP1 state machine funnel (marketing/escrow)',
     roles: {
-      'merchant': RoleDef(name: 'merchant', authType: AuthType.PKH, description: 'Organization/merchant'),
-      'customer': RoleDef(name: 'customer', authType: AuthType.PKH, description: 'Customer/participant'),
+      'operator': RoleDef(name: 'operator', authType: AuthType.PKH, description: 'Organization/operator'),
+      'counterparty': RoleDef(name: 'counterparty', authType: AuthType.PKH, description: 'Counterparty/participant'),
       'rabin': RoleDef(name: 'rabin', authType: AuthType.Rabin, description: 'Rabin identity binding'),
     },
     states: {
@@ -25,17 +25,17 @@ StateMachineDefinition buildPP1SmFunnel() {
         name: 'enroll',
         fromStates: ['CREATED'],
         toState: 'ENROLLED',
-        requiredSigners: ['merchant'],
-        ownerAfter: 'merchant',
+        requiredSigners: ['operator'],
+        ownerAfter: 'operator',
       ),
       TransitionDef(
         name: 'confirm',
         fromStates: ['ENROLLED', 'CONFIRMED'],
         toState: 'CONFIRMED',
-        requiredSigners: ['merchant', 'customer'],
-        ownerAfter: 'merchant',
+        requiredSigners: ['operator', 'counterparty'],
+        ownerAfter: 'operator',
         effects: [
-          EffectDef(fieldName: 'milestoneCount', type: EffectType.INCREMENT),
+          EffectDef(fieldName: 'checkpointCount', type: EffectType.INCREMENT),
           EffectDef(fieldName: 'commitmentHash', type: EffectType.HASH_CHAIN),
         ],
       ),
@@ -43,10 +43,10 @@ StateMachineDefinition buildPP1SmFunnel() {
         name: 'convert',
         fromStates: ['CONFIRMED'],
         toState: 'CONVERTED',
-        requiredSigners: ['merchant', 'customer'],
-        ownerAfter: 'merchant',
+        requiredSigners: ['operator', 'counterparty'],
+        ownerAfter: 'operator',
         guards: [
-          FieldGuardDef(fieldName: 'milestoneCount', op: GuardOp.GT, constant: 0),
+          FieldGuardDef(fieldName: 'checkpointCount', op: GuardOp.GT, constant: 0),
         ],
         effects: [
           EffectDef(fieldName: 'commitmentHash', type: EffectType.HASH_CHAIN),
@@ -56,20 +56,20 @@ StateMachineDefinition buildPP1SmFunnel() {
         name: 'settle',
         fromStates: ['ENROLLED', 'CONFIRMED', 'CONVERTED'],
         toState: 'SETTLED',
-        requiredSigners: ['merchant'],
-        ownerAfter: 'merchant',
+        requiredSigners: ['operator'],
+        ownerAfter: 'operator',
       ),
       TransitionDef(
         name: 'timeout',
         fromStates: ['ENROLLED', 'CONFIRMED', 'CONVERTED'],
         toState: 'TIMED_OUT',
-        requiredSigners: ['merchant'],
-        ownerAfter: 'merchant',
+        requiredSigners: ['operator'],
+        ownerAfter: 'operator',
         usesTimelock: true,
       ),
     ],
     customFields: {
-      'milestoneCount': FieldDef(name: 'milestoneCount', byteSize: 1, type: FieldType.COUNTER, isMutable: true),
+      'checkpointCount': FieldDef(name: 'checkpointCount', byteSize: 1, type: FieldType.COUNTER, isMutable: true),
     },
   );
 }
@@ -110,8 +110,8 @@ void main() {
     test('roles have correct auth types', () {
       final def = buildPP1SmFunnel();
 
-      expect(def.roles['merchant']!.authType, AuthType.PKH);
-      expect(def.roles['customer']!.authType, AuthType.PKH);
+      expect(def.roles['operator']!.authType, AuthType.PKH);
+      expect(def.roles['counterparty']!.authType, AuthType.PKH);
       expect(def.roles['rabin']!.authType, AuthType.Rabin);
     });
 
@@ -123,7 +123,7 @@ void main() {
       expect(convert.guards.length, 1);
       expect(convert.guards[0], isA<FieldGuardDef>());
       final guard = convert.guards[0] as FieldGuardDef;
-      expect(guard.fieldName, 'milestoneCount');
+      expect(guard.fieldName, 'checkpointCount');
       expect(guard.op, GuardOp.GT);
       expect(guard.constant, 0);
 
@@ -164,14 +164,14 @@ void main() {
       expect(convert.guards.length, 1);
       expect(convert.guards[0], isA<FieldGuardDef>());
       final guard = convert.guards[0] as FieldGuardDef;
-      expect(guard.fieldName, 'milestoneCount');
+      expect(guard.fieldName, 'checkpointCount');
       expect(guard.op, GuardOp.GT);
       expect(guard.constant, 0);
 
       // Verify effects survive round-trip
       final confirm = restored.transitions.firstWhere((t) => t.name == 'confirm');
       expect(confirm.effects.length, 2);
-      expect(confirm.effects[0].fieldName, 'milestoneCount');
+      expect(confirm.effects[0].fieldName, 'checkpointCount');
       expect(confirm.effects[0].type, EffectType.INCREMENT);
     });
 

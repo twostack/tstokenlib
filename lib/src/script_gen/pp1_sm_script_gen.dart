@@ -26,11 +26,11 @@ import 'pp1_ft_script_gen.dart';
 /// ```
 /// [0:1]     0x14  [1:21]    ownerPKH (mutable)
 /// [21:22]   0x20  [22:54]   tokenId (immutable)
-/// [54:55]   0x14  [55:75]   merchantPKH (immutable)
-/// [75:76]   0x14  [76:96]   customerPKH (immutable)
+/// [54:55]   0x14  [55:75]   operatorPKH (immutable)
+/// [75:76]   0x14  [76:96]   counterpartyPKH (immutable)
 /// [96:97]   0x14  [97:117]  rabinPubKeyHash (immutable)
 /// [117:118] 0x01  [118:119] currentState (mutable)
-/// [119:120] 0x01  [120:121] milestoneCount (mutable)
+/// [119:120] 0x01  [120:121] checkpointCount (mutable)
 /// [121:122] 0x20  [122:154] commitmentHash (mutable)
 /// [154:155] 0x01  [155:156] transitionBitmask (immutable)
 /// [156:157] 0x04  [157:161] timeoutDelta (immutable)
@@ -45,16 +45,16 @@ class PP1SmScriptGen {
   static const int pkhDataEnd = 21;
   static const int tokenIdDataStart = 22;
   static const int tokenIdDataEnd = 54;
-  static const int merchantPKHDataStart = 55;
-  static const int merchantPKHDataEnd = 75;
-  static const int customerPKHDataStart = 76;
-  static const int customerPKHDataEnd = 96;
+  static const int operatorPKHDataStart = 55;
+  static const int operatorPKHDataEnd = 75;
+  static const int counterpartyPKHDataStart = 76;
+  static const int counterpartyPKHDataEnd = 96;
   static const int rabinPKHDataStart = 97;
   static const int rabinPKHDataEnd = 117;
   static const int currentStateDataStart = 118;
   static const int currentStateDataEnd = 119;
-  static const int milestoneCountDataStart = 120;
-  static const int milestoneCountDataEnd = 121;
+  static const int checkpointCountDataStart = 120;
+  static const int checkpointCountDataEnd = 121;
   static const int commitmentHashDataStart = 122;
   static const int commitmentHashDataEnd = 154;
   static const int transitionBitmaskDataStart = 155;
@@ -72,11 +72,11 @@ class PP1SmScriptGen {
   static SVScript generate({
     required List<int> ownerPKH,
     required List<int> tokenId,
-    required List<int> merchantPKH,
-    required List<int> customerPKH,
+    required List<int> operatorPKH,
+    required List<int> counterpartyPKH,
     required List<int> rabinPubKeyHash,
     required int currentState,
-    required int milestoneCount,
+    required int checkpointCount,
     required List<int> commitmentHash,
     required int transitionBitmask,
     required int timeoutDelta,
@@ -85,11 +85,11 @@ class PP1SmScriptGen {
 
     b.addData(Uint8List.fromList(ownerPKH));
     b.addData(Uint8List.fromList(tokenId));
-    b.addData(Uint8List.fromList(merchantPKH));
-    b.addData(Uint8List.fromList(customerPKH));
+    b.addData(Uint8List.fromList(operatorPKH));
+    b.addData(Uint8List.fromList(counterpartyPKH));
     b.addData(Uint8List.fromList(rabinPubKeyHash));
     _addRawByte(b, currentState & 0xFF);
-    _addRawByte(b, milestoneCount & 0xFF);
+    _addRawByte(b, checkpointCount & 0xFF);
     b.addData(Uint8List.fromList(commitmentHash));
     _addRawByte(b, transitionBitmask & 0xFF);
 
@@ -104,10 +104,10 @@ class PP1SmScriptGen {
     for (var i = 0; i < 10; i++) {
       b.opCode(OpCodes.OP_TOALTSTACK);
     }
-    // Alt bottom→top: [timeoutDelta, bitmask, commitHash, milestoneCount,
-    //                   state, rabinPubKeyHash, custPKH, merchPKH, tokenId, ownerPKH]
-    // Pop order: ownerPKH, tokenId, merchPKH, custPKH, rabinPubKeyHash, state,
-    //            milestoneCount, commitHash, bitmask, timeoutDelta
+    // Alt bottom→top: [timeoutDelta, bitmask, commitHash, checkpointCount,
+    //                   state, rabinPubKeyHash, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
+    // Pop order: ownerPKH, tokenId, operatorPKH, counterpartyPKH, rabinPubKeyHash, state,
+    //            checkpointCount, commitHash, bitmask, timeoutDelta
 
     _emitDispatch(b);
     return b.build();
@@ -159,8 +159,8 @@ class PP1SmScriptGen {
   static void _emitBurn(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // merchantPKH
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // customerPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // operatorPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // counterpartyPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     b.opCode(OpCodes.OP_FROMALTSTACK);   // currentState
     // Stack: [ownerPubKey, ownerSig, ownerPKH, currentState]
@@ -173,7 +173,7 @@ class PP1SmScriptGen {
     // Stack: [ownerPubKey, ownerSig, ownerPKH]
 
     // Drain remaining
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // milestoneCount
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // checkpointCount
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // commitHash
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // bitmask
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // timeoutDelta
@@ -193,7 +193,7 @@ class PP1SmScriptGen {
 
   /// Stack: [preImage, fundingOutpoint, witnessPadding, rabinN, rabinS,
   ///         rabinPadding, identityTxId, ed25519PubKey]
-  /// Altstack: [td, bm, ch, mc, state, rabinPKH, custPKH, merchPKH, tokenId, ownerPKH]
+  /// Altstack: [td, bm, ch, mc, state, rabinPKH, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
   static void _emitCreateFunnel(ScriptBuilder b) {
     // Stack (8 items, top=0):
     //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
@@ -205,27 +205,27 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
 
-    // --- Phase 2: Pop ownerPKH, tokenId (keep), merchantPKH ---
+    // --- Phase 2: Pop ownerPKH, tokenId (keep), operatorPKH ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK);  // tokenId (keep for Rabin binding)
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // merchantPKH
-    // Stack (11): merchPKH=0, tokenId=1, ownerPKH=2, ed25519PK=3, idTxId=4,
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // operatorPKH
+    // Stack (11): operatorPKH=0, tokenId=1, ownerPKH=2, ed25519PK=3, idTxId=4,
     //   rabinPad=5, rabinS=6, rabinN=7, witnessPad=8, fundingOutpoint=9, preImage=10
-    // Alt: [td, bm, ch, mc, state, rabinPKH, custPKH]
+    // Alt: [td, bm, ch, mc, state, rabinPKH, counterpartyPKH]
 
-    // Verify ownerPKH == merchantPKH
+    // Verify ownerPKH == operatorPKH
     b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_PICK);           // copy ownerPKH
-    b.opCode(OpCodes.OP_OVER);           // copy merchPKH
+    b.opCode(OpCodes.OP_OVER);           // copy operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    b.opCode(OpCodes.OP_DROP);           // drop merchPKH
+    b.opCode(OpCodes.OP_DROP);           // drop operatorPKH
     b.opCode(OpCodes.OP_SWAP);           // [ownerPKH, tokenId, ...]
     b.opCode(OpCodes.OP_DROP);           // drop ownerPKH
     // Stack (9): tokenId=0, ed25519PK=1, idTxId=2, rabinPad=3, rabinS=4,
     //   rabinN=5, witnessPad=6, fundingOutpoint=7, preImage=8
 
-    // --- Pop + drop customerPKH ---
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // customerPKH
+    // --- Pop + drop counterpartyPKH ---
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // counterpartyPKH
     // Alt: [td, bm, ch, mc, state, rabinPKH]
 
     // --- Phase 3: Verify hash160(rabinN) == rabinPubKeyHash ---
@@ -238,12 +238,12 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_EQUALVERIFY);
     // Alt: [td, bm, ch, mc, state]
 
-    // --- Phase 4: Validate state==0, milestoneCount==0, commitmentHash==zeros ---
+    // --- Phase 4: Validate state==0, checkpointCount==0, commitmentHash==zeros ---
     b.opCode(OpCodes.OP_FROMALTSTACK);  // state
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_EQUALVERIFY);
 
-    b.opCode(OpCodes.OP_FROMALTSTACK);  // milestoneCount
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // checkpointCount
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_EQUALVERIFY);
 
@@ -327,44 +327,44 @@ class PP1SmScriptGen {
   }
 
   // =========================================================================
-  // enroll (selector=1) — INIT→ACTIVE, merchant signs
+  // enroll (selector=1) — INIT→ACTIVE, operator signs
   // =========================================================================
 
-  /// Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt, merchantSig,
+  /// Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt, operatorSig,
   ///         eventData, scriptLHS, parentRawTx, padding]
   ///
-  /// INIT→ACTIVE. Merchant signs. ownerPKH→customerPKH.
+  /// INIT→ACTIVE. Merchant signs. ownerPKH→counterpartyPKH.
   /// eventDigest = SHA256(mSig || eventData)
   static void _emitEnroll(ScriptBuilder b) {
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH, tokenId, ownerPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
     // Stack (10): pad=0, rawTx=1, lhs=2, eventData=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
 
     // --- Drain ownerPKH, tokenId ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH]
 
-    // --- Pop merchPKH, merchant auth ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // merchPKH
-    // Stack (11): merchPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
+    // --- Pop operatorPKH, operator auth ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // operatorPKH
+    // Stack (11): operatorPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);  // mPK
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // merchPKH
+    b.opCode(OpCodes.OP_OVER);           // operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);  // mSig
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);  // mPK (+1 for sig push)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);          // drop merchPKH
+    b.opCode(OpCodes.OP_DROP);          // drop operatorPKH
     // Stack (10): pad=0, rawTx=1, lhs=2, eventData=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
-    // Alt: [td, bm, ch, mc, state, custPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH]
 
-    // --- Pop custPKH (will be newOwnerPKH) ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH → main stack
+    // --- Pop counterpartyPKH (will be newOwnerPKH) ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // counterpartyPKH → main stack
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
-    // Stack (11): custPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
+    // Stack (11): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     // Alt: [td, bm, ch, mc, state]
 
@@ -391,7 +391,7 @@ class PP1SmScriptGen {
     // Alt: []
 
     // --- Compute eventDigest = SHA256(eventData) ---
-    // Stack (11): custPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
+    // Stack (11): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, eventData=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);  // eventData
     b.opCode(OpCodes.OP_SHA256);
@@ -400,7 +400,7 @@ class PP1SmScriptGen {
     // --- Drop eventData ---
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ROLL);
     b.opCode(OpCodes.OP_DROP);
-    // Stack (10): custPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
+    // Stack (10): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
     // Alt: [eventDigest]
 
@@ -412,53 +412,53 @@ class PP1SmScriptGen {
   // confirm (selector=2) — ACTIVE/PROGRESSING→PROGRESSING, dual-sig
   // =========================================================================
 
-  /// Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt, merchantSig,
-  ///         customerPK, customerSig, milestoneData, scriptLHS, parentRawTx, padding]
+  /// Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt, operatorSig,
+  ///         counterpartyPK, counterpartySig, checkpointData, scriptLHS, parentRawTx, padding]
   ///
   /// ACTIVE→PROGRESSING (state 0x01→0x02, bitmask bit 1)
   /// or PROGRESSING→PROGRESSING (state 0x02→0x02, bitmask bit 2)
-  /// Dual-sig: merchant + customer. milestoneCount++.
-  /// eventDigest = SHA256(mSig || custSig || milestoneData)
+  /// Dual-sig: operator + counterparty. checkpointCount++.
+  /// eventDigest = SHA256(mSig || counterpartySig || checkpointData)
   static void _emitConfirm(ScriptBuilder b) {
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH, tokenId, ownerPKH]
-    // Stack (12): pad=0, rawTx=1, lhs=2, milestoneData=3, custSig=4,
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
+    // Stack (12): pad=0, rawTx=1, lhs=2, checkpointData=3, counterpartySig=4,
     //   custPK=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
     // --- Drain ownerPKH, tokenId ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH]
 
-    // --- Pop merchPKH, merchant auth ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // merchPKH
-    // Stack (13): merchPKH=0, pad=1, rawTx=2, lhs=3, milestoneData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // --- Pop operatorPKH, operator auth ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // operatorPKH
+    // Stack (13): operatorPKH=0, pad=1, rawTx=2, lhs=3, checkpointData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     b.opCode(OpCodes.OP_10); b.opCode(OpCodes.OP_PICK);  // mPK (idx 10)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // merchPKH
+    b.opCode(OpCodes.OP_OVER);           // operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // mSig (idx 7)
     OpcodeHelpers.pushInt(b, 11);
     b.opCode(OpCodes.OP_PICK);           // mPK (idx 11, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);           // drop merchPKH
-    // Stack (12): pad=0, rawTx=1, lhs=2, milestoneData=3, custSig=4,
+    b.opCode(OpCodes.OP_DROP);           // drop operatorPKH
+    // Stack (12): pad=0, rawTx=1, lhs=2, checkpointData=3, counterpartySig=4,
     //   custPK=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
-    // --- Pop custPKH, customer auth ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH
+    // --- Pop counterpartyPKH, counterparty auth ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // counterpartyPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
-    // Stack (13): custPKH=0, pad=1, rawTx=2, lhs=3, milestoneData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // Stack (13): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, checkpointData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     // Alt: [td, bm, ch, mc, state]
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);   // custPK (idx 6)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // custPKH
+    b.opCode(OpCodes.OP_OVER);           // counterpartyPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // custSig (idx 5)
+    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // counterpartySig (idx 5)
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // custPK (idx 7, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    // custPKH stays at idx 0 (will be newOwnerPKH)
+    // counterpartyPKH stays at idx 0 (will be newOwnerPKH)
 
     // --- Pop state, check (==1 or ==2), compute bitmask divisor ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // state
@@ -486,23 +486,23 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_AND);
     b.opCode(OpCodes.OP_VERIFY);
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // td
-    // Stack (13): custPKH=0, pad=1, rawTx=2, lhs=3, milestoneData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // Stack (13): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, checkpointData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     // Alt: []
 
-    // --- Compute eventDigest = SHA256(milestoneData) ---
-    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // milestoneData (idx 4)
+    // --- Compute eventDigest = SHA256(checkpointData) ---
+    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // checkpointData (idx 4)
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_TOALTSTACK);     // eventDigest → alt
 
-    // --- Drop custPK, custSig, milestoneData ---
+    // --- Drop custPK, counterpartySig, checkpointData ---
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_ROLL);
     b.opCode(OpCodes.OP_DROP);           // custPK
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_ROLL);
-    b.opCode(OpCodes.OP_DROP);           // custSig
+    b.opCode(OpCodes.OP_DROP);           // counterpartySig
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ROLL);
-    b.opCode(OpCodes.OP_DROP);           // milestoneData
-    // Stack (10): custPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
+    b.opCode(OpCodes.OP_DROP);           // checkpointData
+    // Stack (10): counterpartyPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
     // Alt: [eventDigest]
 
@@ -514,53 +514,53 @@ class PP1SmScriptGen {
   // convert (selector=3) — PROGRESSING→CONVERTING, dual-sig
   // =========================================================================
 
-  /// Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt, merchantSig,
-  ///         customerPK, customerSig, conversionData, scriptLHS, parentRawTx, padding]
+  /// Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt, operatorSig,
+  ///         counterpartyPK, counterpartySig, conversionData, scriptLHS, parentRawTx, padding]
   ///
   /// PROGRESSING→CONVERTING (state 0x02→0x03, bitmask bit 3).
-  /// Dual-sig: merchant + customer. milestoneCount > 0 required.
-  /// ownerPKH→merchantPKH (merchant settles next).
-  /// eventDigest = SHA256(mSig || custSig || conversionData)
+  /// Dual-sig: operator + counterparty. checkpointCount > 0 required.
+  /// ownerPKH→operatorPKH (operator settles next).
+  /// eventDigest = SHA256(mSig || counterpartySig || conversionData)
   static void _emitConvert(ScriptBuilder b) {
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH, tokenId, ownerPKH]
-    // Stack (12): pad=0, rawTx=1, lhs=2, convData=3, custSig=4,
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
+    // Stack (12): pad=0, rawTx=1, lhs=2, convData=3, counterpartySig=4,
     //   custPK=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
     // --- Drain ownerPKH, tokenId ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH]
 
-    // --- Pop merchPKH, merchant auth (keep merchPKH as newOwnerPKH) ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // merchPKH
-    // Stack (13): merchPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // --- Pop operatorPKH, operator auth (keep operatorPKH as newOwnerPKH) ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // operatorPKH
+    // Stack (13): operatorPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     b.opCode(OpCodes.OP_10); b.opCode(OpCodes.OP_PICK);  // mPK (idx 10)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // merchPKH
+    b.opCode(OpCodes.OP_OVER);           // operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // mSig (idx 7)
     OpcodeHelpers.pushInt(b, 11);
     b.opCode(OpCodes.OP_PICK);           // mPK (idx 11, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    // merchPKH stays at idx 0 (will be newOwnerPKH)
+    // operatorPKH stays at idx 0 (will be newOwnerPKH)
 
-    // --- Pop custPKH, customer auth, then drop ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH
+    // --- Pop counterpartyPKH, counterparty auth, then drop ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // counterpartyPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
-    // Stack (14): custPKH=0, merchPKH=1, pad=2, rawTx=3, lhs=4, convData=5,
-    //   custSig=6, custPK=7, mSig=8, chgAmt=9, chgPkh=10, mPK=11, pp2=12, preImg=13
+    // Stack (14): counterpartyPKH=0, operatorPKH=1, pad=2, rawTx=3, lhs=4, convData=5,
+    //   counterpartySig=6, custPK=7, mSig=8, chgAmt=9, chgPkh=10, mPK=11, pp2=12, preImg=13
     // Alt: [td, bm, ch, mc, state]
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // custPK (idx 7)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // custPKH
+    b.opCode(OpCodes.OP_OVER);           // counterpartyPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);   // custSig (idx 6)
+    b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);   // counterpartySig (idx 6)
     b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);   // custPK (idx 8, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);           // drop custPKH
-    // Stack (13): merchPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    b.opCode(OpCodes.OP_DROP);           // drop counterpartyPKH
+    // Stack (13): operatorPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
 
     // --- Pop state, check == 0x03 (CONVERTING = post-convert) ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // state
@@ -568,7 +568,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_EQUALVERIFY);
     // Alt: [td, bm, ch, mc]
 
-    // --- Pop milestoneCount, check > 0 ---
+    // --- Pop checkpointCount, check > 0 ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // mc
     b.opCode(OpCodes.OP_BIN2NUM);
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN);
@@ -589,8 +589,8 @@ class PP1SmScriptGen {
 
     // --- Drain timeoutDelta ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // td
-    // Stack (13): merchPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
-    //   custSig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // Stack (13): operatorPKH=0, pad=1, rawTx=2, lhs=3, convData=4,
+    //   counterpartySig=5, custPK=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     // Alt: []
 
     // --- Compute eventDigest = SHA256(conversionData) ---
@@ -598,14 +598,14 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_TOALTSTACK);     // eventDigest → alt
 
-    // --- Drop custPK, custSig, convData ---
+    // --- Drop custPK, counterpartySig, convData ---
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_ROLL);
     b.opCode(OpCodes.OP_DROP);           // custPK
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_ROLL);
-    b.opCode(OpCodes.OP_DROP);           // custSig
+    b.opCode(OpCodes.OP_DROP);           // counterpartySig
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ROLL);
     b.opCode(OpCodes.OP_DROP);           // convData
-    // Stack (10): merchPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
+    // Stack (10): operatorPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
     // Alt: [eventDigest]
 
@@ -617,41 +617,41 @@ class PP1SmScriptGen {
   // settle (selector=4) — CONVERTING→SETTLED, 7-output
   // =========================================================================
 
-  /// Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt, merchantSig,
-  ///         custRewardAmt, merchPayAmt, settlementData,
+  /// Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt, operatorSig,
+  ///         counterpartyShareAmt, operatorShareAmt, settlementData,
   ///         scriptLHS, parentRawTx, padding]
   ///
   /// CONVERTING→SETTLED (state 0x03→0x04, bitmask bit 4).
   /// Merchant signs. 7-output topology with P2PKH reward/payment.
   /// eventDigest = SHA256(mSig || settlementData)
   static void _emitSettle(ScriptBuilder b) {
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH, tokenId, ownerPKH]
-    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, merchPayAmt=4,
-    //   custRewardAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
+    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, operatorShareAmt=4,
+    //   counterpartyShareAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
     // --- Drain ownerPKH, tokenId ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH]
 
-    // --- Pop merchPKH, merchant auth ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // merchPKH
-    // Stack (13): merchPKH=0, pad=1, rawTx=2, lhs=3, settlementData=4,
-    //   merchPayAmt=5, custRewardAmt=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
+    // --- Pop operatorPKH, operator auth ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // operatorPKH
+    // Stack (13): operatorPKH=0, pad=1, rawTx=2, lhs=3, settlementData=4,
+    //   operatorShareAmt=5, counterpartyShareAmt=6, mSig=7, chgAmt=8, chgPkh=9, mPK=10, pp2=11, preImg=12
     b.opCode(OpCodes.OP_10); b.opCode(OpCodes.OP_PICK);  // mPK (idx 10)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // merchPKH
+    b.opCode(OpCodes.OP_OVER);           // operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);   // mSig (idx 7)
     OpcodeHelpers.pushInt(b, 11);
     b.opCode(OpCodes.OP_PICK);           // mPK (idx 11, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);           // drop merchPKH
-    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, merchPayAmt=4,
-    //   custRewardAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
+    b.opCode(OpCodes.OP_DROP);           // drop operatorPKH
+    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, operatorShareAmt=4,
+    //   counterpartyShareAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
 
-    // --- Drain custPKH + rabinPubKeyHash ---
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // custPKH
+    // --- Drain counterpartyPKH + rabinPubKeyHash ---
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // counterpartyPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Alt: [td, bm, ch, mc, state]
 
@@ -677,14 +677,14 @@ class PP1SmScriptGen {
 
     // --- Drain timeoutDelta ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // td
-    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, merchPayAmt=4,
-    //   custRewardAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
+    // Stack (12): pad=0, rawTx=1, lhs=2, settlementData=3, operatorShareAmt=4,
+    //   counterpartyShareAmt=5, mSig=6, chgAmt=7, chgPkh=8, mPK=9, pp2=10, preImg=11
     // Alt: []
 
     // --- Validate amounts > 0 ---
-    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // custRewardAmt
+    b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // counterpartyShareAmt
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // merchPayAmt
+    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);   // operatorShareAmt
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN); b.opCode(OpCodes.OP_VERIFY);
 
     // --- Compute eventDigest = SHA256(settlementData) ---
@@ -695,7 +695,7 @@ class PP1SmScriptGen {
     // --- Drop settlementData ---
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_ROLL);
     b.opCode(OpCodes.OP_DROP);
-    // Stack (11): pad=0, rawTx=1, lhs=2, merchPayAmt=3, custRewardAmt=4,
+    // Stack (11): pad=0, rawTx=1, lhs=2, operatorShareAmt=3, counterpartyShareAmt=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     // Alt: [eventDigest]
 
@@ -706,40 +706,40 @@ class PP1SmScriptGen {
   // timeout (selector=5) — any→EXPIRED, 6-output, nLockTime
   // =========================================================================
 
-  /// Stack: [preImage, pp2Out, merchantPK, changePkh, changeAmt, merchantSig,
+  /// Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt, operatorSig,
   ///         refundAmount, scriptLHS, parentRawTx, padding]
   ///
   /// any non-terminal→EXPIRED (state <0x04→0x05, bitmask bit 5).
   /// Merchant signs. nLockTime >= timeoutDelta.
-  /// 6-output topology with merchant refund P2PKH.
+  /// 6-output topology with operator recovery P2PKH.
   /// No commitment hash update (preserves parent's).
   static void _emitTimeout(ScriptBuilder b) {
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH, tokenId, ownerPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
     // Stack (10): pad=0, rawTx=1, lhs=2, refundAmt=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
 
     // --- Drain ownerPKH, tokenId ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
-    // Alt: [td, bm, ch, mc, state, custPKH, merchPKH]
+    // Alt: [td, bm, ch, mc, state, counterpartyPKH, operatorPKH]
 
-    // --- Pop merchPKH, merchant auth ---
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // merchPKH
-    // Stack (11): merchPKH=0, pad=1, rawTx=2, lhs=3, refundAmt=4,
+    // --- Pop operatorPKH, operator auth ---
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // operatorPKH
+    // Stack (11): operatorPKH=0, pad=1, rawTx=2, lhs=3, refundAmt=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
     b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);   // mPK (idx 8)
     b.opCode(OpCodes.OP_HASH160);
-    b.opCode(OpCodes.OP_OVER);           // merchPKH
+    b.opCode(OpCodes.OP_OVER);           // operatorPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);   // mSig (idx 5)
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);   // mPK (idx 9, shifted +1)
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
-    b.opCode(OpCodes.OP_DROP);           // drop merchPKH
+    b.opCode(OpCodes.OP_DROP);           // drop operatorPKH
     // Stack (10): pad=0, rawTx=1, lhs=2, refundAmt=3, mSig=4,
     //   chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
 
-    // --- Drain custPKH + rabinPubKeyHash ---
-    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // custPKH
+    // --- Drain counterpartyPKH + rabinPubKeyHash ---
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // counterpartyPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // rabinPubKeyHash
     // Alt: [td, bm, ch, mc, state]
 
@@ -788,15 +788,15 @@ class PP1SmScriptGen {
 
   /// Phases 2-17 for settlement 7-output topology.
   ///
-  /// Pre: Stack (11): pad=0, rawTx=1, lhs=2, merchPayAmt=3, custRewardAmt=4,
+  /// Pre: Stack (11): pad=0, rawTx=1, lhs=2, operatorShareAmt=3, counterpartyShareAmt=4,
   ///   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9, preImg=10
   /// Alt: [eventDigest]
   ///
   /// 7-output layout:
-  ///   0: change, 1: custReward(P2PKH), 2: merchPayment(P2PKH),
+  ///   0: change, 1: counterpartyShare(P2PKH), 2: operatorSharement(P2PKH),
   ///   3: PP1_SM(state=0x04), 4: PP2, 5: PP3, 6: metadata
   ///
-  /// customerPKH and merchantPKH for P2PKH outputs are extracted from
+  /// counterpartyPKH and operatorPKH for P2PKH outputs are extracted from
   /// parentPP1Script immutable fields (bytes [76:96] and [55:75]).
   static void _emitInductiveProofSettle(ScriptBuilder b) {
     // Phase 2: Validate padding and parentRawTx
@@ -827,7 +827,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_10); b.opCode(OpCodes.OP_ROLL);
     CheckPreimageOCS.emitCheckPreimageOCS(b, useCodeSeparator: false);
     b.opCode(OpCodes.OP_VERIFY);
-    // Stack (10): pad=0, rawTx=1, lhs=2, merchPayAmt=3, custRewardAmt=4,
+    // Stack (10): pad=0, rawTx=1, lhs=2, operatorShareAmt=3, counterpartyShareAmt=4,
     //   mSig=5, chgAmt=6, chgPkh=7, mPK=8, pp2=9
 
     // Phase 5: Parse parentRawTx outputs
@@ -862,7 +862,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // currentTxId
     // Alt: [eventDigest]
     // Stack (16): currentTxId=0, nLocktime=1, pp1S=2, pp2S=3, pp3S=4, metaS=5,
-    //   pad=6, rawTx=7, lhs=8, merchPayAmt=9, custRewardAmt=10,
+    //   pad=6, rawTx=7, lhs=8, operatorShareAmt=9, counterpartyShareAmt=10,
     //   mSig=11, chgAmt=12, chgPkh=13, mPK=14, pp2Out=15
 
     // Phase 8: Commitment hash
@@ -876,29 +876,29 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_TOALTSTACK);     // newCommitHash → alt
 
-    // Phase 8b: Extract custPKH from pp1S[76:96]
+    // Phase 8b: Extract counterpartyPKH from pp1S[76:96]
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
-    OpcodeHelpers.pushInt(b, customerPKHDataEnd);
+    OpcodeHelpers.pushInt(b, counterpartyPKHDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, customerPKHDataStart);
+    OpcodeHelpers.pushInt(b, counterpartyPKHDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // custPKH → alt
+    b.opCode(OpCodes.OP_TOALTSTACK);     // counterpartyPKH → alt
 
-    // Extract merchPKH from pp1S[55:75] (= newOwnerPKH for settle)
+    // Extract operatorPKH from pp1S[55:75] (= newOwnerPKH for settle)
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
-    OpcodeHelpers.pushInt(b, merchantPKHDataEnd);
+    OpcodeHelpers.pushInt(b, operatorPKHDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, merchantPKHDataStart);
+    OpcodeHelpers.pushInt(b, operatorPKHDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack (17): merchPKH=0, currentTxId=1, nLocktime=2, pp1S=3, pp2S=4,
-    //   pp3S=5, metaS=6, pad=7, rawTx=8, lhs=9, merchPayAmt=10,
-    //   custRewardAmt=11, mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
-    // Alt: [newCommitHash, custPKH]
+    // Stack (17): operatorPKH=0, currentTxId=1, nLocktime=2, pp1S=3, pp2S=4,
+    //   pp3S=5, metaS=6, pad=7, rawTx=8, lhs=9, operatorShareAmt=10,
+    //   counterpartyShareAmt=11, mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
+    // Alt: [newCommitHash, counterpartyPKH]
 
     // Phase 9: Rebuild PP1_SM (state=0x04, no MC update)
-    // Alt before: [newCommitHash, custPKH] (bottom→top)
-    // Need: stack=[newCH, merchPKH, pp1S_copy, ...], alt=[custPKH]
-    b.opCode(OpCodes.OP_TOALTSTACK);     // merchPKH → alt [nCH, cPKH, mPKH]
+    // Alt before: [newCommitHash, counterpartyPKH] (bottom→top)
+    // Need: stack=[newCH, operatorPKH, pp1S_copy, ...], alt=[counterpartyPKH]
+    b.opCode(OpCodes.OP_TOALTSTACK);     // operatorPKH → alt [nCH, cPKH, mPKH]
     // Stack (16): currentTxId=0, nLocktime=1, pp1S=2, ...
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
     b.opCode(OpCodes.OP_FROMALTSTACK);   // mPKH (top of alt). Alt: [nCH, cPKH]
@@ -910,75 +910,75 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);     // cPKH → alt [cPKH]
     // Stack: [mPKH, nCH, pp1S_copy, txId, nLt, pp1S, ...]
     b.opCode(OpCodes.OP_SWAP);           // → [nCH, mPKH, pp1S_copy, ...]
-    // Stack: [newCH, merchPKH, pp1S_copy, txId, nLt, pp1S, ...]
-    // Alt: [custPKH]
+    // Stack: [newCH, operatorPKH, pp1S_copy, txId, nLt, pp1S, ...]
+    // Alt: [counterpartyPKH]
 
     _emitRebuildPP1SM(b, newStateValue: 0x04, updateMilestoneCount: false);
-    // Rebuild consumed 3 (pp1S_copy, merchPKH, newCH), produced 1. 19-3+1=17.
+    // Rebuild consumed 3 (pp1S_copy, operatorPKH, newCH), produced 1. 19-3+1=17.
     // Stack (17): rebuiltScript=0, currentTxId=1, nLocktime=2, pp1S=3,
     //   pp2S=4, pp3S=5, metaS=6, pad=7, rawTx=8, lhs=9,
-    //   merchPayAmt=10, custRewardAmt=11, mSig=12, chgAmt=13,
+    //   operatorShareAmt=10, counterpartyShareAmt=11, mSig=12, chgAmt=13,
     //   chgPkh=14, mPK=15, pp2Out=16
-    // Alt: [custPKH]
+    // Alt: [counterpartyPKH]
 
     // Phase 9b: Build PP1 output (1 sat)
     b.opCode(OpCodes.OP_1);
     PP1FtScriptGen.emitBuildOutput(b);
     // Stack (16): pp1Out=0, txId=1, nLt=2, pp1S=3, pp2S=4, pp3S=5,
-    //   metaS=6, pad=7, rawTx=8, lhs=9, merchPayAmt=10, custRewardAmt=11,
+    //   metaS=6, pad=7, rawTx=8, lhs=9, operatorShareAmt=10, counterpartyShareAmt=11,
     //   mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
 
-    // Phase 10: Build customer reward P2PKH output
-    b.opCode(OpCodes.OP_FROMALTSTACK);   // custPKH
+    // Phase 10: Build counterparty share P2PKH output
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // counterpartyPKH
     // Stack (17)
     PP1FtScriptGen.emitBuildP2PKHScript(b);
     OpcodeHelpers.pushInt(b, 12);
-    b.opCode(OpCodes.OP_PICK);           // custRewardAmt (idx 12)
+    b.opCode(OpCodes.OP_PICK);           // counterpartyShareAmt (idx 12)
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (16): custRewardOut=0, pp1Out=1, txId=2, nLt=3, pp1S=4,
+    // Stack (16): counterpartyShareOut=0, pp1Out=1, txId=2, nLt=3, pp1S=4,
     //   pp2S=5, pp3S=6, metaS=7, pad=8, rawTx=9, lhs=10,
-    //   merchPayAmt=11, custRewardAmt=12, mSig=13, chgAmt=14,
+    //   operatorShareAmt=11, counterpartyShareAmt=12, mSig=13, chgAmt=14,
     //   chgPkh=15, mPK=16, pp2Out=17
 
-    // Phase 10b: Build merchant payment P2PKH output
+    // Phase 10b: Build operator share P2PKH output
     b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_PICK);  // pp1S (idx 4)
-    OpcodeHelpers.pushInt(b, merchantPKHDataEnd);
+    OpcodeHelpers.pushInt(b, operatorPKHDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, merchantPKHDataStart);
+    OpcodeHelpers.pushInt(b, operatorPKHDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
     PP1FtScriptGen.emitBuildP2PKHScript(b);
     OpcodeHelpers.pushInt(b, 12);
-    b.opCode(OpCodes.OP_PICK);           // merchPayAmt (idx 12)
+    b.opCode(OpCodes.OP_PICK);           // operatorShareAmt (idx 12)
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (17): merchPayOut=0, custRewardOut=1, pp1Out=2, txId=3,
+    // Stack (17): operatorShareOut=0, counterpartyShareOut=1, pp1Out=2, txId=3,
     //   nLt=4, pp1S=5, pp2S=6, pp3S=7, metaS=8, pad=9, rawTx=10,
-    //   lhs=11, merchPayAmt=12, custRewardAmt=13, mSig=14, chgAmt=15,
+    //   lhs=11, operatorShareAmt=12, counterpartyShareAmt=13, mSig=14, chgAmt=15,
     //   chgPkh=16, mPK=17, pp2Out=18
 
     // Phase 11: Build PP3 output
-    // Extract merchPKH from pp1S as newOwnerPKH for PP3 rebuild
+    // Extract operatorPKH from pp1S as newOwnerPKH for PP3 rebuild
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);  // pp3S (idx 7)
     b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);  // pp1S (idx 5+1=6)
-    OpcodeHelpers.pushInt(b, merchantPKHDataEnd);
+    OpcodeHelpers.pushInt(b, operatorPKHDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, merchantPKHDataStart);
+    OpcodeHelpers.pushInt(b, operatorPKHDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack: [merchPKH, pp3S_copy, merchPayOut, ...]
+    // Stack: [operatorPKH, pp3S_copy, operatorShareOut, ...]
     PP1FtScriptGen.emitRebuildPP3(b);
     b.opCode(OpCodes.OP_1);
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (18): pp3Out=0, merchPayOut=1, custRewardOut=2, pp1Out=3,
+    // Stack (18): pp3Out=0, operatorShareOut=1, counterpartyShareOut=2, pp1Out=3,
     //   txId=4, nLt=5, pp1S=6, pp2S=7, pp3S=8, metaS=9, pad=10,
-    //   rawTx=11, lhs=12, merchPayAmt=13, custRewardAmt=14, mSig=15,
+    //   rawTx=11, lhs=12, operatorShareAmt=13, counterpartyShareAmt=14, mSig=15,
     //   chgAmt=16, chgPkh=17, mPK=18, pp2Out=19
 
     // Phase 12: Build metadata output (0 sats)
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);  // metaS (idx 9)
     b.opCode(OpCodes.OP_0);
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (19): metaOut=0, pp3Out=1, merchPayOut=2, custRewardOut=3,
+    // Stack (19): metaOut=0, pp3Out=1, operatorShareOut=2, counterpartyShareOut=3,
     //   pp1Out=4, txId=5, nLt=6, pp1S=7, pp2S=8, pp3S=9, metaS=10,
-    //   pad=11, rawTx=12, lhs=13, merchPayAmt=14, custRewardAmt=15,
+    //   pad=11, rawTx=12, lhs=13, operatorShareAmt=14, counterpartyShareAmt=15,
     //   mSig=16, chgAmt=17, chgPkh=18, mPK=19, pp2Out=20
 
     // Phase 13: Build change output
@@ -988,32 +988,32 @@ class PP1SmScriptGen {
     OpcodeHelpers.pushInt(b, 18);
     b.opCode(OpCodes.OP_PICK);           // chgAmt (idx 18, shifted +1)
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (20): changeOut=0, metaOut=1, pp3Out=2, merchPayOut=3,
-    //   custRewardOut=4, pp1Out=5, txId=6, nLt=7, pp1S=8, pp2S=9,
-    //   pp3S=10, metaS=11, pad=12, rawTx=13, lhs=14, merchPayAmt=15,
-    //   custRewardAmt=16, mSig=17, chgAmt=18, chgPkh=19, mPK=20, pp2Out=21
+    // Stack (20): changeOut=0, metaOut=1, pp3Out=2, operatorShareOut=3,
+    //   counterpartyShareOut=4, pp1Out=5, txId=6, nLt=7, pp1S=8, pp2S=9,
+    //   pp3S=10, metaS=11, pad=12, rawTx=13, lhs=14, operatorShareAmt=15,
+    //   counterpartyShareAmt=16, mSig=17, chgAmt=18, chgPkh=19, mPK=20, pp2Out=21
 
     // Phase 14: Reconstruct fullTx (7 outputs)
-    // Stack (22): changeOut=0, metaOut=1, pp3Out=2, merchPayOut=3,
-    //   custRewardOut=4, pp1Out=5, txId=6, nLt=7, pp1S=8, pp2S=9,
-    //   pp3S=10, metaS=11, pad=12, rawTx=13, lhs=14, merchPayAmt=15,
-    //   custRewardAmt=16, mSig=17, chgAmt=18, chgPkh=19, mPK=20, pp2Out=21
+    // Stack (22): changeOut=0, metaOut=1, pp3Out=2, operatorShareOut=3,
+    //   counterpartyShareOut=4, pp1Out=5, txId=6, nLt=7, pp1S=8, pp2S=9,
+    //   pp3S=10, metaS=11, pad=12, rawTx=13, lhs=14, operatorShareAmt=15,
+    //   counterpartyShareAmt=16, mSig=17, chgAmt=18, chgPkh=19, mPK=20, pp2Out=21
     //
-    // Target: lhs + varint(7) + changeOut + custRewardOut + merchPayOut
+    // Target: lhs + varint(7) + changeOut + counterpartyShareOut + operatorShareOut
     //         + pp1Out + pp2Out + pp3Out + metaOut + nLocktime
 
-    // Stash metaOut, pp3Out, merchPayOut to alt (will pop in order)
+    // Stash metaOut, pp3Out, operatorShareOut to alt (will pop in order)
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);     // metaOut → alt
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);     // pp3Out → alt
     b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_TOALTSTACK);     // merchPayOut → alt
-    // Stack (19): changeOut=0, custRewardOut=1, pp1Out=2, txId=3, nLt=4,
+    b.opCode(OpCodes.OP_TOALTSTACK);     // operatorShareOut → alt
+    // Stack (19): changeOut=0, counterpartyShareOut=1, pp1Out=2, txId=3, nLt=4,
     //   pp1S=5, pp2S=6, pp3S=7, metaS=8, pad=9, rawTx=10, lhs=11,
-    //   merchPayAmt=12, custRewardAmt=13, mSig=14, chgAmt=15, chgPkh=16,
+    //   operatorShareAmt=12, counterpartyShareAmt=13, mSig=14, chgAmt=15, chgPkh=16,
     //   mPK=17, pp2Out=18
-    // Alt: [metaOut, pp3Out, merchPayOut]
+    // Alt: [metaOut, pp3Out, operatorShareOut]
 
     // lhs + varint(7)
     OpcodeHelpers.pushInt(b, 11);
@@ -1026,11 +1026,11 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
-    // + custRewardOut
+    // + counterpartyShareOut
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
-    // + merchPayOut (from alt)
+    // + operatorShareOut (from alt)
     b.opCode(OpCodes.OP_FROMALTSTACK);
     b.opCode(OpCodes.OP_CAT);
 
@@ -1039,7 +1039,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_CAT);
 
     // Stack (16): built=0, txId=1, nLt=2, pp1S=3, pp2S=4, pp3S=5,
-    //   metaS=6, pad=7, rawTx=8, lhs=9, merchPayAmt=10, custRewardAmt=11,
+    //   metaS=6, pad=7, rawTx=8, lhs=9, operatorShareAmt=10, counterpartyShareAmt=11,
     //   mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
     // Alt: [metaOut, pp3Out]
 
@@ -1076,10 +1076,10 @@ class PP1SmScriptGen {
     // Phase 15: Verify SHA256d(fullTx) == currentTxId
     b.opCode(OpCodes.OP_SHA256); b.opCode(OpCodes.OP_SHA256);
     // Stack: [hash, txId, pp1S, pp2S, pp3S, metaS, pad, rawTx, lhs,
-    //   merchPayAmt, custRewardAmt, mSig, chgAmt, chgPkh, mPK, pp2Out]
+    //   operatorShareAmt, counterpartyShareAmt, mSig, chgAmt, chgPkh, mPK, pp2Out]
     b.opCode(OpCodes.OP_EQUALVERIFY);
     // Stack (14): pp1S=0, pp2S=1, pp3S=2, metaS=3, pad=4, rawTx=5,
-    //   lhs=6, merchPayAmt=7, custRewardAmt=8, mSig=9, chgAmt=10,
+    //   lhs=6, operatorShareAmt=7, counterpartyShareAmt=8, mSig=9, chgAmt=10,
     //   chgPkh=11, mPK=12, pp2Out=13
 
     // Phase 16: Validate PP2
@@ -1124,7 +1124,7 @@ class PP1SmScriptGen {
   /// Alt: [tdNum] (timeoutDelta as unsigned number)
   ///
   /// 6-output layout:
-  ///   0: change, 1: merchantRefund(P2PKH), 2: PP1_SM(state=0x05),
+  ///   0: change, 1: operatorRecovery(P2PKH), 2: PP1_SM(state=0x05),
   ///   3: PP2, 4: PP3, 5: metadata
   ///
   /// nLockTime must be >= timeoutDelta. No commitment hash update.
@@ -1217,63 +1217,63 @@ class PP1SmScriptGen {
     //   chgPkh=12, mPK=13, pp2Out=14
 
     // Phase 8: Timeout uses parent's commitmentHash (no update)
-    // Extract merchantPKH from pp1S[55:75] for newOwnerPKH and refund output
+    // Extract operatorPKH from pp1S[55:75] for newOwnerPKH and refund output
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
-    OpcodeHelpers.pushInt(b, merchantPKHDataEnd);
+    OpcodeHelpers.pushInt(b, operatorPKHDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-    OpcodeHelpers.pushInt(b, merchantPKHDataStart);
+    OpcodeHelpers.pushInt(b, operatorPKHDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // merchPKH on stack as newOwnerPKH
-    // Stack (16): merchPKH=0, currentTxId=1, nLocktime=2, pp1S=3, ...
+    // operatorPKH on stack as newOwnerPKH
+    // Stack (16): operatorPKH=0, currentTxId=1, nLocktime=2, pp1S=3, ...
 
     // Phase 9: Rebuild PP1_SM (state=0x05, preserve parent's MC and CH)
     // Need: [pp1S, newPKH, newCH] for _emitRebuildPP1SM(updateMC=false)
     // newCH = parentCommitHash (no update for timeout)
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_PICK);  // pp1S
-    b.opCode(OpCodes.OP_OVER);                            // merchPKH (copy)
+    b.opCode(OpCodes.OP_OVER);                            // operatorPKH (copy)
     // Extract parent commitHash from pp1S_copy (idx 1)
-    b.opCode(OpCodes.OP_OVER);  // pp1S_copy (idx 1 after OVER of merchPKH)
+    b.opCode(OpCodes.OP_OVER);  // pp1S_copy (idx 1 after OVER of operatorPKH)
     OpcodeHelpers.pushInt(b, commitmentHashDataEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     OpcodeHelpers.pushInt(b, commitmentHashDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    // Stack: [parentCH, merchPKH_copy, pp1S_copy, merchPKH, txId, nLt, pp1S, ...]
+    // Stack: [parentCH, operatorPKH_copy, pp1S_copy, operatorPKH, txId, nLt, pp1S, ...]
     _emitRebuildPP1SM(b, newStateValue: 0x05, updateMilestoneCount: false);
-    // Consumed 3 (pp1S_copy, merchPKH_copy, parentCH), produced 1 (rebuiltScript)
-    // Stack (15): rebuiltScript=0, merchPKH=1, currentTxId=2, nLocktime=3,
+    // Consumed 3 (pp1S_copy, operatorPKH_copy, parentCH), produced 1 (rebuiltScript)
+    // Stack (15): rebuiltScript=0, operatorPKH=1, currentTxId=2, nLocktime=3,
     //   pp1S=4, pp2S=5, pp3S=6, metaS=7, pad=8, rawTx=9, lhs=10,
     //   refundAmt=11, mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
     // Wait, that's 17. Let me recount.
-    // Before 3 PICK + OVER + 2 PICK + extract: added 3 items (pp1S_copy, merchPKH_copy, parentCH) → 19
+    // Before 3 PICK + OVER + 2 PICK + extract: added 3 items (pp1S_copy, operatorPKH_copy, parentCH) → 19
     // _emitRebuildPP1SM consumes 3, produces 1 → 17
-    // Stack (17): rebuiltScript=0, merchPKH=1, currentTxId=2, nLocktime=3,
+    // Stack (17): rebuiltScript=0, operatorPKH=1, currentTxId=2, nLocktime=3,
     //   pp1S=4, pp2S=5, pp3S=6, metaS=7, pad=8, rawTx=9, lhs=10,
     //   refundAmt=11, mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
 
     // Phase 9b: Build PP1 output (1 sat)
     b.opCode(OpCodes.OP_1);
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (16): pp1Out=0, merchPKH=1, txId=2, nLt=3, pp1S=4, pp2S=5,
+    // Stack (16): pp1Out=0, operatorPKH=1, txId=2, nLt=3, pp1S=4, pp2S=5,
     //   pp3S=6, metaS=7, pad=8, rawTx=9, lhs=10, refundAmt=11,
     //   mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
 
-    // Phase 10: Build merchant refund P2PKH output
-    b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);  // merchPKH
+    // Phase 10: Build operator recovery P2PKH output
+    b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);  // operatorPKH
     PP1FtScriptGen.emitBuildP2PKHScript(b);
     OpcodeHelpers.pushInt(b, 12);
     b.opCode(OpCodes.OP_PICK);           // refundAmt (idx 12)
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (17): merchRefundOut=0, pp1Out=1, merchPKH=2, txId=3, nLt=4,
+    // Stack (17): operatorRecoveryOut=0, pp1Out=1, operatorPKH=2, txId=3, nLt=4,
     //   pp1S=5, pp2S=6, pp3S=7, metaS=8, pad=9, rawTx=10, lhs=11,
     //   refundAmt=12, mSig=13, chgAmt=14, chgPkh=15, mPK=16, pp2Out=17
 
-    // Phase 11: Build PP3 output (ownerPKH = merchantPKH)
+    // Phase 11: Build PP3 output (ownerPKH = operatorPKH)
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);  // pp3S (idx 7)
-    b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_PICK);  // merchPKH (idx 3)
+    b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_PICK);  // operatorPKH (idx 3)
     PP1FtScriptGen.emitRebuildPP3(b);
     b.opCode(OpCodes.OP_1);
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (18): pp3Out=0, merchRefundOut=1, pp1Out=2, merchPKH=3, txId=4,
+    // Stack (18): pp3Out=0, operatorRecoveryOut=1, pp1Out=2, operatorPKH=3, txId=4,
     //   nLt=5, pp1S=6, pp2S=7, pp3S=8, metaS=9, pad=10, rawTx=11, lhs=12,
     //   refundAmt=13, mSig=14, chgAmt=15, chgPkh=16, mPK=17, pp2Out=18
 
@@ -1281,7 +1281,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);  // metaS (idx 9)
     b.opCode(OpCodes.OP_0);
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (19): metaOut=0, pp3Out=1, merchRefundOut=2, pp1Out=3, merchPKH=4,
+    // Stack (19): metaOut=0, pp3Out=1, operatorRecoveryOut=2, pp1Out=3, operatorPKH=4,
     //   txId=5, nLt=6, pp1S=7, pp2S=8, pp3S=9, metaS=10, pad=11, rawTx=12,
     //   lhs=13, refundAmt=14, mSig=15, chgAmt=16, chgPkh=17, mPK=18, pp2Out=19
 
@@ -1292,20 +1292,20 @@ class PP1SmScriptGen {
     OpcodeHelpers.pushInt(b, 17);
     b.opCode(OpCodes.OP_PICK);           // chgAmt (idx 17)
     PP1FtScriptGen.emitBuildOutput(b);
-    // Stack (20): changeOut=0, metaOut=1, pp3Out=2, merchRefundOut=3, pp1Out=4,
-    //   merchPKH=5, txId=6, nLt=7, pp1S=8, pp2S=9, pp3S=10, metaS=11,
+    // Stack (20): changeOut=0, metaOut=1, pp3Out=2, operatorRecoveryOut=3, pp1Out=4,
+    //   operatorPKH=5, txId=6, nLt=7, pp1S=8, pp2S=9, pp3S=10, metaS=11,
     //   pad=12, rawTx=13, lhs=14, refundAmt=15, mSig=16, chgAmt=17,
     //   chgPkh=18, mPK=19, pp2Out=20
 
     // Phase 14: Reconstruct fullTx (6 outputs)
-    // Output order: change + merchRefund + pp1 + pp2 + pp3 + meta + nLocktime
+    // Output order: change + operatorRecovery + pp1 + pp2 + pp3 + meta + nLocktime
     //
     // Stash metaOut, pp3Out to alt
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);     // metaOut → alt
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_TOALTSTACK);     // pp3Out → alt
-    // Stack (18): changeOut=0, merchRefundOut=1, pp1Out=2, merchPKH=3,
+    // Stack (18): changeOut=0, operatorRecoveryOut=1, pp1Out=2, operatorPKH=3,
     //   txId=4, nLt=5, pp1S=6, pp2S=7, pp3S=8, metaS=9, pad=10,
     //   rawTx=11, lhs=12, refundAmt=13, mSig=14, chgAmt=15, chgPkh=16,
     //   mPK=17, pp2Out=18
@@ -1322,7 +1322,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
-    // + merchRefundOut
+    // + operatorRecoveryOut
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
@@ -1330,7 +1330,7 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
-    // Stack (15): built=0, merchPKH=1, txId=2, nLt=3, pp1S=4, pp2S=5,
+    // Stack (15): built=0, operatorPKH=1, txId=2, nLt=3, pp1S=4, pp2S=5,
     //   pp3S=6, metaS=7, pad=8, rawTx=9, lhs=10, refundAmt=11,
     //   mSig=12, chgAmt=13, chgPkh=14, mPK=15, pp2Out=16
 
@@ -1347,27 +1347,27 @@ class PP1SmScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);
     b.opCode(OpCodes.OP_CAT);
 
-    // + nLocktime: ROT on [built, merchPKH, txId, nLt]
-    // Wait, ROT operates on top 3: [built=top, merchPKH, txId]
+    // + nLocktime: ROT on [built, operatorPKH, txId, nLt]
+    // Wait, ROT operates on top 3: [built=top, operatorPKH, txId]
     // We need nLt which is at idx 3. Use 3 ROLL.
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_ROLL);  // nLt to top
     b.opCode(OpCodes.OP_CAT);
-    // Stack: [fullTx, merchPKH, txId, pp1S, pp2S, pp3S, metaS, pad, rawTx,
+    // Stack: [fullTx, operatorPKH, txId, pp1S, pp2S, pp3S, metaS, pad, rawTx,
     //   lhs, refundAmt, mSig, chgAmt, chgPkh, mPK, pp2Out]
 
     // Phase 15: Verify SHA256d(fullTx) == currentTxId
-    // Stack: [fullTx, merchPKH, txId, ...]
+    // Stack: [fullTx, operatorPKH, txId, ...]
     b.opCode(OpCodes.OP_SHA256); b.opCode(OpCodes.OP_SHA256);
-    // Stack: [hash, merchPKH, txId, ...]
+    // Stack: [hash, operatorPKH, txId, ...]
     // txId is at idx 2. ROLL 2 to get it.
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);  // txId to top
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // Stack (13): merchPKH=0, pp1S=1, pp2S=2, pp3S=3, metaS=4, pad=5,
+    // Stack (13): operatorPKH=0, pp1S=1, pp2S=2, pp3S=3, metaS=4, pad=5,
     //   rawTx=6, lhs=7, refundAmt=8, mSig=9, chgAmt=10, chgPkh=11,
     //   mPK=12, pp2Out=13
 
     // Phase 16: Validate PP2
-    b.opCode(OpCodes.OP_DROP);           // merchPKH (no longer needed)
+    b.opCode(OpCodes.OP_DROP);           // operatorPKH (no longer needed)
     // Stack (12): pp1S=0, pp2S=1, pp3S=2, metaS=3, pad=4, rawTx=5,
     //   lhs=6, refundAmt=7, mSig=8, chgAmt=9, chgPkh=10, mPK=11, pp2Out=12
     OpcodeHelpers.pushInt(b, 12);
@@ -1503,9 +1503,9 @@ class PP1SmScriptGen {
     if (updateMilestoneCount) {
       // Extract parentMilestoneCount from pp1S[99:100], increment
       b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
-      OpcodeHelpers.pushInt(b, milestoneCountDataEnd);
+      OpcodeHelpers.pushInt(b, checkpointCountDataEnd);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-      OpcodeHelpers.pushInt(b, milestoneCountDataStart);
+      OpcodeHelpers.pushInt(b, checkpointCountDataStart);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
       b.opCode(OpCodes.OP_BIN2NUM);
       b.opCode(OpCodes.OP_1ADD);
@@ -1640,9 +1640,9 @@ class PP1SmScriptGen {
     if (!updateMilestoneCount) {
       // Stack: [..., pp1S, newPKH, newCH]
       b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // pp1S
-      OpcodeHelpers.pushInt(b, milestoneCountDataEnd);
+      OpcodeHelpers.pushInt(b, checkpointCountDataEnd);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
-      OpcodeHelpers.pushInt(b, milestoneCountDataStart);
+      OpcodeHelpers.pushInt(b, checkpointCountDataStart);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
       // Stack: [..., pp1S, newPKH, newCH, parentMC]
       b.opCode(OpCodes.OP_SWAP);
