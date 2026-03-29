@@ -42,3 +42,5 @@ export 'src/builder/pp1_sm_unlock_builder.dart';
 export 'src/transaction/state_machine_tool.dart';
 export 'src/transaction/signing_callback.dart';
 export 'src/transaction/signer_adapter.dart';
+export 'src/transaction/provisioned_funding_tx.dart';
+export 'src/transaction/funding_provision_builder.dart';

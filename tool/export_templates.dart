@@ -741,7 +741,7 @@ void exportPP3Ft() {
 
   var script = WitnessCheckScriptGen.generate(
     ownerPKH: ownerPKH,
-    pp2OutputIndex: 3, // FT default
+    pp2OutputIndex: 2, // FT standard: Change[0], PP1[1], PP2[2], PP3[3], Metadata[4]
   );
 
   var fullHex = hex.encode(script.buffer!);
@@ -767,8 +767,8 @@ void exportPP3Ft() {
     'metadata': {
       'generatedBy': 'WitnessCheckScriptGen',
       'sourceFile': 'lib/src/script_gen/witness_check_script_gen.dart',
-      'pp2OutputIndex': 3,
-      'note': 'pp2OutputIndex=3 is baked into the script body (FT standard position). Use pp3_witness.json for NFTs.',
+      'pp2OutputIndex': 2,
+      'note': 'pp2OutputIndex=2 is baked into the script body (FT standard position: PP2 at output index 2). Use pp3_witness.json for NFTs.',
     },
   });
 }

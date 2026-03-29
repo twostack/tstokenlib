@@ -121,7 +121,7 @@ void main() {
 
       var script = WitnessCheckScriptGen.generate(
         ownerPKH: ownerPKH,
-        pp2OutputIndex: 3,
+        pp2OutputIndex: 2,
       );
       var generatedHex = hex.encode(script.buffer!);
 
