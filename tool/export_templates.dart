@@ -738,16 +738,18 @@ void exportPP3Nft() {
 
 void exportPP3Ft() {
   var ownerPKH = List.filled(20, 0xAA);
+  var sentinelPP2Index = 0xBBBBBBBB; // sentinel fills all 4 LE bytes with 0xBB
 
   var script = WitnessCheckScriptGen.generate(
     ownerPKH: ownerPKH,
-    pp2OutputIndex: 2, // FT standard: Change[0], PP1[1], PP2[2], PP3[3], Metadata[4]
+    pp2OutputIndex: sentinelPP2Index,
   );
 
   var fullHex = hex.encode(script.buffer!);
 
   var templateHex = templatizeHex(fullHex, {
     'ownerPKH': _SentinelRegion(1, 20, 0xAA),
+    'pp2OutputIndex': _SentinelRegion(48504, 4, 0xBB),
   });
 
   writeTemplate('templates/ft/pp3_ft_witness.json', {
@@ -762,13 +764,18 @@ void exportPP3Ft() {
         'encoding': 'hex',
         'description': '20-byte pubkey hash of the token owner (used for burn path)',
       },
+      {
+        'name': 'pp2OutputIndex',
+        'size': 4,
+        'encoding': 'hex',
+        'description': '4-byte little-endian output index of the PP2-FT output (2 for standard triplet, 5 for change triplet)',
+      },
     ],
     'hex': templateHex,
     'metadata': {
       'generatedBy': 'WitnessCheckScriptGen',
       'sourceFile': 'lib/src/script_gen/witness_check_script_gen.dart',
-      'pp2OutputIndex': 2,
-      'note': 'pp2OutputIndex=2 is baked into the script body (FT standard position: PP2 at output index 2). Use pp3_witness.json for NFTs.',
+      'note': 'pp2OutputIndex is parameterized to support both standard (index 2) and change (index 5) triplets in split transactions.',
     },
   });
 }

@@ -115,13 +115,20 @@ void main() {
       var templateHex = templateJson['hex'] as String;
 
       var ownerPKH = List.generate(20, (i) => i + 1);
+      var pp2OutputIndex = 2;
+
+      // Encode pp2OutputIndex as 4-byte little-endian hex
+      var pp2LE = Uint8List(4);
+      pp2LE[0] = pp2OutputIndex & 0xFF;
+      var pp2Hex = hex.encode(pp2LE);
 
       var substituted = templateHex
-          .replaceFirst('{{ownerPKH}}', hex.encode(ownerPKH));
+          .replaceFirst('{{ownerPKH}}', hex.encode(ownerPKH))
+          .replaceFirst('{{pp2OutputIndex}}', pp2Hex);
 
       var script = WitnessCheckScriptGen.generate(
         ownerPKH: ownerPKH,
-        pp2OutputIndex: 2,
+        pp2OutputIndex: pp2OutputIndex,
       );
       var generatedHex = hex.encode(script.buffer!);
 
