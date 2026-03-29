@@ -224,7 +224,7 @@ class StateMachineTool {
   /// [eventData] checkpoint data or conversion data.
   Transaction createDualWitnessTxn(
       TransactionSigner operatorSigner,
-      SVPrivateKey counterpartyPrivateKey,
+      TransactionSigner counterpartySigner,
       Transaction fundingTx,
       Transaction tokenTx,
       List<int> parentTokenTxBytes,
@@ -253,8 +253,7 @@ class StateMachineTool {
     var preImagePP1 = Sighash().createSighashPreImage(preImageTxn, sigHashAll, 1, subscript1, BigInt.one);
 
     // Compute counterparty signature off-chain (same sighash preimage)
-    var counterpartySig = DefaultTransactionSigner.signPreimageWithKey(
-        counterpartyPrivateKey, Uint8List.fromList(preImagePP1!), sigHashAll);
+    var counterpartySig = counterpartySigner.signPreimage(Uint8List.fromList(preImagePP1!));
     var counterpartySigBytes = hex.decode(counterpartySig.toTxFormat());
 
     var tsl1 = TransactionUtils();

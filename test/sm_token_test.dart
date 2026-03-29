@@ -590,7 +590,7 @@ void main() {
 
       // Step 6: Confirm witness (dual-sig)
       var confirmWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         confirmWitnessFundingTx, confirmTx,
         hex.decode(enrollTx.serialize()),
         operatorPub, counterpartyPub,
@@ -651,7 +651,7 @@ void main() {
         eventData: List<int>.generate(16, (i) => i + 0x20));
 
       var confirmWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
@@ -682,7 +682,7 @@ void main() {
 
       // Convert witness (dual-sig)
       var convertWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
@@ -738,7 +738,7 @@ void main() {
         incrementMilestone: true, eventData: checkpointData);
 
       var confirmWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
@@ -752,7 +752,7 @@ void main() {
         eventData: conversionData);
 
       var convertWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
@@ -942,7 +942,7 @@ void main() {
 
       // Step 6: Confirm witness (dual-sig)
       var confirmWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), confirmTx,
         hex.decode(enrollTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
@@ -965,7 +965,7 @@ void main() {
 
       // Step 8: Convert witness (dual-sig)
       var convertWitnessTx = service.createDualWitnessTxn(
-        operatorSigner, counterpartyPrivateKey,
+        operatorSigner, DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         getCounterpartyFundingTx(), convertTx,
         hex.decode(confirmTx.serialize()),
         operatorPub, counterpartyPub, operatorPubkeyHash,
