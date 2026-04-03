@@ -63,7 +63,8 @@ class RestrictedTokenTool {
       SVPublicKey ownerPubkey,
       String tokenChangePKH,
       RestrictedTokenAction action,
-      {List<int>? rabinN,
+      {int fundingVout = 1,
+       List<int>? rabinN,
        List<int>? rabinS,
        int? rabinPadding,
        List<int>? identityTxId,
@@ -75,7 +76,7 @@ class RestrictedTokenTool {
     var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var preImageTxnForPP1 = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker) //PP1_RNFT
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker) //PP2
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -92,12 +93,12 @@ class RestrictedTokenTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
     var fundingOutpoint = Uint8List(36);
     fundingOutpoint.setAll(0, fundingTx.hash);
-    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    fundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
     var pp1UnlockBuilder = PP1RnftUnlockBuilder(preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -110,7 +111,7 @@ class RestrictedTokenTool {
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -119,11 +120,11 @@ class RestrictedTokenTool {
     return witnessTx;
   }
 
-  /// Constructs a 36-byte outpoint (txid + output index 1) from a transaction ID.
-  List<int> getOutpoint(List<int> txId) {
+  /// Constructs a 36-byte outpoint (txid + output index) from a transaction ID.
+  List<int> getOutpoint(List<int> txId, {int outputIndex = 1}) {
     var outputWriter = ByteDataWriter();
     outputWriter.write(txId); //32 byte txid
-    outputWriter.writeUint32(1, Endian.little);
+    outputWriter.writeUint32(outputIndex, Endian.little);
     return outputWriter.toBytes();
   }
 
@@ -149,7 +150,8 @@ class RestrictedTokenTool {
       List<int> witnessFundingTxId,
       List<int> rabinPubKeyHash,
       int flags,
-      {List<int>? companionTokenId,
+      {int fundingVout = 1,
+       List<int>? companionTokenId,
        List<int>? metadataBytes,
        List<int>? identityTxId,
        SignatureWand? issuerWand}) async {
@@ -159,7 +161,7 @@ class RestrictedTokenTool {
     var tokenId = tokenFundingTx.hash; //set initial tokenId to fundingTxId
 
     //fund the txn
-    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
     tokenTxBuilder.withFeePerKb(1);
 
     //create PP1_RNFT Outpoint
@@ -223,7 +225,8 @@ class RestrictedTokenTool {
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       List<int> recipientWitnessFundingTxId,
-      List<int> tokenId) {
+      List<int> tokenId,
+      {int fundingVout = 1}) {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
 
@@ -242,7 +245,7 @@ class RestrictedTokenTool {
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker) //one output only in witness
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1_RNFT
@@ -261,7 +264,7 @@ class RestrictedTokenTool {
 
     var transferFundingOutpoint = Uint8List(36);
     transferFundingOutpoint.setAll(0, fundingTx.hash);
-    transferFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    transferFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
@@ -270,7 +273,7 @@ class RestrictedTokenTool {
         transferFundingOutpoint);
 
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one) //PP1_RNFT
@@ -298,7 +301,8 @@ class RestrictedTokenTool {
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey) {
+      SVPublicKey fundingPubKey,
+      {int fundingVout = 1}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -307,7 +311,7 @@ class RestrictedTokenTool {
     var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
 
     var burnTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1BurnUnlocker) //PP1_RNFT
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker) //PP2
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)  //PartialWitness
@@ -335,7 +339,8 @@ class RestrictedTokenTool {
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey) {
+      SVPublicKey fundingPubKey,
+      {int fundingVout = 1}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -344,7 +349,7 @@ class RestrictedTokenTool {
     var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
 
     var redeemTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1RedeemUnlocker) //PP1_RNFT (redeem)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker) //PP2
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)  //PartialWitness

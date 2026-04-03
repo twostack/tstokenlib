@@ -79,7 +79,8 @@ class FungibleTokenTool {
       List<int> witnessFundingTxId,
       List<int> rabinPubKeyHash,
       int amount,
-      {List<int>? metadataBytes}
+      {List<int>? metadataBytes,
+       int fundingVout = 1}
   ) async {
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -88,7 +89,7 @@ class FungibleTokenTool {
     var recipientPKH = hex.decode(recipientAddress.pubkeyHash160);
 
     // Fund the transaction
-    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
     tokenTxBuilder.withFeePerKb(1);
 
     // Output 1: PP1_FT (fungible token state)
@@ -145,7 +146,8 @@ class FungibleTokenTool {
        List<int>? rabinS,
        int? rabinPadding,
        List<int>? identityTxId,
-       List<int>? ed25519PubKey}
+       List<int>? ed25519PubKey,
+       int fundingVout = 1}
   ) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -159,7 +161,7 @@ class FungibleTokenTool {
 
     // First pass: build with empty PP1_FT unlocker to get preImage
     var preImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, pp1FtIndex, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendFromTxn(tokenTx, pp2Index, TransactionInput.MAX_SEQ_NUMBER, pp2FtUnlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -176,7 +178,7 @@ class FungibleTokenTool {
     // Build PP1_FT unlocker and rebuild with padding (two passes)
     var fundingOutpoint = Uint8List(36);
     fundingOutpoint.setAll(0, fundingTx.hash);
-    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    fundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
     var pp1FtUnlocker = _buildPP1FtUnlocker(action, preImage!, tokenTx, ownerPubkey,
         tokenChangePKH, tokenTxLHS, parentTokenTxBytes, paddingBytes,
@@ -190,7 +192,8 @@ class FungibleTokenTool {
         ed25519PubKey: ed25519PubKey);
 
     var witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
-        pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker);
+        pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker,
+        fundingVout: fundingVout);
 
     // Recalculate padding
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
@@ -207,7 +210,8 @@ class FungibleTokenTool {
         ed25519PubKey: ed25519PubKey);
 
     witnessTx = _buildWitnessTxn(fundingSigner, fundingTx, tokenTx,
-        pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker);
+        pp1FtIndex, pp2Index, ownerPubkey, pp1FtUnlocker, pp2FtUnlocker, witnessLocker,
+        fundingVout: fundingVout);
 
     return witnessTx;
   }
@@ -230,7 +234,8 @@ class FungibleTokenTool {
       List<int> recipientWitnessFundingTxId,
       List<int> tokenId,
       int amount,
-      {int prevTripletBaseIndex = 1}
+      {int prevTripletBaseIndex = 1,
+       int fundingVout = 1}
   ) {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
@@ -258,7 +263,7 @@ class FungibleTokenTool {
 
     // First pass: build with empty PP3-FT unlocker to get preImage
     var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, prevPP3Index, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1FtLocker, BigInt.one)
@@ -277,14 +282,14 @@ class FungibleTokenTool {
 
     var transferFundingOutpoint = Uint8List(36);
     transferFundingOutpoint.setAll(0, fundingTx.hash);
-    transferFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    transferFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
         sigPreImage!, partialHash, witnessPartialPreImage, transferFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, prevPP3Index, TransactionInput.MAX_SEQ_NUMBER, pp3FtUnlocker)
         .spendToLockBuilder(pp1FtLocker, BigInt.one)
@@ -319,7 +324,8 @@ class FungibleTokenTool {
       List<int> changeWitnessFundingTxId,
       List<int> tokenId,
       int totalAmount,
-      {int prevTripletBaseIndex = 1}
+      {int prevTripletBaseIndex = 1,
+       int fundingVout = 1}
   ) {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
@@ -355,7 +361,7 @@ class FungibleTokenTool {
 
     // First pass: empty PP3-FT unlocker to get preImage
     var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, prevPP3Index, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1FtRecipientLocker, BigInt.one)
@@ -377,14 +383,14 @@ class FungibleTokenTool {
 
     var splitFundingOutpoint = Uint8List(36);
     splitFundingOutpoint.setAll(0, fundingTx.hash);
-    splitFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    splitFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
     var pp3FtUnlocker = PartialWitnessFtUnlockBuilder(
         sigPreImage!, partialHash, witnessPartialPreImage, splitFundingOutpoint);
 
     // Final build with PP3-FT unlocker
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, prevPP3Index, TransactionInput.MAX_SEQ_NUMBER, pp3FtUnlocker)
         .spendToLockBuilder(pp1FtRecipientLocker, BigInt.one)
@@ -412,7 +418,8 @@ class FungibleTokenTool {
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
-      {int tripletBaseIndex = 1}
+      {int tripletBaseIndex = 1,
+       int fundingVout = 1}
   ) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -422,7 +429,7 @@ class FungibleTokenTool {
     var pp3FtBurnUnlocker = PartialWitnessFtUnlockBuilder.forBurn(ownerPubkey);
 
     var burnTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, tripletBaseIndex, TransactionInput.MAX_SEQ_NUMBER, pp1FtBurnUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, tripletBaseIndex + 1, TransactionInput.MAX_SEQ_NUMBER, pp2FtBurnUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, tripletBaseIndex + 2, TransactionInput.MAX_SEQ_NUMBER, pp3FtBurnUnlocker)
@@ -459,7 +466,8 @@ class FungibleTokenTool {
       List<int> tokenId,
       int totalAmount,
       {int prevTripletBaseIndexA = 1,
-       int prevTripletBaseIndexB = 1}
+       int prevTripletBaseIndexB = 1,
+       int fundingVout = 1}
   ) {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
@@ -490,7 +498,7 @@ class FungibleTokenTool {
     var pp3BurnUnlockerB = PartialWitnessFtUnlockBuilder.forBurn(currentOwnerPubkey);
 
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTxA, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessAUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTxB, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessBUnlocker)
         .spendFromTxnWithSigner(ownerSigner, prevTokenTxA, prevPP3IndexA, TransactionInput.MAX_SEQ_NUMBER, pp3BurnUnlockerA)
@@ -583,10 +591,11 @@ class FungibleTokenTool {
       UnlockingScriptBuilder pp1FtUnlocker,
       PP2FtUnlockBuilder pp2FtUnlocker,
       ModP2PKHLockBuilder witnessLocker,
+      {int fundingVout = 1}
   ) {
     var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
     return TransactionBuilder()
-        .spendFromTxnWithSigner(fundingSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingSigner, tokenTx, pp1FtIndex, TransactionInput.MAX_SEQ_NUMBER, pp1FtUnlocker)
         .spendFromTxn(tokenTx, pp2Index, TransactionInput.MAX_SEQ_NUMBER, pp2FtUnlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)

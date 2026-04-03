@@ -64,7 +64,8 @@ class AppendableTokenTool {
       SVPublicKey pubkey,
       String tokenChangePKH,
       AppendableTokenAction action,
-      {List<int>? stampMetadata,
+      {int fundingVout = 1,
+       List<int>? stampMetadata,
        List<int>? rabinN,
        List<int>? rabinS,
        int? rabinPadding,
@@ -77,7 +78,7 @@ class AppendableTokenTool {
     var fundingUnlocker = P2PKHUnlockBuilder(pubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var preImageTxnForPP1 = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker) //PP1_AT
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker) //PP2
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -97,12 +98,12 @@ class AppendableTokenTool {
     // Transaction.hash returns the txid in the same byte order used by serialized outpoints.
     var fundingOutpoint = Uint8List(36);
     fundingOutpoint.setAll(0, fundingTx.hash);
-    fundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    fundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
     var pp1UnlockBuilder = PP1AtUnlockBuilder(preImagePP1!, pp2Output, pubkey, tokenChangePKH, tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes, action, fundingOutpoint,
         stampMetadata: stampMetadata,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
     var witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -115,7 +116,7 @@ class AppendableTokenTool {
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
 
     witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
         .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -124,11 +125,11 @@ class AppendableTokenTool {
     return witnessTx;
   }
 
-  /// Constructs a 36-byte outpoint (txid + output index 1).
-  List<int> getOutpoint(List<int> txId) {
+  /// Constructs a 36-byte outpoint (txid + output index).
+  List<int> getOutpoint(List<int> txId, {int outputIndex = 1}) {
     var outputWriter = ByteDataWriter();
     outputWriter.write(txId);
-    outputWriter.writeUint32(1, Endian.little);
+    outputWriter.writeUint32(outputIndex, Endian.little);
     return outputWriter.toBytes();
   }
 
@@ -152,7 +153,9 @@ class AppendableTokenTool {
       List<int> issuerPKH,
       List<int> rabinPubKeyHash,
       int threshold,
-      {List<int>? metadataBytes}) {
+      {int fundingVout = 1,
+       int witnessFundingVout = 1,
+       List<int>? metadataBytes}) {
 
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var tokenTxBuilder = TransactionBuilder();
@@ -161,7 +164,7 @@ class AppendableTokenTool {
     // Initial stamps hash is SHA256 of 32 zero bytes (empty chain)
     var initialStampsHash = List<int>.filled(32, 0);
 
-    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
     tokenTxBuilder.withFeePerKb(1);
 
     // PP1_AT output — ownerPKH is the token recipient
@@ -171,7 +174,7 @@ class AppendableTokenTool {
     // PP2 output — witnessChangePKH must match the witness TX output (signer's key)
     var outputWriter = ByteDataWriter();
     outputWriter.write(witnessFundingTxId);
-    outputWriter.writeUint32(1, Endian.little);
+    outputWriter.writeUint32(witnessFundingVout, Endian.little);
     var fundingOutpoint = outputWriter.toBytes();
 
     var pp2Locker = PP2LockBuilder(fundingOutpoint, witnessChangePKH, 1, hex.decode(recipientAddress.pubkeyHash160));
@@ -208,7 +211,9 @@ class AppendableTokenTool {
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       List<int> recipientWitnessFundingTxId,
-      List<int> tokenId) {
+      List<int> tokenId,
+      {int fundingVout = 1,
+       int witnessFundingVout = 1}) {
 
     var currentOwnerAddress = Address.fromPublicKey(currentOwnerPubkey, networkType);
 
@@ -216,7 +221,7 @@ class AppendableTokenTool {
     var prevPP1 = PP1AtLockBuilder.fromScript(prevTokenTx.outputs[1].script);
     var pp1LockBuilder = PP1AtLockBuilder(recipientAddress, tokenId, prevPP1.issuerPKH!, prevPP1.rabinPubKeyHash!, prevPP1.stampCount, prevPP1.threshold, prevPP1.stampsHash!);
 
-    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
+    var pp2Locker = PP2LockBuilder(getOutpoint(recipientWitnessFundingTxId, outputIndex: witnessFundingVout), hex.decode(recipientAddress.pubkeyHash160), 1, hex.decode(recipientAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(recipientAddress.pubkeyHash160));
 
     var metadataScript = prevTokenTx.outputs[4].script;
@@ -226,7 +231,7 @@ class AppendableTokenTool {
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(currentOwnerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one)
@@ -245,7 +250,7 @@ class AppendableTokenTool {
 
     var ppFundingOutpoint = Uint8List(36);
     ppFundingOutpoint.setAll(0, fundingTx.hash);
-    ppFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    ppFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
@@ -253,7 +258,7 @@ class AppendableTokenTool {
         ppFundingOutpoint);
 
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one)
@@ -287,7 +292,9 @@ class AppendableTokenTool {
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       List<int> issuerWitnessFundingTxId,
-      List<int> stampMetadata) {
+      List<int> stampMetadata,
+      {int fundingVout = 1,
+       int witnessFundingVout = 1}) {
 
     var issuerAddress = Address.fromPublicKey(issuerPubkey, networkType);
 
@@ -308,7 +315,7 @@ class AppendableTokenTool {
 
     // PP2 witnessChangePKH must match the witness TX output (issuer signs the witness).
     var issuerPKH = hex.decode(issuerAddress.pubkeyHash160);
-    var pp2Locker = PP2LockBuilder(getOutpoint(issuerWitnessFundingTxId),
+    var pp2Locker = PP2LockBuilder(getOutpoint(issuerWitnessFundingTxId, outputIndex: witnessFundingVout),
         issuerPKH, 1, hex.decode(ownerAddress.pubkeyHash160));
     var shaLocker = PartialWitnessLockBuilder(hex.decode(ownerAddress.pubkeyHash160));
 
@@ -319,7 +326,7 @@ class AppendableTokenTool {
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(issuerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one)
@@ -338,7 +345,7 @@ class AppendableTokenTool {
 
     var ppFundingOutpoint = Uint8List(36);
     ppFundingOutpoint.setAll(0, fundingTx.hash);
-    ppFundingOutpoint.buffer.asByteData().setUint32(32, 1, Endian.little);
+    ppFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
@@ -346,7 +353,7 @@ class AppendableTokenTool {
         ppFundingOutpoint);
 
     var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendToLockBuilder(pp1LockBuilder, BigInt.one)
@@ -369,7 +376,8 @@ class AppendableTokenTool {
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey) {
+      SVPublicKey fundingPubKey,
+      {int fundingVout = 1}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -378,7 +386,7 @@ class AppendableTokenTool {
     var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
 
     var burnTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1BurnUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)
@@ -399,7 +407,8 @@ class AppendableTokenTool {
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey) {
+      SVPublicKey fundingPubKey,
+      {int fundingVout = 1}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
@@ -408,7 +417,7 @@ class AppendableTokenTool {
     var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
 
     var redeemTx = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, 1, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1RedeemUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker)
         .spendFromTxnWithSigner(ownerSigner, tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)
