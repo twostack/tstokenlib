@@ -96,7 +96,7 @@ class IdentityAnchorBuilder {
     }
     var preTx = preTxBuilder
         .sendChangeToPKH(changeAddress)
-        .withFeePerKb(1)
+        .withFeePerKb(100)
         .build(false);
 
     // Step 2: Hash the pre-tx (everything except the AIP output that we'll add)
@@ -127,7 +127,7 @@ class IdentityAnchorBuilder {
     }
     var fullTx = fullTxBuilder
         .sendChangeToPKH(changeAddress)
-        .withFeePerKb(1)
+        .withFeePerKb(100)
         .build(false);
 
     return fullTx;

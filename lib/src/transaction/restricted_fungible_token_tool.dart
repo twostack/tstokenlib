@@ -86,7 +86,7 @@ class RestrictedFungibleTokenTool {
 
     // Fund the transaction
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
-    tokenTxBuilder.withFeePerKb(1);
+    tokenTxBuilder.withFeePerKb(100);
 
     // Output 1: PP1_RFT
     var pp1RftLocker = PP1RftLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, flags, amount, tokenSupply, merkleRoot);

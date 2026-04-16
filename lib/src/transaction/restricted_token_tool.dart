@@ -162,7 +162,7 @@ class RestrictedTokenTool {
 
     //fund the txn
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
-    tokenTxBuilder.withFeePerKb(1);
+    tokenTxBuilder.withFeePerKb(100);
 
     //create PP1_RNFT Outpoint
     var pp1Locker = PP1RnftLockBuilder(recipientAddress, tokenId, rabinPubKeyHash, flags, companionTokenId: companionTokenId);

@@ -86,7 +86,7 @@ class StateMachineTool {
 
     // ownerPKH = operatorPKH at creation (operator is first actor)
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
-    tokenTxBuilder.withFeePerKb(1);
+    tokenTxBuilder.withFeePerKb(100);
 
     var pp1Locker = PP1SmLockBuilder(
         operatorAddress, tokenId, operatorPKH, counterpartyPKH, rabinPubKeyHash,

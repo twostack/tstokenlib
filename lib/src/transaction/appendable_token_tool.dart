@@ -165,7 +165,7 @@ class AppendableTokenTool {
     var initialStampsHash = List<int>.filled(32, 0);
 
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
-    tokenTxBuilder.withFeePerKb(1);
+    tokenTxBuilder.withFeePerKb(100);
 
     // PP1_AT output — ownerPKH is the token recipient
     var pp1Locker = PP1AtLockBuilder(recipientAddress, tokenId, issuerPKH, rabinPubKeyHash, 0, threshold, initialStampsHash);

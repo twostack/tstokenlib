@@ -90,7 +90,7 @@ class FungibleTokenTool {
 
     // Fund the transaction
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
-    tokenTxBuilder.withFeePerKb(1);
+    tokenTxBuilder.withFeePerKb(100);
 
     // Output 1: PP1_FT (fungible token state)
     var pp1FtLocker = PP1FtLockBuilder(recipientPKH, tokenId, rabinPubKeyHash, amount);
