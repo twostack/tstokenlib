@@ -1988,6 +1988,13 @@ domain one column at a time (about 6 GB, but it needs a second extension pass
 because the DEEP weights are not known until the composition root is
 absorbed, and it fights the GPU's shared buffers).
 
+Two earlier references point at a change that no longer describes anything.
+`blowup32-node-cost` set out to bring levels 3 and 4 and the root under 60 s
+from 97, and they are now 46.5 s, reached by parameters rather than by the
+kernel cuts it proposed. It is renamed `node-stage-cost` and re-aimed at the
+stages the laps now show, where composition values is 27% of a round and
+grinding, a single-threaded nonce loop in Dart, is another 5%.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the
