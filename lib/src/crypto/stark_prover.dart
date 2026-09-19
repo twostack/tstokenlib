@@ -16,13 +16,15 @@
 
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:crypto/crypto.dart' as crypto;
 import 'circle_fft.dart';
 import 'm31.dart';
+import 'stark_kernels.dart';
 import 'stark_prover_ref.dart' show StarkParams, StarkProof, QueryProof, solveQ, embed, composeColumns;
-import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef, DeepConstants;
+import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef;
 import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
 import '../script_gen/air.dart' show Air;
+
+export 'stark_kernels.dart' show MerkleTree, MerkleCommitment, ProverKernels, DartKernels, StarkKernels;
 
 /// FFT-based Circle-STARK prover producing proofs in exactly the layout
 /// `StarkVerifierGen` consumes. Protocol and transcript are those of
@@ -31,14 +33,17 @@ import '../script_gen/air.dart' show Air;
 ///
 /// All polynomials are kept as base-field coefficient vectors in the circle
 /// FFT basis (see `CircleFft`); commitments are evaluations in twin layout.
+/// The arithmetic runs on a [ProverKernels]: the native Rust kernels when
+/// the library is built, plain Dart otherwise (same proof either way).
 class StarkProver {
   final StarkParams P;
   final Air air;
   final bool verbose;
+  final ProverKernels kernels;
   final Stopwatch _sw = Stopwatch()..start();
   int _last = 0;
 
-  StarkProver(this.P, this.air, {this.verbose = false});
+  StarkProver(this.P, this.air, {this.verbose = false, ProverKernels? kernels}) : kernels = kernels ?? ProverKernels.best;
 
   void _lap(String what) {
     if (!verbose) return;
@@ -48,63 +53,9 @@ class StarkProver {
   }
 
   /// [rows] is the trace: 2^logTrace rows of air.numCols values.
-  static StarkProof prove(StarkParams P, Air air, List<List<int>> rows, {Random? rng, bool verbose = false}) =>
-      StarkProver(P, air, verbose: verbose)._prove(rows, rng ?? Random.secure());
-
-  // ---------------------------------------------------------------- helpers
-
-  static Uint8List _sha(List<int> a) => Uint8List.fromList(crypto.sha256.convert(a).bytes);
-
-  static Uint8List _serLimbs(List<QM31> vs) {
-    final bd = ByteData(16 * vs.length);
-    var k = 0;
-    for (final v in vs) {
-      for (final l in v.limbs) {
-        bd.setUint32(4 * k++, l, Endian.little);
-      }
-    }
-    return bd.buffer.asUint8List();
-  }
-
-  static QM31 _foldPair(QM31 f0, QM31 f1, int twiddleInv, QM31 alpha) => (f0 + f1) + alpha * (f0 - f1).scale(twiddleInv);
-
-  static List<QM31> _batchInvQ(List<QM31> xs) {
-    final n = xs.length;
-    final prefix = List<QM31>.filled(n, QM31.one);
-    var acc = QM31.one;
-    for (int i = 0; i < n; i++) {
-      prefix[i] = acc;
-      acc = acc * xs[i];
-    }
-    var inv = acc.inv;
-    final out = List<QM31>.filled(n, QM31.zero);
-    for (int i = n - 1; i >= 0; i--) {
-      out[i] = inv * prefix[i];
-      inv = inv * xs[i];
-    }
-    return out;
-  }
-
-  /// DEEP quotients of a column group over a twin-layout domain: returns
-  /// q at every position (P side then C side), using batch inversion.
-  static List<QM31> _deepQuotients(DeepConstants k, List<Uint32List> cols, CosetTables dom) {
-    final m = dom.size, n = 2 * m;
-    final nums = List<QM31>.filled(n, QM31.zero);
-    final dens = List<QM31>.filled(n, QM31.zero);
-    for (int q = 0; q < n; q++) {
-      final i = q < m ? q : q - m;
-      final px = dom.x[i];
-      final py = q < m ? dom.y[i] : M31.neg(dom.y[i]);
-      var s = QM31.zero;
-      for (int j = 0; j < cols.length; j++) {
-        s = s + k.weights[j].scale(cols[j][q]);
-      }
-      nums[q] = k.c * s - k.A.scale(py) - k.B;
-      dens[q] = k.dA.scale(px) + k.dB.scale(py) + k.dC;
-    }
-    final inv = _batchInvQ(dens);
-    return [for (int q = 0; q < n; q++) nums[q] * inv[q]];
-  }
+  static StarkProof prove(StarkParams P, Air air, List<List<int>> rows,
+          {Random? rng, bool verbose = false, ProverKernels? kernels}) =>
+      StarkProver(P, air, verbose: verbose, kernels: kernels)._prove(rows, rng ?? Random.secure());
 
   // ---------------------------------------------------------------- prove
 
@@ -113,6 +64,7 @@ class StarkProver {
     final gT = CirclePoint.subgroupGen(t);
     final nCols = air.numCols;
     if (rows.length != n) throw ArgumentError('trace must have $n rows');
+    if (verbose) print('  [prover] kernels: ${kernels.name}');
 
     // ---- 1. trace on D_t (cyclic order) -> twin layout -> coefficients ----
     final domB = CosetTables.of(P.logTraceHalf);
@@ -123,42 +75,28 @@ class StarkProver {
     /// element of index 2^(t-1), so multiplying r by it shifts r's
     /// coefficients by 2^t in combined index.
     List<Uint32List> coefsFor(List<Uint32List> cols) {
-      final out = <Uint32List>[];
+      final twin = <Uint32List>[];
       for (final col in cols) {
         final vals = Uint32List(n);
         for (int k = 0; k < n; k++) {
           vals[CircleFft.twinIndex(t, k)] = col[k];
         }
-        var c = CircleFft.interpolate(vals, t - 1);
-        if (P.zk) {
-          final R = P.zkRandomizers;
-          if (R > n) throw ArgumentError('zkRandomizers must be <= trace size');
-          final m = Uint32List(2 * n);
-          m.setRange(0, n, c);
-          for (int i = 0; i < R; i++) {
-            m[n + i] = rng.nextInt(M31.p);
-          }
-          c = m;
-        }
-        out.add(c);
+        twin.add(vals);
       }
-      return out;
+      final coefs = kernels.interpolateColumns(twin, t - 1);
+      if (!P.zk) return coefs;
+      final R = P.zkRandomizers;
+      if (R > n) throw ArgumentError('zkRandomizers must be <= trace size');
+      return [
+        for (final c in coefs)
+          (Uint32List(2 * n)
+            ..setRange(0, n, c)
+            ..setAll(n, [for (int i = 0; i < R; i++) rng.nextInt(M31.p)]))
+      ];
     }
 
     /// Commit column coefficients on HalfCoset(logTraceHalf) ∪ conj.
-    (List<Uint32List>, MerkleTree) commit(List<Uint32List> coefs) {
-      final ev = [for (final c in coefs) CircleFft.evaluate(c, P.logTraceHalf)];
-      final k = coefs.length;
-      final leaves = List<Uint8List>.generate(mB, (i) {
-        final bd = ByteData(8 * k);
-        for (int j = 0; j < k; j++) {
-          bd.setUint32(4 * j, ev[j][i], Endian.little);
-          bd.setUint32(4 * (k + j), ev[j][mB + i], Endian.little);
-        }
-        return _sha(bd.buffer.asUint8List());
-      });
-      return (ev, MerkleTree(leaves));
-    }
+    (List<Uint32List>, MerkleCommitment) commit(List<Uint32List> coefs) => kernels.commitColumns(coefs, P.logTraceHalf);
 
     final traceCoefs = coefsFor([
       for (int j = 0; j < nCols; j++) Uint32List.fromList([for (int k = 0; k < n; k++) rows[k][j]])
@@ -175,7 +113,7 @@ class StarkProver {
     final chal = [for (int k = 0; k < air.numChallenges; k++) ts.squeezeQM31()];
     var auxCoefs = <Uint32List>[];
     var auxEv = <Uint32List>[];
-    MerkleTree? auxTree;
+    MerkleCommitment? auxTree;
     if (air.numAuxCols > 0) {
       final auxCols = air.auxColumns(rows, chal);
       if (auxCols.length != air.numAuxCols) throw StateError('auxColumns returned ${auxCols.length} columns');
@@ -192,7 +130,7 @@ class StarkProver {
     // ---- 2. composition on D_{t+e} (twin layout of HalfCoset(t+e-1)) ----
     final logC = t + P.logExpand, mC = 1 << (logC - 1), nC = 2 * mC;
     final domC = CosetTables.of(logC - 1);
-    final traceOnC = [for (final c in allCoefs) CircleFft.evaluate(c, logC - 1)];
+    final traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
     _lap('trace on comp domain');
     final shift = 1 << (logC - t); // p * g_t is a shift by 2^(logC-t) in cyclic order
     // periodic columns on D_{logC}: F_k on D_{logPeriod+logExpand}, index mod its size
@@ -271,21 +209,11 @@ class StarkProver {
       }
     }
     _lap('composition values');
-    final compCoefs = [for (final l in compLimbs) CircleFft.interpolate(l, logC - 1)];
+    final compCoefs = kernels.interpolateColumns(compLimbs, logC - 1);
     final domA = CosetTables.of(P.logCompHalf);
     final mA = domA.size;
-    final compEv = [for (final c in compCoefs) CircleFft.evaluate(c, P.logCompHalf)];
-    _lap('composition LDE');
-    final compLeaves = List<Uint8List>.generate(mA, (i) {
-      final bd = ByteData(32);
-      for (int k = 0; k < 4; k++) {
-        bd.setUint32(4 * k, compEv[k][i], Endian.little);
-        bd.setUint32(16 + 4 * k, compEv[k][mA + i], Endian.little);
-      }
-      return _sha(bd.buffer.asUint8List());
-    });
-    final compTree = MerkleTree(compLeaves);
-    _lap('composition merkle');
+    final (compEv, compTree) = kernels.commitColumns(compCoefs, P.logCompHalf);
+    _lap('composition LDE + merkle');
 
     ts.absorb(compTree.root);
     final tch = ts.squeezeQM31();
@@ -310,7 +238,7 @@ class StarkProver {
     };
     _lap('oods');
 
-    // ---- DEEP quotients ----
+    // ---- DEEP quotients (flat QM31 arrays, 4 limbs per position) ----
     final kA = DeepQuotientRef.precompute(zx, zy, compAtZ, lamA);
     final kB = DeepQuotientRef.precompute(zx, zy, traceAtZ, lamB);
     final kC = DeepQuotientRef.precompute(zgx, zgy, traceAtZg, lamC);
@@ -319,37 +247,31 @@ class StarkProver {
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;
       dbg['w${tag}1'] = k.weights[1];
     }
-    final qA = _deepQuotients(kA, compEv, domA);
-    final yAInv = domA.yInv;
-    final l0 = List<QM31>.generate(mA, (i) => _foldPair(qA[i], qA[mA + i], yAInv[i], alC));
+    final qA = kernels.deepQuotients(kA, compEv, P.logCompHalf);
+    final l0 = kernels.circleFold(qA, P.logCompHalf, alC);
     _lap('deep quotient A + circle fold');
-    final qB = _deepQuotients(kB, allEv, domB);
-    final qC = _deepQuotients(kC, allEv, domB);
-    final qBC = List<QM31>.generate(2 * mB, (q) => qB[q] + qC[q]);
+    final qBC = kernels.deepQuotients(kB, allEv, P.logTraceHalf);
+    kernels.deepQuotients(kC, allEv, P.logTraceHalf, into: qBC);
     _lap('deep quotients B, C');
 
     // ---- 4. FRI line layers ----
     final a = P.logCompHalf;
-    final layers = <List<QM31>>[l0];
-    final trees = <MerkleTree>[];
+    final layers = <Uint32List>[l0];
+    final trees = <MerkleCommitment>[];
     final alphas = <QM31>[];
     for (int l = 0; l < P.numLineFolds; l++) {
       final curL = layers[l];
-      final half = curL.length ~/ 2;
-      final tree = MerkleTree(List<Uint8List>.generate(half, (i) => _sha(_serLimbs([curL[i], curL[i + half]]))));
+      final logLen = a - l;
+      final tree = kernels.merklePairs(curL, logLen);
       trees.add(tree);
       ts.absorb(tree.root);
       final al = ts.squeezeQM31();
       alphas.add(al);
       dbg['al$l'] = al;
-      final xInv = CosetTables.of(a - l).xInv;
-      final next = List<QM31>.generate(half, (i) => _foldPair(curL[i], curL[i + half], xInv[i], al));
+      final next = kernels.lineFold(curL, logLen, al);
       if (l == P.foldInIndex) {
-        if (next.length != mB) throw StateError('fold-in size mismatch');
-        final yBInv = domB.yInv;
-        for (int i = 0; i < half; i++) {
-          next[i] = next[i] + _foldPair(qBC[i], qBC[mB + i], yBInv[i], al);
-        }
+        if (next.length != 4 * mB) throw StateError('fold-in size mismatch');
+        kernels.circleFold(qBC, P.logTraceHalf, al, into: next);
       }
       layers.add(next);
     }
@@ -357,19 +279,20 @@ class StarkProver {
 
     // ---- 5. final polynomial (monomial in x), must be low degree ----
     final fin = layers.last;
+    final finLen = fin.length ~/ 4;
     final finX = CosetTables.of(P.logFinal).x;
     final d = P.finalDegree;
     final vander = [
       for (int i = 0; i < d; i++)
         [for (int j = 0, xp = 1; j < d; j++, xp = CircleFft.mul(xp, finX[i])) embed(xp)]
     ];
-    final finalCoefs = solveQ(vander, fin.sublist(0, d));
-    for (int i = d; i < fin.length; i++) {
+    final finalCoefs = solveQ(vander, [for (int i = 0; i < d; i++) qAt(fin, i)]);
+    for (int i = d; i < finLen; i++) {
       var acc = QM31.zero;
       for (int j = d - 1; j >= 0; j--) {
         acc = acc.scale(finX[i]) + finalCoefs[j];
       }
-      if (acc != fin[i]) throw StateError('final layer is not low degree (mismatch at $i)');
+      if (acc != qAt(fin, i)) throw StateError('final layer is not low degree (mismatch at $i)');
     }
     ts.absorbLimbs([for (final v in finalCoefs) ...v.limbs]);
     _lap('final polynomial');
@@ -384,27 +307,28 @@ class StarkProver {
       dbg['xA'] = domA.x[i]; dbg['yA'] = domA.y[i];
       final iB = i % mB;
       dbg['xB'] = domB.x[iB]; dbg['yB'] = domB.y[iB];
-      dbg['qAp'] = qA[i]; dbg['qAc'] = qA[mA + i];
-      dbg['circleOut'] = l0[i];
+      dbg['qAp'] = qAt(qA, i); dbg['qAc'] = qAt(qA, mA + i);
+      dbg['circleOut'] = qAt(l0, i);
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
-        il = il % (layers[l].length ~/ 2);
-        dbg['fold$l'] = layers[l + 1][il];
+        il = il % (layers[l].length ~/ 8);
+        dbg['fold$l'] = qAt(layers[l + 1], il);
       }
-      dbg['qTp'] = qBC[iB]; dbg['qTc'] = qBC[mB + iB];
+      dbg['qTp'] = qAt(qBC, iB); dbg['qTc'] = qAt(qBC, mB + iB);
     }
 
     // ---- 6. openings ----
+    final yAInv = domA.yInv;
     final queries = <QueryProof>[];
     for (final i in indices) {
       final px = domA.x[i], py = domA.y[i];
       final lineF0 = <QM31>[], lineF1 = <QM31>[], linePaths = <List<List<int>>>[], lineXInv = <int>[];
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
-        final half = layers[l].length ~/ 2;
+        final half = layers[l].length ~/ 8;
         il = il % half;
-        lineF0.add(layers[l][il]);
-        lineF1.add(layers[l][il + half]);
+        lineF0.add(qAt(layers[l], il));
+        lineF1.add(qAt(layers[l], il + half));
         linePaths.add(trees[l].path(il));
         lineXInv.add(CosetTables.of(a - l).xInv[il]);
       }
@@ -437,36 +361,5 @@ class StarkProver {
     );
     proof.debug.addAll(dbg);
     return proof;
-  }
-}
-
-/// SHA256 Merkle tree over pre-hashed leaves; internal node = SHA256(left || right).
-class MerkleTree {
-  final List<List<Uint8List>> levels;
-
-  MerkleTree(List<Uint8List> leaves) : levels = [leaves] {
-    final buf = Uint8List(64);
-    while (levels.last.length > 1) {
-      final prev = levels.last;
-      final next = List<Uint8List>.generate(prev.length ~/ 2, (i) {
-        buf.setRange(0, 32, prev[2 * i]);
-        buf.setRange(32, 64, prev[2 * i + 1]);
-        return Uint8List.fromList(crypto.sha256.convert(buf).bytes);
-      });
-      levels.add(next);
-    }
-  }
-
-  Uint8List get root => levels.last[0];
-  int get depth => levels.length - 1;
-
-  List<List<int>> path(int leaf) {
-    final out = <List<int>>[];
-    var i = leaf;
-    for (int lv = 0; lv < depth; lv++) {
-      out.add(levels[lv][i ^ 1]);
-      i >>= 1;
-    }
-    return out;
   }
 }

@@ -1071,8 +1071,8 @@ about one per second that is on the order of 15 transfers per second. Fees at Te
 rates are a few hundred satoshis per transfer.
 
 **Later levers, both drop-in:** a roll-up proof replacing the append slot (91 KB per
-round, needs a native prover), and proof recursion so one verifier slot covers many
-spends (v2, the route to hundreds per transaction).
+round; the native prover below makes it affordable), and proof recursion so one
+verifier slot covers many spends (v2, the route to hundreds per transaction).
 
 **Build order.**
 
@@ -1156,6 +1156,39 @@ spends (v2, the route to hundreds per transaction).
    After the public dummy flags (52 publics): verifier slot 555,268 B; state lock
    K = 2 18.1 KB / 9.1 K ops, K = 8 62.6 KB / 33.8 K ops, K = 14 107 KB / 58.5 K ops;
    round tx K = 8 ~7.3 MB (916 KB per transfer), K = 14 ~11.4 MB; K ≤ 11 still holds.
+
+### The native prover (built)
+
+At production parameters the Dart prover spent 5.1 s, of which only 0.4 s was the
+AIR-specific composition evaluation; the rest was generic: low-degree extension and
+Merkle hashing of the trace and composition (2.0 s), DEEP quotients (1.6 s) and FRI
+folds (1.0 s). Those kernels now live in a small Rust crate, `native/stark_kernels`
+(no external crates, `cargo build --release`), called through `dart:ffi`. The prover
+was refactored onto a `ProverKernels` interface with two implementations, `DartKernels`
+(the reference) and `StarkKernels` (native), so the transcript, the composition
+evaluation and the proof layout stay in Dart and a proof is byte-identical whichever
+implementation runs. `StarkKernels.tryLoad()` finds the library under the crate's
+release directory or `$STARK_KERNELS_LIB` and the prover uses it by default, falling
+back to Dart when it is not built. Native kernels are exact ports: canonical M31
+arithmetic with the same reduction, the same twin layout, the same SHA256 leaf
+serialisation; the trace and composition columns are evaluated in parallel with scoped
+threads, as are the leaf hashes, tree levels and the DEEP loop.
+
+| Stage (production params) | Dart | native |
+|---|---|---|
+| trace interpolation | 67 ms | 106 ms (includes the table warm-up) |
+| trace LDE + Merkle | 814 ms | 56 ms |
+| composition values (Dart both ways) | 403 ms | 348 ms |
+| composition LDE + Merkle | 1146 ms | 96 ms |
+| DEEP quotients + circle fold | 1558 ms | 36 ms |
+| FRI layers | 1009 ms | 69 ms |
+| **total** | **4.5–5.1 s** | **0.77 s** |
+
+`test/stark_kernels_test.dart` checks SHA256 against `package:crypto`, every kernel
+against `DartKernels` on random inputs (including accumulation and low-degree
+extension), and whole proofs at test and production parameters. What remains in Dart
+is the composition evaluation (0.35 s, AIR-specific) and the openings; porting the
+Poseidon2 chain constraint evaluator would bring the prover to about 0.4 s.
 
 ## Open Items
 
