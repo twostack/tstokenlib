@@ -125,7 +125,9 @@ void main() {
     // per half: pk_d, cm, root, nf, cm_out land where the pins expect them
     for (final (base, note, out) in [(0, fixedA, outA), (half, noteB, outB)]) {
       List<int> outOf(int p) => rows[Poseidon2ChainAir.outputRow(base + p)].sublist(0, 8);
+      expect(outOf(PoolSpendAir.pIvk), PoolHash.ivk(note.sk));
       expect(outOf(PoolSpendAir.pKey), note.pkd);
+      expect(outOf(PoolSpendAir.pNk), PoolHash.nk(note.sk));
       expect(outOf(PoolSpendAir.pCm2), note.cm);
       expect(outOf(PoolSpendAir.pMerkle + PoolSpendAir.depth - 1), note.root);
       expect(outOf(PoolSpendAir.pNf), note.nullifier);
@@ -163,9 +165,25 @@ void main() {
     bad = copy();
     bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pNf)][PoolSpendAir.nfRhoLane] ^= 1;
     expect(holds(bad), isFalse, reason: 'nf with another rho');
+    // junk in the nullifier's padding lanes: a second nullifier for the note
+    bad = copy();
+    bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pNf)][PoolSpendAir.nfRhoLane + PoolHash.rhoLanes + 1] = 5;
+    expect(holds(bad), isFalse, reason: 'nf padding');
+    // the nullifier key derived under the address tag (nk would equal ivk)
+    bad = copy();
+    bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pNk)][PoolSpendAir.tagLane] = PoolHash.tagIvk;
+    expect(holds(bad), isFalse, reason: 'nk tag');
+    // a viewing key derived from more than sk and its tag
+    bad = copy();
+    bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pIvk)][15] = 1;
+    expect(holds(bad), isFalse, reason: 'ivk padding');
+    // an address with junk beside the diversifier
+    bad = copy();
+    bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pKey)][PoolSpendAir.dLane + PoolHash.dLanes] = 1;
+    expect(holds(bad), isFalse, reason: 'pk_d padding');
     // a second-half cheat is caught by the same forms
     bad = copy();
-    bad[Poseidon2ChainAir.inputRow(half + PoolSpendAir.pKey)][2] ^= 1;
+    bad[Poseidon2ChainAir.inputRow(half + PoolSpendAir.pIvk)][2] ^= 1;
     expect(holds(bad), isFalse, reason: 'note B key');
     // an output value that is not what its bits say
     bad = copy();

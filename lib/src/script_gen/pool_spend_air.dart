@@ -55,8 +55,19 @@ class PoolHash {
   /// A signed limb as its M31 lane.
   static int laneOf(int signed) => signed % M31.p;
 
-  /// pk_d = H(sk, d): the diversified address.
-  static List<int> pkd(List<int> sk, List<int> d) => _perm8(_pad([...sk, ...d], 16));
+  /// The key hierarchy. The spending key sk derives two keys that cannot
+  /// spend: the incoming viewing key ivk = H(sk, tagIvk) behind every
+  /// address, and the nullifier key nk = H(sk, tagNk) behind every nullifier.
+  /// The spend circuit derives both from the sk register, so holding ivk
+  /// (detect and decrypt incoming notes) or ivk and nk (also see them spent)
+  /// discloses a wallet's history without the power to move its funds.
+  static const tagIvk = 1, tagNk = 2;
+  static List<int> ivk(List<int> sk) => _perm8(_pad([...sk, tagIvk], 16));
+  static List<int> nk(List<int> sk) => _perm8(_pad([...sk, tagNk], 16));
+
+  /// pk_d = H(ivk, d): the diversified address.
+  static List<int> pkdFromIvk(List<int> ivk, List<int> d) => _perm8(_pad([...ivk, ...d], 16));
+  static List<int> pkd(List<int> sk, List<int> d) => pkdFromIvk(ivk(sk), d);
 
   /// Two-block note commitment: s = H(pk_d, value, rho), cm = H(s, rcm).
   static (List<int>, List<int>) commit(List<int> pkd, int value, List<int> rho, List<int> rcm) {
@@ -65,8 +76,9 @@ class PoolHash {
     return (s, _perm8(_pad([...s, ...rcm], 16)));
   }
 
-  /// nf = H(sk, rho).
-  static List<int> nullifier(List<int> sk, List<int> rho) => _perm8(_pad([...sk, ...rho], 16));
+  /// nf = H(nk, rho).
+  static List<int> nullifierFromNk(List<int> nk, List<int> rho) => _perm8(_pad([...nk, ...rho], 16));
+  static List<int> nullifier(List<int> sk, List<int> rho) => nullifierFromNk(nk(sk), rho);
 
   static List<int> node(List<int> left, List<int> right) => _perm8([...left, ...right]);
 
@@ -212,14 +224,22 @@ class PoolSpendWitness {
 /// The two-input, two-output spend as a program over [Poseidon2ChainAir].
 ///
 /// Per half (one input note each), periods:
-///   0        P(sk, d || pad)          -> pk_d          break; register = sk
-///   1        P(pk_d || value, rho)    -> s             register = rho; balance += value
-///   2        P(s || rcm)              -> cm
-///   3..34    32 Merkle steps          -> root          pinned = anchor, gated by the flag
-///   35       P(sk, rho || pad)        -> nf            break; register = sk, rho; nf public
-///   36       P(pk_d' || value', rho') -> s'            break; balance -= value'
-///   37       P(s' || rcm')            -> cm'           pinned public
-///   38..63   filler
+///   0        P(sk, tagIvk || 0)       -> ivk           break; register = sk, tag and padding pinned
+///   1        P(ivk || d, 0)           -> pk_d          padding pinned
+///   2        P(pk_d || value, rho)    -> s             register = rho; balance += value
+///   3        P(s || rcm)              -> cm
+///   4..35    32 Merkle steps          -> root          pinned = anchor, gated by the flag
+///   36       P(sk, tagNk || 0)        -> nk            break; register = sk, tag and padding pinned
+///   37       P(nk || rho, 0)          -> nf            register = rho, padding pinned; nf public
+///   38       P(pk_d' || value', rho') -> s'            break; balance -= value'
+///   39       P(s' || rcm')            -> cm'           pinned public
+///   40..63   filler
+///
+/// Every lane of a key derivation's input is pinned (the key register, the
+/// tag, zero padding), as is the padding beside d and rho: a note has exactly
+/// one address and exactly one nullifier. (Before the hierarchy the nullifier
+/// period's high half was free witness, which would have let a note be spent
+/// once per padding value.)
 ///
 /// The proof is state-free: it names an anchor (any recent root the pool's
 /// ring holds) and the commitments it creates; the PP1_SP round appends the
@@ -229,9 +249,9 @@ class PoolSpendWitness {
 /// [SiblingBinding] in the chain AIR, tested on its own.)
 ///
 /// Values are two 28-bit limbs. The output value is range-checked by bit
-/// decomposition in the free bit lanes of period 35 (rows 24..27 for the low
+/// decomposition in the free bit lanes of period 37 (rows 24..27 for the low
 /// limb, 28..31 for the high one), gathered by two accumulator columns and
-/// compared with the value lanes at the transition into period 36.
+/// compared with the value lanes at the transition into period 38.
 ///
 /// Balance is two cyclic register lanes (low and high limb) that jump by the
 /// input value, by minus the output value, and at the closing row by minus
@@ -260,7 +280,7 @@ class PoolSpendAir {
       logTrace: logTrace, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2, zkRandomizers: 128);
   static const n = 1 << logTrace;
   static const depth = 32;
-  static const pKey = 0, pCm1 = 1, pCm2 = 2, pMerkle = 3, pNf = 35, pOut1 = 36, pOut2 = 37;
+  static const pIvk = 0, pKey = 1, pCm1 = 2, pCm2 = 3, pMerkle = 4, pNk = 36, pNf = 37, pOut1 = 38, pOut2 = 39;
   static const pRange = pOut1 - 1; // the period whose bit lanes hold the output value
   static const half = 64;
 
@@ -274,7 +294,8 @@ class PoolSpendAir {
   // lanes inside the rows the register is tied to
   static const valueLo = 8, valueHi = 9;
   static const cm1RhoLane = 10;
-  static const nfRhoLane = PoolHash.skLanes;
+  static const tagLane = PoolHash.skLanes; // the derivation tag beside sk
+  static const dLane = 8, nfRhoLane = 8; // the witness half beside the carried key
 
   // rows
   static const inValueRow = pCm1 << 5; // 32
@@ -321,9 +342,15 @@ class PoolSpendAir {
       constA: carryOffset,
       pubA: PoolPublicInputs.idxPubHi, pubB: -1, pubCoef: 1,
     );
+    // a key derivation's input: sk from its register, the tag, zero padding
+    List<BoundaryExpr> derive(int tag) => [
+          for (int i = 0; i < PoolHash.skLanes; i++) BoundaryExpr.equal(regSk + i, i),
+          BoundaryExpr.public(tagLane, tag, tag),
+          for (int l = tagLane + 1; l < 16; l++) BoundaryExpr.public(l, 0, 0),
+        ];
     return Poseidon2ChainAir(
       logTrace,
-      breakPeriods: const [pKey, pNf, pOut1],
+      breakPeriods: const [pIvk, pNk, pOut1],
       registers: [
         for (int i = 0; i < PoolHash.skLanes + PoolHash.rhoLanes; i++) const [n - 1],
         const [inValueRow, outValueRow, closeRow],
@@ -337,8 +364,9 @@ class PoolSpendAir {
             pub8(PoolPublicInputs.idxAnchor, PoolPublicInputs.idxAnchor, gateCol: regFlag)),
         BoundaryGroup(Poseidon2ChainAir.outputRow(pNf), pub8(PoolPublicInputs.idxNf1, PoolPublicInputs.idxNf2)),
         BoundaryGroup(Poseidon2ChainAir.outputRow(pOut2), pub8(PoolPublicInputs.idxCm1, PoolPublicInputs.idxCm2)),
+        BoundaryGroup(Poseidon2ChainAir.inputRow(pIvk), derive(PoolHash.tagIvk)),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pKey),
-            [for (int i = 0; i < PoolHash.skLanes; i++) BoundaryExpr.equal(regSk + i, i)]),
+            [for (int l = dLane + PoolHash.dLanes; l < 16; l++) BoundaryExpr.public(l, 0, 0)]),
         BoundaryGroup(inValueRow, [
           for (int i = 0; i < PoolHash.rhoLanes; i++) BoundaryExpr.equal(regRho + i, cm1RhoLane + i),
           jump(regBalLo, valueLo, minus: false),
@@ -348,9 +376,10 @@ class PoolSpendAir {
           BoundaryExpr.zeroUnless(valueLo, regFlag),
           BoundaryExpr.zeroUnless(valueHi, regFlag),
         ]),
+        BoundaryGroup(Poseidon2ChainAir.inputRow(pNk), derive(PoolHash.tagNk)),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pNf), [
-          for (int i = 0; i < PoolHash.skLanes; i++) BoundaryExpr.equal(regSk + i, i),
           for (int i = 0; i < PoolHash.rhoLanes; i++) BoundaryExpr.equal(regRho + i, nfRhoLane + i),
+          for (int l = nfRhoLane + PoolHash.rhoLanes; l < 16; l++) BoundaryExpr.public(l, 0, 0),
         ]),
         BoundaryGroup(rangeCompareRow, [
           BoundaryExpr([BoundaryTerm(valueLo, next: true), BoundaryTerm(accLo, next: true, coef: M31.p - 1)]),
@@ -371,11 +400,13 @@ class PoolSpendAir {
     final (lo, hi) = PoolHash.limbs(sn.value);
     final (olo, ohi) = PoolHash.limbs(on.value);
     return [
-      ChainStep.fresh(_pad([...sn.sk, ...sn.d], 16)),
+      ChainStep.fresh(_pad([...sn.sk, PoolHash.tagIvk], 16)),
+      ChainStep.chained(_pad(sn.d, 8)),
       ChainStep.chained(_pad([lo, hi, ...sn.rho], 8)),
       ChainStep.chained(_pad(sn.rcm, 8)),
       for (int i = 0; i < depth; i++) ChainStep.chained(sn.siblings[i], swap: (sn.position >> i) & 1 == 1),
-      ChainStep.fresh(_pad([...sn.sk, ...sn.rho], 16)),
+      ChainStep.fresh(_pad([...sn.sk, PoolHash.tagNk], 16)),
+      ChainStep.chained(_pad(sn.rho, 8)),
       ChainStep.fresh(_pad([...on.pkd, olo, ohi, ...on.rho], 16)),
       ChainStep.chained(_pad(on.rcm, 8)),
       for (int p = pOut2 + 1; p < half; p++) ChainStep.chained(List.filled(8, 0)),

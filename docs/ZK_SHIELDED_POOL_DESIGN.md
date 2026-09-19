@@ -1341,6 +1341,140 @@ composition evaluation of a 2^19 verifier trace is about two minutes; the Rust
 port of the verifier's constraints, native Poseidon2 grinding, and padding a
 round to arity^depth with dummy transfers in the coordinator remain.
 
+### The key hierarchy (built)
+
+One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the
+circuit proved knowledge of `sk`. Nothing could be handed to a third party
+without handing over the funds. The circuit now derives two keys from the `sk`
+register and uses them in place of `sk`:
+
+    ivk = H(sk, tagIvk)      pk_d = H(ivk, d)       (address, tag 1)
+    nk  = H(sk, tagNk)       nf   = H(nk, rho)      (nullifier, tag 2)
+
+Per note that is two more Poseidon2 periods (the trace has room: 40 of 64 per
+half). Every lane of a derivation's input is pinned: `sk` from its register, the
+tag, and zero padding, as is the padding beside `d` and `rho`. Holding `ivk`
+lets a viewer detect and open every note sent to the wallet's addresses; `ivk`
+and `nk` together also show which of them were spent, which is a full account
+history for an auditor; neither can produce a spend, since the circuit needs the
+`sk` behind both. This is the piece that had to land before the address format
+is frozen. What remains for view keys to be usable: encrypted note ciphertexts
+in the round transaction (bytes only, no script cost) and a KEM choice.
+
+Pinning the padding also closed a hole. In the previous layout the nullifier was
+a fresh period `P(sk, rho ‖ pad)` whose high half was free witness, since a
+break period's sixteen input lanes are all witness and only eight were pinned.
+A spender could therefore produce a different valid nullifier for the same note
+per padding value and spend it as often as they liked. Verified against the old
+circuit before the change (a tampered padding lane, a recomputed nullifier, all
+constraints satisfied); the new cheat tests cover the padding beside the
+nullifier, the tags, and the padding beside the viewing key and the
+diversifier.
+
+### Settled for corporate use: notes, ciphertexts, the issuer role (decided)
+
+Target uses: payroll and vendor payments, trading and treasury, supply-chain
+settlement, tokenized securities and RMBS-style instruments. Decided 2026-09-19,
+before the note and address formats freeze. Judgment calls are marked *(call)*.
+
+**Note layout.** A note is `(asset, pk_d, value, rho, rcm)` with the memo outside
+the commitment:
+
+    s  = H(pk_d ‖ value_lo, value_hi ‖ rho)          as today
+    cm = H(s ‖ rcm ‖ asset[0..3])                    asset in the four spare lanes
+
+- `asset` is 4 lanes, 124 bits: the low 124 bits of `SHA256(asset record)`. BSV is
+  the constant `(1, 0, 0, 0)`. Ids are self-certifying, so the pool header keeps
+  no asset registry; whoever presents the record whose hash is the id, signed by
+  the record's issuer key, may mint it. A forged record needs a 2^124 preimage.
+- `value` stays two 28-bit limbs (56 bits) in the issuer's chosen unit.
+- A transfer moves one asset: three new registers hold the asset lanes for the
+  whole trace and are pinned at both input commitments and both output notes.
+  Dummies carry the transfer's asset. `publicOut` is that asset's public balance.
+- *(call)* **The asset id is public**, four more public lanes (52 → 56, still
+  seven chunks, so the aggregated root's per-transfer cost is unchanged).
+  Amounts and parties stay hidden; which asset a transfer moves does not. This
+  is what lets the state script apply per-asset rules without the circuit
+  carrying a policy-flag lane, a reveal bit and a range check on it, and it fits
+  the target uses, where the instrument is known to the parties anyway. Hiding
+  the asset type later (as Zcash's shielded assets do) is an additive change:
+  a flags lane in the id, a private reveal bit, and `outHash` truncated to
+  seven lanes to keep 56 publics.
+- The memo is 512 bytes, in the ciphertext only, as in Zcash: invoice and
+  settlement references, structured payloads. Not consensus data.
+
+**Keys and addresses.** `sk` derives `ivk = H(sk,1)`, `nk = H(sk,2)` (in the
+circuit, built above) and `ovk = H(sk,3)` (wallet only). An address is
+`(d, pk_d, epk_d)` with `pk_d = H(ivk, d)` and `epk_d` the public key of a KEM
+key pair generated deterministically from `H(ivk, d, 4)`, so `ivk` alone decrypts
+every diversified address of the wallet. `pk_d` and `epk_d` are not bound to each
+other by the chain; a forged address pairing pays the right `pk_d` with an
+unreadable ciphertext, which only the recipient can detect, the same trust as
+any address exchange.
+
+**Ciphertexts.** Per output note the sender produces a bundle:
+
+1. *Recipient ciphertext.* `KEM.Encaps(epk_d)` → shared secret; note key
+   `K = HKDF(secret, cm)`; `AEAD_K(plaintext, aad = cm)` with plaintext
+   `version(1) ‖ asset(16) ‖ d(12) ‖ value(7) ‖ rho(12) ‖ rcm(16) ‖ memo(512)`.
+   Binding the key and the AAD to `cm` stops a ciphertext being replayed
+   under another commitment.
+2. *Outgoing copy.* `AEAD_{HKDF(ovk, cm)}(secret ‖ d)`, 60 bytes: an auditor
+   holding `ovk` recovers the note key and reads what the wallet sent.
+3. *Issuer copy*, only for gated assets: the same `secret ‖ d` encapsulated to
+   the asset record's issuer KEM key, so the issuer reads every note of its
+   asset.
+
+*(call)* **KEM: X25519 + ML-KEM-768 hybrid**, HKDF-SHA256, ChaCha20-Poly1305.
+The proofs are post-quantum sound; ECDH alone would leave thirty-year
+instruments open to harvest-now-decrypt-later on amounts and counterparties.
+The cost is size: 1,088 bytes of ML-KEM ciphertext and 1,184 of public key per
+address, about 1.7 KB per output note, 1 MB per full round, inside the 10 MB
+transaction. X25519, HKDF and ChaCha20-Poly1305 come from the `cryptography`
+package already in use; ML-KEM goes into the native Rust crate beside the
+prover kernels.
+
+**Where the bundles live.** Each transfer gets its own `OP_RETURN` output in the
+round transaction carrying its bundles in output-note order. That output is one
+of the transfer's extra outputs, so the transfer's `outHash`, which the spend
+proof already binds, covers it: a coordinator cannot swap or garble a
+ciphertext. The state script does not read it; the chain reader indexes it.
+
+**The issuer role, per asset.** The asset record is
+`(issuer Rabin key hash, nonce, flags)`; `flags` has one bit today, *gated*.
+
+- *Mint* = a transfer of the asset with negative `publicOut`, carrying the
+  record, the issuer's Rabin signature over `SHA256(the transfer's public lanes)`
+  and the record's hash matching the asset id; the state script checks all
+  three. Supply is public arithmetic over mints and burns; no header field.
+- *Burn* = positive `publicOut` on a non-BSV asset: allowed freely, the vault
+  does not move, redemption is the issuer's off-chain obligation.
+- *Gated asset*: every transfer of it in a round carries an issuer signature over
+  its public lanes, verified by the state script (Rabin, cheap in ops). The
+  nullifiers make each message unique, so no replay. The issuer reads the
+  transfer through the issuer copy before signing, which gives eligibility
+  checks, holder registry and freezes (refuse to sign) without any credential
+  proof in the circuit. BSV and ungated tokens stay fully shielded.
+- *Forced transfer*: not by spending someone's note. The supported path is a
+  burn-and-reissue under the gate: the frozen units stay frozen, replacement
+  units are minted to the ordered recipient, and the issuer's public mint and
+  burn records reconcile supply. An in-circuit revocation list is the
+  alternative if ever required; it costs a second non-membership proof per
+  input.
+
+**Also settled.** No swap id lane now: atomic swaps are a later, additive
+change (a shared id in the publics and a same-round pairing check in the state
+script). One-to-many payments are a circuit variant with up to about
+sixteen outputs in the present trace, also additive. Authorization separate from
+proving (a hardware-held key) is not provided; the spending key lives with the
+prover behind the operator's approval flow.
+
+**Build order.** (1) `PoolHash`/note classes: asset lanes, `ovk`, KEM key
+derivation, the ciphertext bundle and the extra output; (2) the circuit's asset
+registers and public lanes, then the state script's per-asset rules (mint, burn,
+gate), tool and chain reader; (3) ML-KEM in the native crate. None of it changes
+the recursion or the round sizing beyond four public lanes per transfer.
+
 ## Open Items
 
 - ~~**Deposits bloat the nullifier set.**~~ Done: the public `real1`/`real2` flags

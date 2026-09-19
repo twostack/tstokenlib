@@ -223,6 +223,10 @@ coordinator can build proofs, not with what the blockchain can hold.
 - **Round**: one transaction that advances the pool and carries many transfers.
 - **Coordinator**: the untrusted service that bundles proofs into rounds.
 - **Checker**: the on-chain output that verifies the round's bundled proof.
+- **View key**: a key derived from a wallet's secret that can read the
+  wallet's history (notes received, and with the second view key, notes spent)
+  but cannot spend. Built into the proofs; the delivery of encrypted notes that
+  a viewer would scan is still to come.
 
 ---
 
