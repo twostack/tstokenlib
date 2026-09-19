@@ -1382,6 +1382,76 @@ is the unit of work, and halving the queries on inner levels is not available
 Padding a round to arity^depth with dummy transfers in the coordinator and
 native Poseidon2 grinding remain to be built.
 
+### Re-tuning the inner proofs (sized)
+
+The 4.5 hours are 27 times the budget of ten minutes per round on one
+machine, so the parameters were re-sized around prover throughput. The
+production parameters (blowup 32, 18 queries) were chosen for the on-chain
+script, where cost is per query; but inner proofs never reach the chain, and
+their verification cost inside the next circuit is per query while their
+proving cost is per blowup. Periods one in-circuit verification costs, from the
+program compiler at about 104 bits (queries × log blowup + 16 bits of
+grinding), and the wallet's proving time for a spend:
+
+| blowup, queries | spend proof: periods, wallet prover | verifier proof at 2^19: periods |
+|---|---|---|
+| 4, 45 | 6,793, 0.2 s | 16,037 |
+| 8, 30 | 4,888, 0.3 s | 11,342 |
+| 16, 22 | 3,850, 0.7 s | 8,798 |
+| 32, 18 (today) | 3,364, 1.3 s | 7,586 |
+| 64, 15 | 2,983, 2.6 s | 6,647 |
+| 256, 11 | 2,453, 5.1 s (measured) | 5,355 |
+
+A node's prover time scales with its blowup for the extension, Merkle, DEEP and
+FRI stages (66 of the 88 s at 2^19) and not for the rest (22 s), so the search
+over spend parameters, level-1 node size and parameters, and inner node size and
+parameters gives, for 256 transfers: spends at blowup 256 with 11 queries; level
+1 on 2^20 at blowup 8 with 30 queries holding 13 spends (20 nodes); inner nodes
+on 2^21 at blowup 8 holding 5 proofs; then a narrowing to a blowup-32 top proof
+the root can verify (two nodes on 2^20 and one on 2^19 at blowup 32, or a root
+on 2^20 verifying the 2^21 top proof directly). That is 25 nodes and about 40
+minutes instead of 255 nodes and 4.5 hours, a 7× cut with no new code beyond
+parameters. Measured, not modelled: a real level-1 node on 2^20 at blowup 8 over
+13 spends at blowup 256 proves in 67 s (model said 77), proof 394 KB, live set
+about 2.6 GB (Dart peaked at 19 GB with garbage). Per transfer that is 5.1 s
+at level 1 against 19 s today. Costs move: the wallet's spend proof goes from
+1.3 s to 5.1 s and shrinks from 108 KB to 79 KB. At low blowup the Dart stages
+dominate a node (out-of-domain evaluation 13 s, aux round 8 s, composition
+upload 6 s of the 67), so their native ports are now the next lever and would
+take a node to roughly 40 s, the round to about 25 minutes on one machine.
+
+### Moving proving to the edge (considered)
+
+The round's work is a tree whose leaves are the transfers, so it distributes
+naturally; the question is what a wallet can carry. The measured shape gives
+three tiers:
+
+- **Every wallet proves its spend** (already the case): 5 s and a few hundred MB
+  at blowup 256, on anything from a phone up.
+- **Level-1 nodes at the edge.** A node folds 13 spends in 67 s with a 2.6 GB
+  live set: a desktop or a corporate server, not a phone. The coordinator
+  groups 13 admitted transfers, sends their proofs and public statements to one
+  of the 13 wallets (or any volunteer with the resources), and receives a
+  level-1 proof it verifies in 70 ms. Nothing is trusted: a bad or late node is
+  proved by the coordinator itself, a 67 s penalty, so liveness is the
+  coordinator's fallback rather than a protocol assumption. Privacy is
+  unchanged: a folding wallet sees other transfers' proofs and public statements,
+  which the chain shows anyway. With level 1 at the edge the coordinator does
+  the inner and narrowing nodes and the root, about 15 minutes today and about
+  9 with the native ports, inside the ten-minute budget on one machine.
+- **Inner nodes at the edge too.** A 2^21 node (5 proofs, about 135 s, 5.3 GB)
+  suits corporate servers; then the coordinator keeps only the narrowing to the
+  top proof and the root, about 5 minutes.
+
+What this needs in code: the aggregation already proves each node from proofs
+and shapes (`witnessAll` then `prove`), so the change is a work-assignment
+message (proofs and statements out, a proof back), verification of returned
+nodes, timeouts with local fallback, and the wallet side running the prover
+with the native crate. It moves the coordinator's machine-hours to the
+participants in proportion to their transfers, which fits the corporate
+deployments where participants run servers, and it keeps a phone-only user
+able to transact at the cost of never being asked to fold.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the
