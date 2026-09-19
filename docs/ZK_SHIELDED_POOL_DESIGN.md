@@ -1335,11 +1335,52 @@ the root trace both need work: the state script's per-transfer cost (a second
 checked in-circuit against the ring, commitments only through the tree) would
 cut the slot's per-transfer cost to about 1.1 K ops and the state's by a third.
 
-Prover side, not yet measured at this size: the root's low-degree extension is 79
-columns × 2^(19+5) words, 5.3 GB at blowup 32 (2.6 GB at 16), and the Dart
-composition evaluation of a 2^19 verifier trace is about two minutes; the Rust
-port of the verifier's constraints, native Poseidon2 grinding, and padding a
-round to arity^depth with dummy transfers in the coordinator remain.
+### Proving the round at production parameters (measured)
+
+A depth-2 round (four transfers: two level-1 nodes on 2^18, one level-2 node
+and the wide root on 2^19, all at blowup 32 with 18 queries and 16-bit grinding)
+was proved end to end on a 12-core laptop with 36 GB, and the root proof was
+accepted by the generated script in the interpreter. The first run showed the
+Dart composition loop at 45% of a node (37 s of 83 s at 2^18, 74 s of 179 s at
+2^19), so the AIR's constraints are now recorded once as a straight-line program
+and evaluated row by row in the native crate (`sk_composition`), which brought
+the composition to 1.4 s and 3.0 s; the same run also found the preprocessed
+commitment cache keyed on the AIR instance (recomputed per node, never
+released: the root ran out of the 30 GB Dart heap), now keyed on the program
+and capped. Per node afterwards:
+
+| node | trace | flavour | prover | of which | proof |
+|---|---|---|---|---|---|
+| level 1 (2 spends) | 2^18 × 79 cols | Poseidon2 | 38 s | comp LDE+Merkle 11.5, FRI 10, aux 4.7, LDE 4.1, oods 3.2, DEEP 4.3, comp 1.4 | 226,604 B |
+| level 2 (2 level-1 proofs) | 2^19 × 79 cols | Poseidon2 | 88 s | comp LDE+Merkle 26, FRI 17, DEEP 14.6, aux 9.3, LDE 8.4, oods 6.5, comp 3.0 | 243,988 B |
+| wide root (4 transfers) | 2^19 × 79 cols | SHA256 | 54 s | comp LDE+Merkle 12.3, DEEP 13.3, oods 6.6, FRI 6.1, aux 4.4, pre 3.6, comp 3.0 | 244,948 B |
+
+Compiling the three programs takes 18 s and 8 GB; a 2^19 node peaks at 25 GB
+resident, most of it uncollected garbage under the 30 GB default heap (the live
+set is the 5.3 GB extension plus a few GB). The root's script for four transfers
+is 804,456 bytes and 344,558 ops (unlock 258 KB), and the interpreter runs it in
+2.7 s. Verification by the reference verifier is 70 ms per node.
+
+**What a 256-transfer round costs.** Arity 2 over eight levels is 128 level-1
+nodes and 127 deeper nodes plus the root: 128 × 38 + 127 × 88 + 54 ≈ 16,000 s,
+about 4.5 hours of prover time, or 63 s per transfer, on this machine. The
+native kernels already use every core, so running nodes side by side gains
+little on one machine; a round of this size wants either many machines (each
+level-1 node is independent, deeper levels pairwise) or a cheaper node. Where a
+2^19 node's 88 s goes: the composition polynomial has eight times the trace's
+degree, so its extension and Merkle tree sit on 2^27 positions (26 s) and FRI
+starts there (17 s) as does DEEP quotient A; splitting the composition into
+eight trace-degree columns, as other Circle STARK provers do, would put FRI and
+DEEP on 2^24 and take roughly 40 s off the node, at the cost of eight times the
+composition openings per query in the script. The Dart parts that remain are
+the aux round (the bus helpers, 9.3 s), the out-of-domain evaluation (6.5 s) and
+the trace interpolation; each is a straightforward native port. Verifying an
+inner proof costs about 7,000 periods on 2^19, so a node verifying two proofs
+is the unit of work, and halving the queries on inner levels is not available
+(18 already at blowup 32).
+
+Padding a round to arity^depth with dummy transfers in the coordinator and
+native Poseidon2 grinding remain to be built.
 
 ### The key hierarchy (built)
 
