@@ -242,8 +242,17 @@ class Poseidon2Transcript extends Transcript {
     return h & ((1 << grindBits(grindBytes)) - 1) == 0;
   }
 
+  /// A parallel search for the same nonce, installed by the native kernels
+  /// when they load; see [TranscriptRef.nativeGrind].
+  static int Function(List<int> state, int bits)? nativeGrind;
+
   @override
   List<int> grind(int grindBytes) {
+    final fast = nativeGrind;
+    if (fast != null) {
+      final n = fast(state, grindBits(grindBytes));
+      if (n >= 0) return [n];
+    }
     for (int n = 0;; n++) {
       if (checkGrinding([n], grindBytes)) return [n];
     }

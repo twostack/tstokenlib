@@ -2077,6 +2077,151 @@ Ten tests cover it end to end at small parameters in 47 s, including two
 rounds proved twice to compare a pooled level 1 against a local one, and a
 run of the entry point against a pool described by a file.
 
+### Node stages (measured)
+
+With the narrowing levels moved and the coordinator built, the question is
+which prover stage to cut next, and the answer had been carried over from a
+round that no longer exists. These are the laps of every node and the root in
+a 256-transfer round, summed over the round: 16 level-1 nodes, 4 at level 2,
+2 at level 3, 1 at level 4 and the root. Preprocessed columns is paid once per
+level rather than once per node, since a level's nodes share a cache key;
+every other row multiplies by the node count.
+
+| stage | CPU | GPU | share of the GPU round |
+| --- | --- | --- | --- |
+| composition values | 58.3 s | **64.8 s** | **29%** |
+| aux round | 51.1 s | 29.3 s | 13% |
+| composition LDE + merkle | 64.4 s | 28.2 s | 13% |
+| trace interpolation | 20.4 s | 20.4 s | 9% |
+| trace LDE + merkle | 43.5 s | 18.0 s | 8% |
+| DEEP quotients + circle fold | 16.1 s | 17.7 s | 8% |
+| FRI layers | 11.1 s | 11.2 s | 5% |
+| grinding | 10.9 s | 10.9 s | 5% |
+| oods | 8.3 s | 8.8 s | 4% |
+| preprocessed columns | 16.5 s | 8.6 s | 4% |
+| openings | 2.3 s | 2.3 s | 1% |
+| **laps** | **302.9 s** | **220.3 s** | |
+| **round** | **323.9 s** | **239.7 s** | |
+
+Three things fall out of the two columns side by side.
+
+**Composition values is the largest stage, and the GPU makes it worse.** It is
+58.3 s on the CPU and 64.8 s on the GPU, the only row that goes up. That is
+the 14% regression the GPU spike recorded at a single node, now visible across
+a round: 6.5 s paid to read columns out of Metal shared buffers. It is also
+the one stage no parameter reaches, because its domain is 2^(logTrace +
+logExpand), fixed by the constraint degree rather than the blowup, which is
+why it did not move when levels 3 and 4 halved.
+
+**Grinding, the FRI layers, oods and openings are identical on both**, to the
+millisecond in places, because none of them is on the GPU. Grinding is 10.9 s
+of a round spent in a single-threaded Dart loop over about 2^16 nonces.
+
+**The stages the GPU does help are no longer the problem.** The two
+commitments and the trace extension were 108 s of the CPU round and are 46 s
+of the GPU one. What is left is the constraint evaluation and the aux round.
+
+Against the target that no single stage exceeds a fifth of a round, only
+composition values fails, at 29%.
+
+### Inside the composition stage (measured)
+
+Composition values was 29% of a round and was treated as one thing. The
+kernel now reports how its call divides, and the stage turns out to have
+three parts rather than the two the plan assumed.
+
+| level | lap | Dart setup | extend | constraint program |
+| --- | --- | --- | --- | --- |
+| L1, 2^20 blowup 8 (reuse) | 2,338 ms | 627 | 0 | 1,711 |
+| L2, 2^21 blowup 8 (reuse) | 4,370 | 1,163 | 0 | 3,207 |
+| L3, 2^20 blowup 16 | 3,651 | 642 | 1,624 | 1,385 |
+| L4, 2^19 blowup 16 | 1,730 | 313 | 773 | 644 |
+| root, 2^19 blowup 32 | 1,886 | 356 | 854 | 676 |
+| **round, GPU on** | **65.8 s** | **16.6 s** | **4.9 s** | **44.3 s** |
+| **round, GPU off** | **58.4 s** | **16.5 s** | **5.0 s** | **37.0 s** |
+
+At blowup 8 the composition domain is the commitment domain, so the kernel
+reads the columns it was given and extends nothing. Above blowup 8 it
+extends them itself, which is the `extend` column.
+
+**The GPU regression is the constraint program reading shared buffers.** It
+is the only part that differs between the two backends, and only on the reuse
+path, where the columns are Metal buffers rather than heap: 1,711 ms against
+1,360 at level 1 and 3,207 against 2,776 at level 2, 26% and 16%. The
+from-coefficients levels are identical on both backends to within noise,
+because `sk_composition` extends on the CPU whatever the backend. That is the
+whole of the unexplained 14% the GPU spike recorded, now located: not the
+arithmetic, the reads.
+
+**A third of the stage is not in the kernel at all.** The gap between the lap
+and the kernel's own two halves is 16.6 s over a round, and it is Dart: the
+linear forms evaluated row by row over the composition domain, the periodic
+columns, and the batch inversions of the divisors. At level 2 that is a Dart
+loop over 2^24 rows, 1.16 s per node. Nothing about it needs to be in Dart.
+
+**Where the next cut belongs.** The constraint program at 44.3 s is 20% of a
+round on its own and the only way at it is to run the recorded program on the
+GPU, which is a piece of work in its own right; the plan for this change said
+in advance that it would be proposed separately with the profile as its
+evidence, and that is what the profile says. The Dart setup at 16.6 s is
+contained and does not need a GPU, but it was not in this change's scope
+either. Both are recorded here as the two follow-ons, ranked, with the
+measurements a proposal would need.
+
+### Node stages after the cuts (measured)
+
+Two changes kept: the DEEP quotients of both groups in one pass over the
+columns they share, and grinding moved out of its single-threaded Dart loop
+into the kernels. A third, the circle extension split across threads within a
+column when a commitment has fewer columns than the machine has cores, was in
+the code when this table was taken and has since been reverted; see below.
+
+| stage | GPU before | GPU after | CPU before | CPU after |
+| --- | --- | --- | --- | --- |
+| composition values | 64.8 s | 62.7 | 58.3 | 56.5 |
+| aux round | 29.3 | 28.1 | 51.1 | 51.0 |
+| composition LDE + merkle | 28.2 | 26.9 | 64.4 | 62.7 |
+| trace interpolation | 20.4 | 19.9 | 20.4 | 20.3 |
+| trace LDE + merkle | 18.0 | 17.5 | 43.5 | 42.8 |
+| **DEEP + circle fold** | **17.7** | **14.4** | **16.1** | **13.7** |
+| FRI layers | 11.2 | 11.2 | 11.1 | 10.9 |
+| **grinding** | **10.9** | **0.3** | **10.9** | **0.4** |
+| oods | 8.8 | 8.4 | 8.3 | 7.9 |
+| preprocessed columns | 8.6 | 8.5 | 16.5 | 16.1 |
+| openings | 2.3 | 2.3 | 2.3 | 2.2 |
+| **laps** | **220.3 s** | **200.3** | **302.9** | **284.8** |
+| **round** | **239.7 s** | **222.5** | **323.9** | **305.8** |
+
+Only two rows moved for a reason. **Grinding fell from 10.9 s to 0.3 s**, a
+factor of thirty, because about 2^16 independent hashes per node were being
+counted one at a time in Dart and are now searched across cores in the
+kernels. It still returns the smallest nonce, not the first one a thread
+finds, so proofs are unchanged. **The fused DEEP pass took 3.3 s**, less than
+the halving the plan implied: only the second read of the 79 shared columns is
+saved, and the arithmetic is the same either way.
+
+Every other row drifts down by a few tenths in both columns, including stages
+nothing touched. That is the machine between runs, not the change; the honest
+attribution is 13.8 s of the 17.2 s the round moved.
+
+**The extension split earned nothing at round scale and was reverted.** It is
+9% faster per column below the threshold, but the only commitment in a round
+with fewer columns than this machine has cores is the aux one at 20 columns,
+and its extension is a small part of a lap that did not move: 51.1 s to
+51.0 s on the CPU path. A microbenchmark win with no effect on the thing being
+optimised is not worth carrying a second FFT scheme in the kernel, so the
+split is out of the code and the table above stands for the two changes that
+are kept. The interpolation split was worse, 2.1x slower per column, and
+never reached the round at all.
+
+**The target is missed and the reason is the stage this change did not
+touch.** The goal was a round under 210 s with no stage above a fifth of it.
+The round is 222.5 s, and composition values is 62.7 s of it, 28%. That stage
+is 44.3 s of constraint-program interpretation, 16.6 s of Dart-side setup and
+4.9 s of extension, and the first two are the follow-ons recorded above. No
+amount of work on the stages around them reaches the target; both spec
+scenarios are recorded as unmet rather than quietly adjusted.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the

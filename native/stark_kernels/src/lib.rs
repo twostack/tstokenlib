@@ -869,7 +869,7 @@ pub unsafe extern "C" fn sk_store_read(id: u64, col: usize, start: usize, count:
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    5
+    6
 }
 
 // ------------------------------------------------------------------ GPU backend
@@ -881,6 +881,21 @@ mod gpu;
 /// [sk_gpu_enable] turns it on, so a library built with the backend behaves
 /// exactly as one built without it unless the caller asks.
 static GPU_ON: AtomicU32 = AtomicU32::new(0);
+
+/// Microseconds the last `sk_composition` spent extending the columns onto
+/// the composition domain and running the constraint program over them. The
+/// two halves scale differently and want opposite treatments, so the caller
+/// can ask which one it is paying for.
+static COMP_EVAL_US: AtomicU64 = AtomicU64::new(0);
+static COMP_PROG_US: AtomicU64 = AtomicU64::new(0);
+
+/// The two halves of the last composition call, in microseconds.
+#[no_mangle]
+pub unsafe extern "C" fn sk_composition_timing(out: *mut u64) {
+    let o = std::slice::from_raw_parts_mut(out, 2);
+    o[0] = COMP_EVAL_US.load(Ordering::Relaxed);
+    o[1] = COMP_PROG_US.load(Ordering::Relaxed);
+}
 
 /// Whether the GPU backend can run, and if not why: 0 the library was built
 /// without it (or is not on macOS), 1 available, 2 no Metal device, 3 the
@@ -1145,6 +1160,206 @@ pub unsafe extern "C" fn sk_deep_quotients(
             });
         }
     });
+}
+
+/// The DEEP quotients of two groups in one pass over the shared columns.
+///
+/// The prover opens every column at z (group B: the trace, aux and
+/// preprocessed columns followed by the composition blocks) and the trace
+/// columns again at z*g (group C, which is exactly the first `k_c` columns
+/// of the same list). Done as two calls that is two passes over gigabytes
+/// of column data for one pass of arithmetic; here each column is read once
+/// and fed to both weighted sums, and the two denominators are inverted
+/// together. The result is B's quotient plus C's, which is what the caller
+/// adds up anyway.
+#[no_mangle]
+pub unsafe extern "C" fn sk_deep_quotients2(
+    consts_b: *const u32,
+    consts_c: *const u32,
+    sets: *const u64,
+    n_sets: usize,
+    k_c: usize,
+    m: u32,
+    out: *mut u32,
+) {
+    let big_m = 1usize << m;
+    let n = 2 * big_m;
+    let sets = handles(sets, n_sets);
+    let cols = stored_columns(&sets);
+    let k = cols.len();
+    assert!(k_c <= k, "group C reads {k_c} of {k} columns");
+    for c in &cols {
+        assert_eq!(c.len(), n, "stored columns are not on HalfCoset({m})");
+    }
+    let cb_s = std::slice::from_raw_parts(consts_b, 24 + 4 * k);
+    let cc_s = std::slice::from_raw_parts(consts_c, 24 + 4 * k_c);
+    let out = std::slice::from_raw_parts_mut(out, 4 * n);
+    let g = |s: &[u32]| {
+        (
+            q_at(s, 0),
+            q_at(s, 1),
+            q_at(s, 2),
+            q_at(s, 3),
+            q_at(s, 4),
+            q_at(s, 5),
+        )
+    };
+    let (bc, bca, bcb, bda, bdb, bdc) = g(cb_s);
+    let (cc, cca, ccb, cda, cdb, cdc) = g(cc_s);
+    let wb: Vec<Q> = (0..k).map(|j| q_at(cb_s, 6 + j)).collect();
+    let wc: Vec<Q> = (0..k_c).map(|j| q_at(cc_s, 6 + j)).collect();
+    let t = tables(m);
+    let th = threads();
+    let per = ((n + th - 1) / th).max(1024);
+    std::thread::scope(|s| {
+        for (blk, block) in out.chunks_mut(4 * per).enumerate() {
+            let (bc, bca, bcb, bda, bdb, bdc) = (&bc, &bca, &bcb, &bda, &bdb, &bdc);
+            let (cc, cca, ccb, cda, cdb, cdc) = (&cc, &cca, &ccb, &cda, &cdb, &cdc);
+            let (wb, wc, t, cols) = (&wb, &wc, &t, &cols);
+            s.spawn(move || {
+                let cnt = block.len() / 4;
+                let base = blk * per;
+                // both denominators in one array, so one batch inversion
+                // serves both groups
+                let mut dens = vec![Q_ZERO; 2 * cnt];
+                let mut nums = vec![Q_ZERO; 2 * cnt];
+                const DB: usize = 512;
+                let mut sb = [[0u32; DB]; 4];
+                let mut sc = [[0u32; DB]; 4];
+                let mut r0 = 0usize;
+                while r0 < cnt {
+                    let len = DB.min(cnt - r0);
+                    for lane in 0..4 {
+                        sb[lane][..len].fill(0);
+                        sc[lane][..len].fill(0);
+                    }
+                    for j in 0..k {
+                        let col = &cols[j][base + r0..base + r0 + len];
+                        for lane in 0..4 {
+                            let bl = wb[j][lane] as u64;
+                            let acc = &mut sb[lane][..len];
+                            for r in 0..len {
+                                let x = bl * col[r] as u64;
+                                let y = ((x & P as u64) + (x >> 31)) as u32;
+                                let z = (y & P) + (y >> 31);
+                                let mm = z.min(z.wrapping_sub(P));
+                                let a = acc[r] + mm;
+                                acc[r] = a.min(a.wrapping_sub(P));
+                            }
+                        }
+                        if j < k_c {
+                            for lane in 0..4 {
+                                let cl = wc[j][lane] as u64;
+                                let acc = &mut sc[lane][..len];
+                                for r in 0..len {
+                                    let x = cl * col[r] as u64;
+                                    let y = ((x & P as u64) + (x >> 31)) as u32;
+                                    let z = (y & P) + (y >> 31);
+                                    let mm = z.min(z.wrapping_sub(P));
+                                    let a = acc[r] + mm;
+                                    acc[r] = a.min(a.wrapping_sub(P));
+                                }
+                            }
+                        }
+                    }
+                    for r in 0..len {
+                        let q = base + r0 + r;
+                        let i = if q < big_m { q } else { q - big_m };
+                        let px = t.x[i];
+                        let py = if q < big_m { t.y[i] } else { neg(t.y[i]) };
+                        let ab = [sb[0][r], sb[1][r], sb[2][r], sb[3][r]];
+                        let ac = [sc[0][r], sc[1][r], sc[2][r], sc[3][r]];
+                        nums[r0 + r] = qsub(&qsub(&qmul(bc, &ab), &qscale(bca, py)), bcb);
+                        dens[r0 + r] = qadd(&qadd(&qscale(bda, px), &qscale(bdb, py)), bdc);
+                        nums[cnt + r0 + r] = qsub(&qsub(&qmul(cc, &ac), &qscale(cca, py)), ccb);
+                        dens[cnt + r0 + r] = qadd(&qadd(&qscale(cda, px), &qscale(cdb, py)), cdc);
+                    }
+                    r0 += len;
+                }
+                let invs = qbatch_inv(&dens);
+                for r in 0..cnt {
+                    let b = qmul(&nums[r], &invs[r]);
+                    let c = qmul(&nums[cnt + r], &invs[cnt + r]);
+                    q_set(block, r, &qadd(&b, &c));
+                }
+            });
+        }
+    });
+}
+
+/// Proof-of-work grinding: the smallest nonce whose hash of the transcript
+/// state meets the target.
+///
+/// The verifier accepts any nonce that meets it, but the proof must be the
+/// same one whoever produced it, so this cannot be a race between threads:
+/// the first hit a thread happens to report is not the smallest. Threads
+/// take disjoint blocks of a wave in order and the answer is the smallest
+/// hit in the wave, which is the smallest overall because every nonce below
+/// it was scanned in this wave or an earlier one.
+fn grind_blocks<F: Fn(u64) -> bool + Sync>(hit: F) -> u64 {
+    const BLOCK: u64 = 1 << 14;
+    let th = threads() as u64;
+    let mut wave = 0u64;
+    loop {
+        let found = std::sync::atomic::AtomicU64::new(u64::MAX);
+        std::thread::scope(|s| {
+            for b in 0..th {
+                let (found, hit) = (&found, &hit);
+                s.spawn(move || {
+                    let start = wave + b * BLOCK;
+                    for n in start..start + BLOCK {
+                        if hit(n) {
+                            found.fetch_min(n, Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let f = found.load(Ordering::Relaxed);
+        if f != u64::MAX {
+            return f;
+        }
+        wave += th * BLOCK;
+        if wave > u32::MAX as u64 {
+            return u64::MAX;
+        }
+    }
+}
+
+/// SHA256 flavour: the smallest 32-bit nonce, little-endian, for which
+/// SHA256(state || nonce) begins with `zero_bytes` zero bytes.
+#[no_mangle]
+pub unsafe extern "C" fn sk_grind_sha(state: *const u8, state_len: usize, zero_bytes: u32) -> u64 {
+    let st = std::slice::from_raw_parts(state, state_len);
+    let zb = zero_bytes as usize;
+    grind_blocks(|n| {
+        let mut buf = Vec::with_capacity(st.len() + 4);
+        buf.extend_from_slice(st);
+        buf.extend_from_slice(&(n as u32).to_le_bytes());
+        let h = sha256(&buf);
+        h[..zb].iter().all(|&b| b == 0)
+    })
+}
+
+/// Poseidon2 flavour: the smallest lane nonce for which the first lane of
+/// the compression of the 8-lane state with [nonce, 0..] has its low `bits`
+/// bits zero.
+#[no_mangle]
+pub unsafe extern "C" fn sk_grind_p2(state: *const u32, rc: *const u32, bits: u32) -> u64 {
+    let st = std::slice::from_raw_parts(state, 8);
+    let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
+    let mask = (1u32 << bits) - 1;
+    grind_blocks(|n| {
+        if n >= P as u64 {
+            return false;
+        }
+        let mut s = [0u32; 16];
+        s[..8].copy_from_slice(st);
+        s[8] = n as u32;
+        p2_permute(&mut s, rc);
+        s[0] & mask == 0
+    })
 }
 
 /// Circle fold of a twin-layout QM31 array on HalfCoset(m):
@@ -1444,6 +1659,7 @@ pub unsafe extern "C" fn sk_composition(
     };
     let n_out = main.outs.len() + aux.outs.len();
     let coef_len = d[13] as usize;
+    let t_eval = std::time::Instant::now();
     let evaluated: Vec<u32> = if coef_len == 0 {
         Vec::new()
     } else {
@@ -1452,6 +1668,8 @@ pub unsafe extern "C" fn sk_composition(
         par_fill_u32(&mut ev, n_c, 2, |j, col| evaluate(&coefs[j * coef_len..(j + 1) * coef_len], log_c - 1, col));
         ev
     };
+    COMP_EVAL_US.store(t_eval.elapsed().as_micros() as u64, Ordering::Relaxed);
+    let t_prog = std::time::Instant::now();
     let stored = if coef_len == 0 { handles(sets, n_sets) } else { Vec::new() };
     let value_cols: Vec<&[u32]> =
         if coef_len == 0 { stored_columns(&stored) } else { (0..n_cols).map(|j| &evaluated[j * n_c..(j + 1) * n_c]).collect() };
@@ -1509,6 +1727,7 @@ pub unsafe extern "C" fn sk_composition(
             q0 += len;
         }
     });
+    COMP_PROG_US.store(t_prog.elapsed().as_micros() as u64, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------

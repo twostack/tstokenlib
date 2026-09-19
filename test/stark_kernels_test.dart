@@ -10,6 +10,7 @@ import 'package:tstokenlib/src/crypto/proof_hash.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/recursion/verifier_program.dart';
 import 'package:tstokenlib/src/script_gen/deep_quotient_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/fiat_shamir_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
 
@@ -72,6 +73,55 @@ void main() {
     }
   }, skip: skip);
 
+  test('grinding finds the same nonce as the Dart loop, past the first block', () {
+    // The verifier takes any nonce that meets the target, so a parallel
+    // search that returned whichever hit it found first would still produce
+    // proofs that verify while no longer matching the Dart prover's. The
+    // search hands each thread a block of 2^14 nonces, so a test only
+    // exercises that if the smallest nonce lies past the first block; the
+    // existing byte-identity suites grind one byte, where it never does.
+    const block = 1 << 14;
+
+    /// The Dart loop's answer, with the kernels' search taken out of the way.
+    List<int> byHand(List<int> Function() grind, void Function() off, void Function() on) {
+      off();
+      try {
+        return grind();
+      } finally {
+        on();
+      }
+    }
+
+    // SHA256: two zero bytes is 2^16 expected tries, four blocks in
+    final shaSaved = TranscriptRef.nativeGrind;
+    expect(shaSaved, isNotNull, reason: 'the native kernels install a search when they load');
+    final ts = TranscriptRef()..absorb(List<int>.generate(32, (i) => i * 7 + 1));
+    final want = byHand(() => ts.grind(2), () => TranscriptRef.nativeGrind = null, () => TranscriptRef.nativeGrind = shaSaved);
+    final wantN = want[0] | (want[1] << 8) | (want[2] << 16) | (want[3] << 24);
+    print('  sha256 grind: smallest nonce $wantN (${(wantN / block).floor()} blocks in)');
+    expect(wantN, greaterThan(block), reason: 'the case worth testing is a nonce past the first block');
+    expect(ts.grind(2), want, reason: 'the kernel returns the smallest nonce, not the first hit');
+    expect(native!.grindSha(ts.state, 2), wantN);
+
+    // Poseidon2: 14 bits, and a state whose answer is far enough out
+    final p2Saved = Poseidon2Transcript.nativeGrind;
+    expect(p2Saved, isNotNull);
+    Poseidon2Transcript? far;
+    List<int>? farWant;
+    for (int seed = 1; seed < 40 && far == null; seed++) {
+      final t = Poseidon2Transcript()..absorb(List<int>.generate(8, (i) => seed * 1000 + i));
+      final w = byHand(() => t.grind(2), () => Poseidon2Transcript.nativeGrind = null, () => Poseidon2Transcript.nativeGrind = p2Saved);
+      if (w[0] > block) {
+        far = t;
+        farWant = w;
+      }
+    }
+    expect(far, isNotNull, reason: 'a state whose smallest nonce is past the first block');
+    print('  poseidon2 grind: smallest nonce ${farWant![0]} (${(farWant[0] / block).floor()} blocks in)');
+    expect(far!.grind(2), farWant, reason: 'the kernel returns the smallest nonce, not the first hit');
+    expect(native.grindP2(far.state, Poseidon2Transcript.grindBits(2)), farWant[0]);
+  }, skip: skip);
+
   test('DEEP quotients, folds and pair trees match', () {
     for (final m in [3, 7, 11]) {
       final n = 1 << (m + 1), mm = 1 << m;
@@ -87,8 +137,17 @@ void main() {
       final accD = Uint32List.fromList(qD), accN = Uint32List.fromList(qN);
       dart.deepQuotients(k2, setsD, m, into: accD);
       native.deepQuotients(k2, setsN, m, into: accN);
-      stored.release();
       expect(accN, accD, reason: 'deep accumulate m=$m');
+
+      // the fused pass: group B over all five columns, group C over the
+      // first two, both in one read of the shared columns. It must equal the
+      // two calls it replaces, which is exactly what accD holds when k2's
+      // weights cover only the first set.
+      final kc = DeepConstants(rq(), rq(), rq(), rq(), rq(), rq(), [for (int j = 0; j < 2; j++) rq()]);
+      final wantD = dart.deepQuotients(kc, [setsD[0]], m, into: Uint32List.fromList(qD));
+      expect(dart.deepQuotientsPair(k, kc, setsD, m), wantD, reason: 'dart fused pair m=$m');
+      expect(native.deepQuotientsPair(k, kc, setsN, m), wantD, reason: 'native fused pair m=$m');
+      stored.release();
       final alpha = rq();
       expect(native.circleFold(qD, m, alpha), dart.circleFold(qD, m, alpha), reason: 'circle fold m=$m');
       final intoD = Uint32List.fromList(qD.sublist(0, 4 * mm)), intoN = Uint32List.fromList(intoD);

@@ -48,6 +48,11 @@ proposal.md for the round totals that follow.
   columns at the shifted point) from one read of each shared column, then one
   batch inversion of both denominators. Alternative: keep two calls and rely on
   cache, rejected because the columns are gigabytes and nothing stays cached.
+  **Measured: 17.7 s to 15.5 s over a round, 12%, against the halving the
+  wording implied.** Only the second read of the 79 shared columns is saved;
+  the arithmetic is unchanged, since the fused pass still does 111 weighted
+  multiply-adds for B and 79 for C, and the batch inversion it halves was
+  never the cost. Worth keeping, not worth revisiting.
 - **Grinding in the kernels, and still deterministic.** The proof carries the
   smallest nonce satisfying the predicate, so a parallel search must return that
   and not whichever thread finishes first: threads take disjoint nonce blocks in
@@ -61,11 +66,35 @@ proposal.md for the round totals that follow.
   which suggests the read pattern rather than the arithmetic is the cost. Task
   3.1 splits the lap before anything is optimised, because the two halves want
   opposite treatments.
-- **Intra-column FFT parallelism is for the CPU path.** On a machine with the
-  Metal backend the extension and interpolation stages already run on the GPU,
-  one dispatch per stage over all columns, so splitting a column across CPU
-  threads buys nothing there. It still matters to a coordinator without a GPU,
-  which is the case it is now justified by, and it is ranked last.
+  **Measured: the stage has three parts, not two.** Over a round with the GPU
+  on: the constraint program 44.3 s, Dart-side setup 16.6 s, the extension
+  4.9 s. The GPU regression is entirely the program half reading Metal shared
+  buffers on the reuse path (26% at level 1, 16% at level 2); the
+  from-coefficients levels are backend-independent because the kernel extends
+  on the CPU either way. **Decision: both remaining cuts go to separate
+  changes.** The program half needs the recorded program on the GPU, which
+  this change said in advance it would not absorb. The Dart setup, which is
+  the linear forms evaluated row by row over the composition domain plus the
+  periodic columns and the divisor inversions, was in nobody's scope and is
+  the cheaper of the two; it is recorded in the design doc with its numbers so
+  a proposal can be written against it.
+- **Intra-column FFT parallelism was tried and is not kept.** On a machine
+  with the Metal backend the extension and interpolation stages already run on
+  the GPU, so splitting a column across CPU threads buys nothing there. It was
+  meant to serve a coordinator without a GPU. **Measured either side of the
+  threshold (23 columns against 24 on a 12-core machine, 2^25 domain, GPU
+  off): the extension is 9% faster per column (120.7 ms against 132.8), the
+  interpolation 2.1x slower (380.8 against 182.8).** One column per thread
+  lets a thread own a 128 MB column; splitting one column across twelve adds a
+  barrier per stage and destroys that locality, and only the extension earns
+  that back. The extension win does not reach the round either: the only
+  commitment with fewer columns than this machine has cores is the aux one at
+  20 columns, whose lap did not move (51.1 s to 51.0 s on the CPU path).
+  A microbenchmark win that the round cannot see is not worth a second FFT
+  scheme in the kernel, so both splits were reverted and the one-column-per-
+  thread scheme stands. Making the interpolation benefit needs a persistent
+  thread pool so stages synchronise without spawning, which is a piece of
+  work in its own right and is not proposed here.
 
 ## Risks / Trade-offs
 

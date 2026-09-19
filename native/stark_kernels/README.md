@@ -25,7 +25,7 @@ way. Committed value columns never come back to Dart: `sk_commit_columns*`
 keep them in a column store and return an id (`NativeColumns` on the Dart
 side), and the composition, DEEP-quotient and opening steps read them
 there (`sk_store_get`/`sk_store_read`); the Dart side releases them when
-the proof is done (`sk_store_free`). ABI version 5.
+the proof is done (`sk_store_free`). ABI version 6.
 
 `StarkKernels.tryLoad()` finds `target/release/libstark_kernels.{dylib,so}` /
 `stark_kernels.dll` under the working directory or its parents, or the path

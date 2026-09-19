@@ -81,8 +81,23 @@ class TranscriptRef {
     return ((QM31.one - t2) * h, (t + t) * h, h);
   }
 
-  /// Search for a nonce satisfying [checkGrinding] (small counts only).
+  /// A parallel search for the same nonce, installed by the native kernels
+  /// when they load. It returns the nonce, or a negative number when it
+  /// found none. Null means there is no such search and [grind] counts here.
+  static int Function(List<int> state, int zeroBytes)? nativeGrind;
+
+  /// The smallest nonce satisfying [checkGrinding].
+  ///
+  /// Smallest, not any: the verifier takes any nonce that meets the target,
+  /// but two provers must produce the same proof, so a search that returned
+  /// whichever hit it found first would break that without failing a
+  /// verification.
   List<int> grind(int zeroBytes) {
+    final fast = nativeGrind;
+    if (fast != null) {
+      final n = fast(state, zeroBytes);
+      if (n >= 0) return [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
+    }
     for (int n = 0;; n++) {
       final nonce = [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
       if (checkGrinding(nonce, zeroBytes)) return nonce;

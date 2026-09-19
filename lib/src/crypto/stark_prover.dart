@@ -208,7 +208,10 @@ class StarkProver {
         : _nativeComposition(groups, groupPow, beta, chal, perOnC, linOnC, vInv, divInv, logC, logPC, shift,
             coefs: [...allCoefs, ...pubCoefs], coefLen: coefLen);
     if (compLimbs != null) {
-      _lap('composition values (native${reuse ? '' : ', from coefficients'})');
+      final k = kernels;
+      final split = k is StarkKernels ? k.compositionSplit : null;
+      _lap('composition values (native${reuse ? '' : ', from coefficients'})'
+          '${split == null ? '' : ' [extend ${split.$1.round()} + program ${split.$2.round()}]'}');
     } else {
       final traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
       final pubOnC = pubCoefs.isEmpty ? <Uint32List>[] : kernels.evaluateColumns(pubCoefs, logC - 1);
@@ -260,8 +263,9 @@ class StarkProver {
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;
       dbg['w${tag}1'] = k.weights[1];
     }
-    final qBC = kernels.deepQuotients(kB, [...allEv, compEv], P.logTraceHalf);
-    kernels.deepQuotients(kC, allEv, P.logTraceHalf, into: qBC);
+    // both groups in one pass: group C reads the same trace, aux and
+    // preprocessed columns as group B, which adds the composition blocks
+    final qBC = kernels.deepQuotientsPair(kB, kC, [...allEv, compEv], P.logTraceHalf);
     final l0 = kernels.circleFold(qBC, P.logTraceHalf, alC);
     _lap('deep quotients + circle fold');
 

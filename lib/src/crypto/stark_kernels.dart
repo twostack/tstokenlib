@@ -24,6 +24,7 @@ import 'm31.dart';
 import 'proof_hash.dart';
 import '../script_gen/air.dart' show LogUpSpec;
 import '../script_gen/air_ring.dart' show Program, ProgKind;
+import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepConstants;
 
 /// The heavy arithmetic of the prover, behind one interface with two
@@ -59,6 +60,32 @@ abstract class ProverKernels {
   /// `(c Σ w_j col_j - A y - B) / (dA x + dB y + dC)`. Added into [into]
   /// when given (and returned), else a fresh array.
   Uint32List deepQuotients(DeepConstants k, List<Columns> sets, int m, {Uint32List? into});
+
+  /// The DEEP quotients of both groups summed, in one pass over the columns
+  /// they share.
+  ///
+  /// Group B reads every column of [sets]; group C reads the first
+  /// `c.weights.length` of them, which is how the prover opens the trace,
+  /// aux and preprocessed columns at the shifted point while the
+  /// composition blocks are opened only at z. Two separate calls read
+  /// gigabytes twice for one pass of arithmetic. The default here is those
+  /// two calls, for implementations without a fused kernel.
+  Uint32List deepQuotientsPair(DeepConstants b, DeepConstants c, List<Columns> sets, int m) => twoPassDeep(this, b, c, sets, m);
+
+  /// The fallback [deepQuotientsPair]: group B over everything, then group C
+  /// accumulated over the sets its weights cover.
+  static Uint32List twoPassDeep(ProverKernels k, DeepConstants b, DeepConstants c, List<Columns> sets, int m) {
+    final out = k.deepQuotients(b, sets, m);
+    final shared = <Columns>[];
+    var taken = 0;
+    for (final s in sets) {
+      if (taken >= c.weights.length) break;
+      shared.add(s);
+      taken += s.count;
+    }
+    if (taken != c.weights.length) throw ArgumentError('group C reads $taken columns, not ${c.weights.length}');
+    return k.deepQuotients(c, shared, m, into: out);
+  }
 
   /// Circle fold of a twin-layout QM31 array on HalfCoset(m):
   /// `(q_i + q_{M+i}) + alpha (q_i - q_{M+i}) / y_i`; accumulates into [into].
@@ -381,6 +408,10 @@ class DartKernels implements ProverKernels {
   List<Uint32List>? composition(CompositionJob job) => null;
 
   @override
+  Uint32List deepQuotientsPair(DeepConstants b, DeepConstants c, List<Columns> sets, int m) =>
+      ProverKernels.twoPassDeep(this, b, c, sets, m);
+
+  @override
   List<QM31> evalAt(List<Uint32List> coefs, QM31 x, QM31 y) => [for (final c in coefs) CircleFft.evalAt(c, x, y)];
 
   @override
@@ -504,6 +535,16 @@ typedef _CommitD = int Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Poin
 typedef _DeepC = ffi.Void Function(
     ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, ffi.Size, ffi.Uint32, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
 typedef _DeepD = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, int, int, int, ffi.Pointer<ffi.Uint32>);
+typedef _GrindShaC = ffi.Uint64 Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Uint32);
+typedef _GrindShaD = int Function(ffi.Pointer<ffi.Uint8>, int, int);
+typedef _GrindP2C = ffi.Uint64 Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Uint32);
+typedef _GrindP2D = int Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, int);
+typedef _CompTimingC = ffi.Void Function(ffi.Pointer<ffi.Uint64>);
+typedef _CompTimingD = void Function(ffi.Pointer<ffi.Uint64>);
+typedef _Deep2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, ffi.Size, ffi.Size,
+    ffi.Uint32, ffi.Pointer<ffi.Uint32>);
+typedef _Deep2D = void Function(
+    ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, int, int, int, ffi.Pointer<ffi.Uint32>);
 typedef _StorePutC = ffi.Uint64 Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size);
 typedef _StorePutD = int Function(ffi.Pointer<ffi.Uint32>, int, int);
 typedef _StoreFreeC = ffi.Void Function(ffi.Uint64);
@@ -553,7 +594,7 @@ typedef _KemDecapsD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint
 /// opening steps. Every kernel is exact, so [tryLoad] returning null
 /// (library not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 5;
+  static const abiVersion = 6;
   static const envVar = 'STARK_KERNELS_LIB';
 
   /// Set this to 1 (or true) to run the kernels that have a GPU path on the
@@ -567,6 +608,10 @@ class StarkKernels implements ProverKernels {
   late final _EvalD _eval = _lib.lookupFunction<_EvalC, _EvalD>('sk_evaluate_columns');
   late final _CommitD _commit = _lib.lookupFunction<_CommitC, _CommitD>('sk_commit_columns');
   late final _DeepD _deep = _lib.lookupFunction<_DeepC, _DeepD>('sk_deep_quotients');
+  late final _Deep2D _deep2 = _lib.lookupFunction<_Deep2C, _Deep2D>('sk_deep_quotients2');
+  late final _CompTimingD _compTiming = _lib.lookupFunction<_CompTimingC, _CompTimingD>('sk_composition_timing');
+  late final _GrindShaD _grindSha = _lib.lookupFunction<_GrindShaC, _GrindShaD>('sk_grind_sha');
+  late final _GrindP2D _grindP2 = _lib.lookupFunction<_GrindP2C, _GrindP2D>('sk_grind_p2');
   late final _CircleFoldD _circleFold = _lib.lookupFunction<_CircleFoldC, _CircleFoldD>('sk_circle_fold');
   late final _LineFoldD _lineFold = _lib.lookupFunction<_LineFoldC, _LineFoldD>('sk_line_fold');
   late final _MerklePairsD _merklePairs = _lib.lookupFunction<_MerklePairsC, _MerklePairsD>('sk_merkle_pairs');
@@ -618,6 +663,49 @@ class StarkKernels implements ProverKernels {
   @override
   String get name => _gpu ? 'native+metal' : 'native';
 
+  /// How the last composition call split, in milliseconds: extending the
+  /// columns onto the composition domain, and running the constraint
+  /// program over them. The reuse path does no extension, so its first
+  /// figure is zero.
+  /// The smallest 4-byte nonce whose SHA256 of [state] and it begins with
+  /// [zeroBytes] zero bytes, or -1 when the search found none.
+  int grindSha(List<int> state, int zeroBytes) {
+    final sp = calloc<ffi.Uint8>(state.length);
+    try {
+      sp.asTypedList(state.length).setAll(0, state);
+      final n = _grindSha(sp, state.length, zeroBytes);
+      return n == _notFound ? -1 : n;
+    } finally {
+      calloc.free(sp);
+    }
+  }
+
+  /// The smallest lane nonce whose Poseidon2 compression with [state] has
+  /// its low [bits] bits zero, or -1 when the search found none.
+  int grindP2(List<int> state, int bits) {
+    final sp = _upload1(Uint32List.fromList(state));
+    final rc = _upload1(_rc);
+    try {
+      final n = _grindP2(sp, rc, bits);
+      return n == _notFound ? -1 : n;
+    } finally {
+      calloc.free(sp);
+      calloc.free(rc);
+    }
+  }
+
+  static const _notFound = 0xFFFFFFFFFFFFFFFF;
+
+  (double, double) get compositionSplit {
+    final p = calloc<ffi.Uint64>(2);
+    try {
+      _compTiming(p);
+      return (p[0] / 1000, p[1] / 1000);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
   static StarkKernels? _loaded;
   static bool _tried = false;
 
@@ -652,6 +740,12 @@ class StarkKernels implements ProverKernels {
         found = StarkKernels._(lib, c);
         final want = Platform.environment[gpuEnvVar];
         if (want == '1' || want == 'true') found.enableGpu(true);
+        // grinding is a search over independent hashes, so the kernels do it
+        // across cores; both flavours return the same nonce the Dart loop
+        // would have counted up to
+        final k = found;
+        TranscriptRef.nativeGrind = (state, zeroBytes) => k.grindSha(state, zeroBytes);
+        Poseidon2Transcript.nativeGrind = (state, bits) => k.grindP2(state, bits);
         break;
       } catch (_) {
         continue;
@@ -1009,6 +1103,35 @@ class StarkKernels implements ProverKernels {
       }
     }
   }
+
+  @override
+  Uint32List deepQuotientsPair(DeepConstants b, DeepConstants c, List<Columns> sets, int m) {
+    final n = 1 << (m + 1);
+    final kk = sets.fold(0, (t, s) => t + s.count);
+    if (b.weights.length != kk) throw ArgumentError('${b.weights.length} weights for $kk columns');
+    if (c.weights.length > kk) throw ArgumentError('group C reads more columns than group B');
+    for (final s in sets) {
+      if (!s.isEmpty && s.length != n) throw ArgumentError('columns of ${s.length} values on a domain of $n');
+    }
+    final bp = _upload1(qFlat([b.c, b.A, b.B, b.dA, b.dB, b.dC, ...b.weights]));
+    final cp = _upload1(qFlat([c.c, c.A, c.B, c.dA, c.dB, c.dC, ...c.weights]));
+    final (native, owned) = _native(sets);
+    final ids = _uploadIds(native);
+    final out = calloc<ffi.Uint32>(4 * n);
+    try {
+      _deep2(bp, cp, ids, native.length, c.weights.length, m, out);
+      return _download1(out, 4 * n);
+    } finally {
+      calloc.free(bp);
+      calloc.free(cp);
+      calloc.free(ids);
+      calloc.free(out);
+      for (final col in owned) {
+        col.release();
+      }
+    }
+  }
+
 
   @override
   Uint32List circleFold(Uint32List q, int m, QM31 alpha, {Uint32List? into}) {
