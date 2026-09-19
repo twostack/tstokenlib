@@ -579,6 +579,24 @@ class PreCommitment {
     return _cache[key] = made;
   }
 
+  /// How many commitments the cache is holding. A coordinator between rounds
+  /// should see zero: see [releaseCached].
+  static int get cachedCount => _cache.length;
+
+  /// Release every cached commitment, keeping the roots.
+  ///
+  /// A running coordinator calls this when a round is done. The columns and
+  /// tree of a level are gigabytes and are needed only while that level is
+  /// proving, but the roots are needed whenever a statement digest is
+  /// derived, which is throughout. Dropping the commitments and keeping the
+  /// roots is what lets an idle coordinator hold nothing.
+  static void releaseCached() {
+    for (final c in _cache.values) {
+      c.ev.release();
+    }
+    _cache.clear();
+  }
+
   /// Coefficients of columns given in cyclic row order on the trace domain.
   static List<Uint32List> twinCoefs(List<Uint32List> cols, int t, ProverKernels k) {
     final n = 1 << t;

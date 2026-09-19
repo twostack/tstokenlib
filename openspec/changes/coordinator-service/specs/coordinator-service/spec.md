@@ -23,11 +23,15 @@ The coordinator SHALL close the pending round when it is full or when the config
 - **THEN** a padded round of the plan's size is built and published
 
 ### Requirement: Idle work
-Between rounds the coordinator SHALL refill the padding stock to its configured level and keep the level programs and preprocessed commitments resident, so a round starts without proving padding or recomputing commitments.
+Between rounds the coordinator SHALL refill the padding stock to its configured level and keep the level programs compiled, so a round starts without proving padding or recompiling. It SHALL NOT hold the levels' preprocessed commitments while idle: each is gigabytes and the levels are proved one after another, so only their roots are kept and a level rebuilds its own commitment when it starts.
 
 #### Scenario: Stock after a round
 - **WHEN** a round consumed padding and the coordinator is idle
 - **THEN** the stock is back at its configured level before the next round closes
+
+#### Scenario: Nothing held while idle
+- **WHEN** the coordinator has finished its idle work after a round
+- **THEN** it holds no preprocessed column set, and the levels' preprocessed roots are still known
 
 ### Requirement: Prover pool
 In recursive mode the coordinator SHALL prove level-1 nodes through a pool of provers it is configured with, this machine included as the fallback, and SHALL run with an empty pool.

@@ -1995,6 +1995,88 @@ kernel cuts it proposed. It is renamed `node-stage-cost` and re-aimed at the
 stages the laps now show, where composition values is 27% of a round and
 grinding, a single-threaded nonce loop in Dart, is another 5%.
 
+### Coordinator service (built)
+
+Everything a round needs existed as library calls, and nothing ran a pool.
+Transfers arrive from wallets over time, rounds have to close on a schedule
+or when they are full, the padding stock has to be refilled between rounds,
+and a restart has to find its ledger again. `PoolCoordinator` is the process
+that does those things, with no transport in it: `submit` is a method and
+`publish` is a callback, so a CLI, an HTTP server or a test drives the same
+service.
+
+**Intake validates, the round builder trusts.** A submitted transfer is
+accepted only if its proof verifies, its extra outputs hash to the outHash
+the proof committed to, it carries the issuer's authorisation when it needs
+one, its anchor is one of the four roots in the pool's ring, its real
+nullifiers are neither spent nor claimed by an unpublished round, a deposit
+arrives with the input that funds it, and what the round would take out does
+not exceed the vault. A rejection names which of those it was, because the
+remedy differs: a bad proof is the wallet's bug, a pending double spend is a
+race worth retrying after the next round, and a stale anchor means the wallet
+took too long and should re-prove.
+
+Verifying at intake rather than at round time costs **18 ms** per transfer at
+production parameters, against 1.19 s to produce the proof in the wallet. For
+a 256-transfer round that is 4.6 s spread across the collection window, and
+it buys the guarantee that no round is thrown away minutes into proving
+because one submission was rubbish. The proposal had estimated 0.1 s, so this
+is five times cheaper than it was budgeted for.
+
+**The pending round is a shadow ledger.** Acceptance is checked against the
+ledger plus what the unpublished rounds already claim, because the real
+ledger does not move until a round is published. There can be more than one
+such round at a time: building a recursive round takes minutes, and intake
+has to keep running through it, so the pending round is taken at the moment
+`closeRound` is called rather than when the build actually starts. A transfer
+submitted while a round is proving joins the next one. Getting that wrong is
+easy and silent, and it is what the second test pins down.
+
+**The trigger is full or deadline.** A timer is armed when the first transfer
+of a round arrives, so there is no polling, and the clock is injected so a
+test can advance it by hand rather than wait. An empty round is never closed,
+since it would spend the state output and append nothing.
+
+**Level 1 goes through the configured pool.** In recursive mode the
+configuration lists the coordinator's provers and round building hands them
+the level-1 nodes; with none listed, every node is proved here. A member that
+does not answer within the timeout costs exactly that timeout, and its node
+is proved on the coordinator. The levels are not zero-knowledge, so a round
+proved through a pool is the same round, leaf for leaf, as one proved alone,
+which is the property the test asserts.
+
+**Idle work lets go rather than holds on.** Between rounds the coordinator
+refills the padding stock and releases the preprocessed commitments, keeping
+only their roots. This is the decision from the cache section above, now
+enforced rather than merely allowed: the delta spec for this change had said
+to keep the commitments resident, which would have put 14.5 GB back into a
+round's peak, and it was corrected against the design and the code. An idle
+coordinator holds no preprocessed column set, and the test checks exactly
+that.
+
+**Recovery replays the chain.** Nothing is persisted. On start the ledger is
+rebuilt from the genesis transaction and every round transaction since,
+through the chain reader, and a coordinator that believes it left a different
+state behind refuses to run rather than fork its own history.
+
+**The mode is checked against the pool.** A pool is built by one generator
+and its state script carries that choice, so a coordinator configured for
+recursive rounds and pointed at a direct-slot pool refuses at construction,
+naming both, instead of failing somewhere inside a round.
+
+`bin/pool_coordinator.dart` reads a JSON file naming the mode, the schedule,
+the plan with its parameters, and the files holding the genesis and the
+rounds published since. The parameters are spelled out rather than named
+because a pool's scripts are built from them, and a coordinator that guessed
+would compile a generator that does not match the pool. `--check` rebuilds
+the ledger, prints the mode and the state, and stops without serving, which
+is how a deployment is verified. There is no transport yet, so a published
+round is written beside the history rather than broadcast.
+
+Ten tests cover it end to end at small parameters in 47 s, including two
+rounds proved twice to compare a pooled level 1 against a local one, and a
+run of the entry point against a pool described by a file.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the
