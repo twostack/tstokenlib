@@ -40,12 +40,15 @@ class DeepConstants {
 }
 
 class DeepQuotientRef {
-  static DeepConstants precompute(QM31 zx, QM31 zy, List<QM31> values, QM31 alpha) {
+  /// With [base] the weights are base * alpha^j: a group whose weights are
+  /// a scalar multiple of another's shares that group's weighted sum of
+  /// the openings (one sum per query point for both).
+  static DeepConstants precompute(QM31 zx, QM31 zy, List<QM31> values, QM31 alpha, {QM31? base}) {
     final c = zy.conj - zy;
     final dA = zy - zy.conj;
     final dB = zx.conj - zx;
     final dC = zx * zy.conj - zy * zx.conj;
-    var w = QM31.one;
+    var w = base ?? QM31.one;
     var A = QM31.zero, B = QM31.zero;
     final weights = <QM31>[];
     for (final v in values) {
@@ -125,10 +128,14 @@ class DeepQuotientScriptGen {
   /// Expects named limbs for zx, zy, alpha and each value v_j (all canonical).
   /// Consumes the values; keeps zx, zy, alpha. Leaves, all canonical:
   ///   c_*, A_*, B_*, dA_*, dB_*, dC_*, and w{j}_* for j in 0..C-1.
+  /// With [weightsTag] the weights of that earlier group are reused (picked)
+  /// and no weights are pushed for this one; with [base] the accumulators
+  /// are scaled by it afterwards (this group's weights = base * theirs).
   static void emitPrecompute(StackEmitter e, List<String> zx, List<String> zy,
-      List<String> alpha, List<List<String>> values, {String tag = ''}) {
+      List<String> alpha, List<List<String>> values, {String tag = '', String? weightsTag, List<String>? base}) {
     final C = values.length;
     List<String> T(String b) => limbNames('$b$tag');
+    final wTag = weightsTag ?? tag;
     // c = conj(zy) - zy ; dA = zy - conj(zy) ; dB = conj(zx) - zx
     _pushConj(e, zy, limbNames('_czy'));
     _copy(e, zy, limbNames('_zy1'));
@@ -160,17 +167,17 @@ class DeepQuotientScriptGen {
     for (int k = 0; k < 4; k++) {
       e.pushConst(0, as: 'A${tag}_$k');
     }
-    e.pushConst(1, as: 'w${tag}0_0');
-    e.pushConst(0, as: 'w${tag}0_1');
-    e.pushConst(0, as: 'w${tag}0_2');
-    e.pushConst(0, as: 'w${tag}0_3');
+    if (weightsTag == null) {
+      e.pushConst(1, as: 'w${tag}0_0');
+      e.pushConst(0, as: 'w${tag}0_1');
+      e.pushConst(0, as: 'w${tag}0_2');
+      e.pushConst(0, as: 'w${tag}0_3');
+    }
 
     for (int j = 0; j < C; j++) {
       final v = values[j];
-      final w = limbNames('w$tag$j');
+      final w = limbNames('w$wTag$j');
       // a_j = conj(v) - v = (0, 0, -2 v2, -2 v3)   (lazy)
-      e.pushConst(0, as: '_a_0');
-      e.pushConst(0, as: '_a_1');
       e.pushConst(0);
       e.pick(v[2]);
       e.dup();
@@ -183,23 +190,28 @@ class DeepQuotientScriptGen {
       e.add();
       e.sub();
       e.nameTop('_a_3');
-      // V += w * v   (v consumed)
-      _copy(e, w, limbNames('_w1'));
-      M31Ops.qm31Mul(e, limbNames('_w1'), v, limbNames('_wv'), reduceOut: false);
+      // V += w * v   (v consumed, w picked)
+      M31Ops.qm31Mul(e, w, v, limbNames('_wv'), reduceOut: false, consumeA: false);
       _addInto(e, T('V'), limbNames('_wv'));
-      // A += w * a
-      _copy(e, w, limbNames('_w2'));
-      M31Ops.qm31Mul(e, limbNames('_w2'), limbNames('_a'), limbNames('_wa'), reduceOut: false);
+      // A += w * a   (a has two zero limbs)
+      M31Ops.qm31MulHi(e, w, '_a_2', '_a_3', limbNames('_wa'), reduceOut: false, consumeA: false);
       _addInto(e, T('A'), limbNames('_wa'));
       // w_{j+1} = w_j * alpha
-      if (j < C - 1) {
-        _copy(e, w, limbNames('_w3'));
-        _copy(e, alpha, limbNames('_al'));
-        M31Ops.qm31Mul(e, limbNames('_w3'), limbNames('_al'), limbNames('w$tag${j + 1}'));
+      if (weightsTag == null && j < C - 1) {
+        M31Ops.qm31Mul(e, w, alpha, limbNames('w$tag${j + 1}'), consumeA: false, consumeB: false);
       }
     }
     _reduceAll(e, T('V'));
     _reduceAll(e, T('A'));
+    if (base != null) {
+      for (final acc in ['V', 'A']) {
+        _copy(e, base, limbNames('_bs'));
+        M31Ops.qm31Mul(e, T(acc), limbNames('_bs'), limbNames('_bsr'));
+        for (int k = 0; k < 4; k++) {
+          e.rename('_bsr_$k', T(acc)[k]);
+        }
+      }
+    }
     // B = c * V - zy * A
     _copy(e, T('c'), limbNames('_c1'));
     M31Ops.qm31Mul(e, limbNames('_c1'), T('V'), limbNames('_cV'), reduceOut: false);
@@ -217,11 +229,17 @@ class DeepQuotientScriptGen {
   static void emitQuotient(StackEmitter e, String px, String py,
       List<String> openings, List<String> hint, List<String> out,
       {bool negY = false, String tag = ''}) {
+    emitSum(e, openings, tag, limbNames('_S'));
+    emitQuotientFromSum(e, px, py, limbNames('_S'), hint, out, negY: negY, tag: tag);
+  }
+
+  /// S_k = Σ_j w_{j,k} o_j over group [weightsTag]'s weights (lazy, unreduced).
+  /// Consumes the openings.
+  static void emitSum(StackEmitter e, List<String> openings, String weightsTag, List<String> out) {
     final C = openings.length;
-    // S_k = Σ_j w_{j,k} * o_j   (lazy)
     for (int k = 0; k < 4; k++) {
       for (int j = 0; j < C; j++) {
-        e.pick('w$tag${j}_$k');
+        e.pick('w$weightsTag${j}_$k');
         if (k == 3) {
           e.roll(openings[j]);
         } else {
@@ -230,11 +248,16 @@ class DeepQuotientScriptGen {
         e.mul();
         if (j > 0) e.add();
       }
-      e.nameTop('_S_$k');
+      e.nameTop(out[k]);
     }
+  }
+
+  /// The quotient from the weighted sum [S] of the openings (consumed).
+  static void emitQuotientFromSum(StackEmitter e, String px, String py, List<String> S, List<String> hint,
+      List<String> out, {bool negY = false, String tag = ''}) {
     // N = c * S
     _copy(e, limbNames('c$tag'), limbNames('_c2'));
-    M31Ops.qm31Mul(e, limbNames('_c2'), limbNames('_S'), limbNames('_N'), reduceOut: false);
+    M31Ops.qm31Mul(e, limbNames('_c2'), S, limbNames('_N'), reduceOut: false);
     // N -= A * py ; N -= B          (or += A * py for the conjugate point)
     for (int k = 0; k < 4; k++) {
       e.roll('_N_$k');

@@ -1295,14 +1295,51 @@ Measured at small parameters (`test/recursion_tree_test.dart`,
 one level-2 on 2^16, the wide root on 2^15 in SHA256 flavour): root program 861
 periods and 248 public lanes; root proof 22,004 B; root verifier script 357 KB and
 248 K ops, 0.5 s in the interpreter; state body 26 KB; the round transaction 811 KB
-with three inputs verified in 1.1 s; aggregation 31 s end to end. At production
-parameters the verifier script for a 2^18 verifier proof (blowup 16, 22 queries) is
-1,078 KB and 747 K ops before the wide statement, so the round's FRI must be
-re-tuned towards blowup 32 / 18 queries (about 620 K ops) to leave room for
-100-150 transfers' public columns under the 1 M-op limit; halving the per-transfer
-lanes (anchors checked in-circuit, commitments only in the tree) doubles that.
-Remaining: the Rust port of the verifier's constraint evaluation, native Poseidon2
-grinding, padding a round to arity^depth with dummy transfers in the coordinator.
+with three inputs verified in 1.1 s; aggregation 31 s end to end.
+
+### Sizing the round at production parameters (measured)
+
+The root slot's script was generated at production shape (spends at the pool's
+production parameters, verifier levels on 2^18 then 2^19 with blowup 32 and 18
+queries, the wide root on 2^19; `tool/scratch/root_script_size.dart`) and counted
+the way the node does: opcodes above OP_16, pushes free. Four generic cuts to the
+script verifier took the fixed part from 434 K to 336 K ops and the per-transfer
+part from 2.4 K to 2.2 K:
+
+- the query index's bits are split once per query and every Merkle path,
+  selector and twiddle sign picks them (7 ops per path level instead of 12);
+- the DEEP group at z·g takes weights λ_C·λ_B^j instead of λ_C^j, so both groups
+  share one weighted sum of the openings per query point (the prover, reference
+  verifier, in-circuit verifier and script all changed; two independent
+  challenges keep the combination sound);
+- the DEEP precompute multiplies by the two-limb `conj(v) − v` with a half-width
+  product and reads operands in place, as does the compiled constraint program;
+- the public-column accumulation loops over chunks innermost so the running sum
+  never leaves the top of the stack.
+
+| root FRI (blowup / queries / grind) | bits | fixed ops | + per transfer | script fixed B | + per transfer | proof B | transfers under 1 M ops |
+|---|---|---|---|---|---|---|---|
+| 16 / 22 / 16-bit | 104 | 385 K | 2,156 | 894 K | 5.5 K | 285 K | 285 |
+| 32 / 18 / 16-bit | 106 | 336 K | 2,156 | 782 K | 5.5 K | 246 K | 308 |
+| 64 / 15 / 16-bit | 106 | 299 K | 2,156 | 698 K | 5.5 K | 215 K | 325 |
+
+The aggregated state script costs 1.1 K ops fixed plus 3,432 ops and 5.9 KB per
+transfer (nullifier set and per-transfer bookkeeping), so it reaches the 1 M-op
+limit at 291 transfers: the state input binds first, at about 290 transfers per
+round. A 290-transfer round is then roughly 6 MB (slot 2.4 MB, state 1.7 MB plus
+its 1.5 MB unlock, proof 0.25 MB), under the 10 MB transaction limit, and the
+root program needs about 14,600 periods of the 16,384 on 2^19 (24 periods per
+transfer over the 7,800 the top proof costs). Beyond that the state script and
+the root trace both need work: the state script's per-transfer cost (a second
+1 M-op budget) and 2^20 for the root. Halving the per-transfer lanes (anchors
+checked in-circuit against the ring, commitments only through the tree) would
+cut the slot's per-transfer cost to about 1.1 K ops and the state's by a third.
+
+Prover side, not yet measured at this size: the root's low-degree extension is 79
+columns × 2^(19+5) words, 5.3 GB at blowup 32 (2.6 GB at 16), and the Dart
+composition evaluation of a 2^19 verifier trace is about two minutes; the Rust
+port of the verifier's constraints, native Poseidon2 grinding, and padding a
+round to arity^depth with dummy transfers in the coordinator remain.
 
 ## Open Items
 

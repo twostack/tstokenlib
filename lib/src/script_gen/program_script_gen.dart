@@ -84,24 +84,34 @@ class ProgramScriptGen {
       }
     }
 
-    /// The operand's limbs for one use: its own names when this is its last
-    /// use and it may be consumed, a copy otherwise.
-    List<String> operand(int n, {bool copy = false}) {
+    /// The operand's limbs for one use, and whether this use may consume
+    /// them (its last use, and the node is consumable).
+    (List<String>, bool) operand(int n) {
       uses[n]--;
-      final own = names[n]!;
-      if (uses[n] == 0 && consumable[n] && !copy) return own;
-      final t = fresh();
-      for (int j = 0; j < 4; j++) {
-        e.pick(own[j], as: t[j]);
+      return (names[n]!, uses[n] == 0 && consumable[n]);
+    }
+
+    void take(String l, bool consume) {
+      if (consume) {
+        e.roll(l);
+      } else {
+        e.pick(l);
       }
-      return t;
+    }
+
+    void dropAll(List<String> l) {
+      for (final x in l) {
+        e.dropNamed(x);
+      }
     }
 
     void limbwise(int a, int b, bool add, List<String> dst) {
-      final la = operand(a, copy: a == b), lb = operand(b);
+      final (la, ca) = operand(a);
+      final (lb, cb) = operand(b);
+      final same = a == b;
       for (int j = 0; j < 4; j++) {
-        e.roll(la[j]);
-        e.roll(lb[j]);
+        take(la[j], !same && ca);
+        take(lb[j], !same && cb);
         if (add) {
           e.add();
         } else {
@@ -110,6 +120,7 @@ class ProgramScriptGen {
         e.reduce();
         e.nameTop(dst[j]);
       }
+      if (same && cb) dropAll(la);
     }
 
     for (int i = 0; i < prog.ops.length; i++) {
@@ -127,25 +138,28 @@ class ProgramScriptGen {
         case ProgKind.sub:
           limbwise(op.a, op.b, false, dst);
         case ProgKind.scale:
-          final la = operand(op.a);
+          final (la, ca) = operand(op.a);
           for (int j = 0; j < 4; j++) {
-            e.roll(la[j]);
+            take(la[j], ca);
             e.mulConst(op.imm.c0.a);
             e.reduce();
             e.nameTop(dst[j]);
           }
         case ProgKind.mul:
-          final la = operand(op.a, copy: op.a == op.b), lb = operand(op.b);
-          M31Ops.qm31Mul(e, la, lb, dst);
+          final (la, ca) = operand(op.a);
+          final (lb, cb) = operand(op.b);
+          final same = op.a == op.b;
+          M31Ops.qm31Mul(e, la, lb, dst, consumeA: !same && ca, consumeB: !same && cb);
+          if (same && cb) dropAll(la);
       }
       names[n] = dst;
       consumable[n] = true;
     }
     // outputs: the last reference moves, earlier ones copy
     for (int j = 0; j < out.length; j++) {
-      final l = operand(prog.outputs[j]);
+      final (l, c) = operand(prog.outputs[j]);
       for (int k = 0; k < 4; k++) {
-        e.roll(l[k]);
+        take(l[k], c);
         e.nameTop(out[j][k]);
       }
     }

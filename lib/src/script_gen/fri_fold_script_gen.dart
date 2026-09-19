@@ -96,6 +96,70 @@ class FriFoldScriptGen {
     e.nameTop(as);
   }
 
+  /// Splits the canonical index [idx] (< 2^bits) into its bits, LSB first,
+  /// named `${prefix}k`. Consumes [idx].
+  static void emitIndexBits(StackEmitter e, String idx, int bits, String prefix) {
+    e.roll(idx);
+    for (int k = 0; k < bits - 1; k++) {
+      e.dup();
+      e.pushConst(2);
+      e.raw(OpCodes.OP_MOD, pops: 2, pushes: 1, as: '$prefix$k');
+      e.swap();
+      e.pushConst(2);
+      e.raw(OpCodes.OP_DIV, pops: 2, pushes: 1);
+    }
+    e.nameTop('$prefix${bits - 1}');
+  }
+
+  /// [emitMerklePath] with the direction bits already on the stack (picked,
+  /// LSB first: bit k of the leaf index is [bits][k]). Consumes the siblings.
+  static void emitMerklePathBits(StackEmitter e, String node, List<String> sibs, List<String> bits,
+      {String as = 'root'}) {
+    e.roll(node);
+    for (int k = 0; k < sibs.length; k++) {
+      e.roll(sibs[k]); // [.., node, sib]
+      e.pick(bits[k]);
+      e.ifBegin();
+      e.swap();
+      e.ifEnd();
+      e.raw(OpCodes.OP_CAT, pops: 2, pushes: 1);
+      e.raw(OpCodes.OP_SHA256, pops: 1, pushes: 1, as: node);
+    }
+    e.nameTop(as);
+  }
+
+  /// [emitDomainPointXY] from the index bits (picked, LSB first).
+  static void emitDomainPointXYBits(StackEmitter e, HalfCoset coset, List<String> bits,
+      {String asX = 'x', String asY = 'y'}) {
+    e.pushConst(coset.initial.x, as: '_px');
+    e.pushConst(coset.initial.y, as: '_py');
+    for (int k = 0; k < bits.length; k++) {
+      final g = CirclePoint.subgroupGen(coset.logSize - k); // step^(2^k)
+      e.pick(bits[k]);
+      e.ifBegin();
+      e.raw(OpCodes.OP_2DUP, pops: 0, pushes: 2);
+      e.mulConst(g.y);
+      e.swap();
+      e.mulConst(g.x);
+      e.swap();
+      e.sub();
+      e.reduce();
+      e.rot();
+      e.mulConst(g.y);
+      e.rot();
+      e.mulConst(g.x);
+      e.add();
+      e.reduce();
+      e.ifEnd();
+      e.nameAt(0, '_py');
+      e.nameAt(1, '_px');
+    }
+    e.nameAt(0, asY);
+    e.nameAt(1, asX);
+    e.setNonNeg(asX, true);
+    e.setNonNeg(asY, true);
+  }
+
   /// x <- ±(2x^2 - 1), negated when [topBit] is 1. Picks [topBit].
   static void emitTwiddleStep(StackEmitter e, String x, String topBit) {
     e.roll(x);

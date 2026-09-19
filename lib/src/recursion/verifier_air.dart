@@ -336,30 +336,30 @@ class VerifierAir extends Poseidon2Air {
         e.roll('_pn_$k');
         e.numEqualVerify();
       }
-      // acc_j += pub_{8c+j} * hint_c, limbwise
-      for (int j = 0; j < 8; j++) {
-        final pub = Air.publicName(8 * c + j);
-        for (int k = 0; k < 4; k++) {
-          e.pick(pub);
-          e.pick(hints[c][k]);
-          e.mul();
-          if (c > 0) {
-            e.roll('_pa${j}_$k');
-            e.add();
-          }
-          e.nameTop('_pa${j}_$k');
-        }
-      }
-      for (final l in hints[c]) {
-        e.dropNamed(l);
-      }
     }
+    // acc_{j,k} = Σ_c pub_{8c+j} * hint_{c,k}: the sum stays on top (lazy)
     for (int j = 0; j < 8; j++) {
       for (int k = 0; k < 4; k++) {
-        e.roll('_pa${j}_$k');
+        for (int c = 0; c < n; c++) {
+          e.pick(Air.publicName(8 * c + j));
+          if (j == 7 && k == 3) {
+            e.roll(hints[c][k]);
+          } else {
+            e.pick(hints[c][k]);
+          }
+          e.mul();
+          if (c > 0) e.add();
+        }
         e.reduce();
         e.nameTop('_pa${j}_$k');
       }
+    }
+    for (int c = 0; c < n; c++) {
+      for (final l in hints[c]) {
+        if (e.has(l)) e.dropNamed(l);
+      }
+    }
+    for (int j = 0; j < 8; j++) {
       for (int k = 0; k < 4; k++) {
         e.pick(v[k], as: '_pv_$k');
       }

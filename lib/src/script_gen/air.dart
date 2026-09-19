@@ -576,8 +576,7 @@ class AirScriptGen {
       e.rename(c[top][k], acc[k]);
     }
     for (int j = top - 1; j >= 0; j--) {
-      _copy(e, beta, limbNames('_hbeta'));
-      M31Ops.qm31Mul(e, acc, limbNames('_hbeta'), limbNames('_haccb'), reduceOut: false);
+      M31Ops.qm31Mul(e, acc, beta, limbNames('_haccb'), reduceOut: false, consumeB: false);
       for (int k = 0; k < 4; k++) {
         e.roll('_haccb_$k');
         e.roll(c[j][k]);
@@ -602,6 +601,9 @@ class AirScriptGen {
   /// group's form vanish, and a main violation could cancel a boundary
   /// violation there unless the two are separated by distinct β exponents.
   /// Restarting the Horner at β^0 per group would break this silently.
+  /// Profiling hook: called with a label after each stage of the OOD check.
+  static void Function(String label)? probe;
+
   static void emitOodsCheck(StackEmitter e, Air air) {
     final cur = List.generate(air.totalCols, (j) => limbNames('cur$j'));
     final next = List.generate(air.totalCols, (j) => limbNames('next$j'));
@@ -618,20 +620,25 @@ class AirScriptGen {
       if (g.divisor >= 0 && !divs.contains(g.divisor)) divs.add(g.divisor);
     }
 
+    probe?.call('start');
     emitLinearForms(e, air, limbNames('zx'), limbNames('zy'), lin);
     // keep a copy of each divisor form; emitConstraints consumes `lin`
     for (final d in divs) {
       _copy(e, lin[d], limbNames('_ld$d'));
     }
+    probe?.call('linear');
     emitDoublingChain(e, limbNames('zx'), limbNames('zy'), air.logTrace, air.logPeriod);
+    probe?.call('doubling');
     final v = limbNames('_dx${air.logTrace - 1}');
     if (air.numPubCols > 0) {
       air.emitPubColumns(e, limbNames('zx'), limbNames('zy'), v,
           List.generate(air.numPubHints, (c) => limbNames('pkh$c')), per.sublist(air.numPeriodic));
     }
+    probe?.call('pub');
     _dropQ(e, limbNames('zx'));
     _dropQ(e, limbNames('zy'));
     emitPeriodic(e, air, per.sublist(0, air.numPeriodic));
+    probe?.call('periodic');
     // aux constraints first (they only pick), then the base ones (consume)
     if (air.numAuxConstraints > 0) {
       air.emitAuxConstraints(e, cur, next, per, lin, chal, cons.sublist(air.numConstraints));
@@ -641,6 +648,7 @@ class AirScriptGen {
         if (e.has(l)) e.dropNamed(l);
       }
     }
+    probe?.call('aux');
     air.emitConstraints(e, cur, next, per, lin, cons.sublist(0, air.numConstraints));
     // a base emitter unaware of the aux columns leaves them behind
     for (int j = air.numCols; j < air.totalCols; j++) {
@@ -648,7 +656,9 @@ class AirScriptGen {
         if (e.has(l)) e.dropNamed(l);
       }
     }
+    probe?.call('main');
 
+    probe?.call('main');
     // one Horner per group, then weight by beta^{lo}
     final hs = <List<String>>[];
     final los = <int>[];
@@ -815,5 +825,6 @@ class AirScriptGen {
       e.roll(rhs[k]);
       e.numEqualVerify();
     }
+    probe?.call('combine');
   }
 }

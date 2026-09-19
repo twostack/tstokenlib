@@ -391,12 +391,13 @@ class M31Ops {
   ///   r = A0 B0 + (2+i) A1 B1
   ///   s = A0 B1 + A1 B0
   static void qm31Mul(StackEmitter e, List<String> a, List<String> b,
-      List<String> out, {bool reduceOut = true}) {
+      List<String> out, {bool reduceOut = true, bool consumeA = true, bool consumeB = true}) {
     if (a.length != 4 || b.length != 4 || out.length != 4) {
       throw ArgumentError('QM31 operands need 4 limbs');
     }
     final a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
     final b0 = b[0], b1 = b[1], b2 = b[2], b3 = b[3];
+    final cA = consumeA, cB = consumeB;
 
     // t0 = a2 b2 - a3 b3 ; t1 = a2 b3 + a3 b2   (A1 * B1 in CM31)
     term(e, a2, b2);
@@ -443,18 +444,69 @@ class M31Ops {
     e.nameTop('_s0');
 
     // s1 = a0 b3 + a1 b2 + a2 b1 + a3 b0   (last use of every input: roll)
-    term(e, a0, b3, consumeX: true, consumeY: true);
-    term(e, a1, b2, consumeX: true, consumeY: true);
+    term(e, a0, b3, consumeX: cA, consumeY: cB);
+    term(e, a1, b2, consumeX: cA, consumeY: cB);
     e.add();
-    term(e, a2, b1, consumeX: true, consumeY: true);
+    term(e, a2, b1, consumeX: cA, consumeY: cB);
     e.add();
-    term(e, a3, b0, consumeX: true, consumeY: true);
+    term(e, a3, b0, consumeX: cA, consumeY: cB);
     e.add();
     e.nameTop('_s1');
 
     // Stack now: [..., _r0, _r1, _s0, _s1]
     if (reduceOut) {
       // Rolling each to the top in turn preserves the order.
+      e.roll('_r0');
+      e.reduce();
+      e.roll('_r1');
+      e.reduce();
+      e.roll('_s0');
+      e.reduce();
+      e.roll('_s1');
+      e.reduce();
+    }
+    e.rename('_r0', out[0]);
+    e.rename('_r1', out[1]);
+    e.rename('_s0', out[2]);
+    e.rename('_s1', out[3]);
+  }
+
+  /// QM31 multiply by b = (0, 0, b2, b3) (b in the u-component only):
+  ///   t0 = a2 b2 - a3 b3, t1 = a2 b3 + a3 b2
+  ///   r = (2 t0 - t1, t0 + 2 t1), s = (a0 b2 - a1 b3, a0 b3 + a1 b2).
+  /// Eight limb products instead of sixteen. Consumes b2, b3; a per [consumeA].
+  static void qm31MulHi(StackEmitter e, List<String> a, String b2, String b3, List<String> out,
+      {bool reduceOut = true, bool consumeA = true}) {
+    final a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3];
+    term(e, a2, b2);
+    term(e, a3, b3);
+    e.sub();
+    e.nameTop('_t0');
+    term(e, a2, b3, consumeX: consumeA);
+    term(e, a3, b2, consumeX: consumeA);
+    e.add();
+    e.nameTop('_t1');
+    e.pick('_t0');
+    e.dup();
+    e.add();
+    e.pick('_t1');
+    e.sub();
+    e.nameTop('_r0');
+    e.roll('_t0');
+    e.roll('_t1');
+    e.dup();
+    e.add();
+    e.add();
+    e.nameTop('_r1');
+    term(e, a0, b2);
+    term(e, a1, b3);
+    e.sub();
+    e.nameTop('_s0');
+    term(e, a0, b3, consumeX: consumeA, consumeY: true);
+    term(e, a1, b2, consumeX: consumeA, consumeY: true);
+    e.add();
+    e.nameTop('_s1');
+    if (reduceOut) {
       e.roll('_r0');
       e.reduce();
       e.roll('_r1');

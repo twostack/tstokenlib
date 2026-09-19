@@ -227,6 +227,7 @@ coordinator can build proofs, not with what the blockchain can hold.
 ---
 
 *Status note for maintainers: everything above is built and tested end to end at
-small parameters, including section 8's aggregation with one checker per round;
-tuning the round's proof parameters for a full-size round is the next engineering
-step.*
+small parameters, including section 8's aggregation with one checker per round.
+The round's on-chain checker has been sized at full parameters: it fits about 290
+transfers per round under the node's script limits. Proving a full-size round and
+measuring its time is the next engineering step.*

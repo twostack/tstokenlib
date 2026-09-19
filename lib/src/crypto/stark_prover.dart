@@ -270,7 +270,7 @@ class StarkProver {
     // ---- DEEP quotients (flat QM31 arrays, 4 limbs per position) ----
     final kA = DeepQuotientRef.precompute(zx, zy, compAtZ, lamA);
     final kB = DeepQuotientRef.precompute(zx, zy, traceAtZ, lamB);
-    final kC = DeepQuotientRef.precompute(zgx, zgy, traceAtZg, lamC);
+    final kC = DeepQuotientRef.precompute(zgx, zgy, traceAtZg, lamB, base: lamC);
     for (final (tag, k) in [('A', kA), ('B', kB), ('C', kC)]) {
       dbg['c$tag'] = k.c; dbg['A$tag'] = k.A; dbg['B$tag'] = k.B;
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;

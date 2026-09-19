@@ -140,7 +140,7 @@ class StarkVerifierRef {
     final zgy = zx.scale(gT.y) + zy.scale(gT.x);
     final kA = DeepQuotientRef.precompute(zx, zy, pf.compAtZ, lamA);
     final kB = DeepQuotientRef.precompute(zx, zy, pf.traceAtZ, lamB);
-    final kC = DeepQuotientRef.precompute(zgx, zgy, pf.traceAtZg, lamC);
+    final kC = DeepQuotientRef.precompute(zgx, zgy, pf.traceAtZg, lamB, base: lamC);
 
     // ---- FRI roots and alphas, final coefficients, grinding, indices ----
     final alphas = <QM31>[];

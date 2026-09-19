@@ -794,7 +794,7 @@ class VerifierProgramBuilder {
     final zgy = f.add(f.scale(zx, gT.y), f.scale(zy, gT.x));
     final kA = _deepPrecompute(zx, zy, compAtZ, lamA);
     final kB = _deepPrecompute(zx, zy, traceAtZ, lamB);
-    final kC = _deepPrecompute(zgx, zgy, traceAtZg, lamC);
+    final kC = _deepPrecompute(zgx, zgy, traceAtZg, lamB, base: lamC);
 
     // ---- FRI roots and alphas, final coefficients, grinding, indices ----
     final friRoots = <Wire>[], alphas = <Wire>[];
@@ -942,9 +942,11 @@ class VerifierProgramBuilder {
     final atC = [...lanesOf(tl, C, C), ...lanesOf(al, A, A), ...lanesOf(pl, R, R)];
     final dBp = hint4('dbp$q', () => qp().dBInvP), dBc = hint4('dbc$q', () => qp().dBInvC);
     final dCp = hint4('dcp$q', () => qp().dCInvP), dCc = hint4('dcc$q', () => qp().dCInvC);
-    final qTp = f.add(_quotient(kB, xB, yB, atP, dBp), _quotient(kC, xB, yB, atP, dCp));
+    // group C's weights are kC.base times group B's: one weighted sum per point
+    final sP = _weightedSum(kB, atP), sC = _weightedSum(kB, atC);
+    final qTp = f.add(_quotientOfSum(kB, xB, yB, sP, dBp), _quotientOfSum(kC, xB, yB, f.mul(kC.base!, sP), dCp));
     final nyB = f.neg(yB);
-    final qTc = f.add(_quotient(kB, xB, nyB, atC, dBc), _quotient(kC, xB, nyB, atC, dCc));
+    final qTc = f.add(_quotientOfSum(kB, xB, nyB, sC, dBc), _quotientOfSum(kC, xB, nyB, f.mul(kC.base!, sC), dCc));
     final yBi = hint1('ybi$q', () => qp().yBInv);
     assertEq(f.mul(yBi, yB), f.one);
     return _fold(qTp, qTc, yBi, alpha);
@@ -959,13 +961,14 @@ class VerifierProgramBuilder {
     return f.sub(v, f.add(t, t));
   }
 
-  DeepWires _deepPrecompute(Wire zx, Wire zy, List<Wire> values, Wire alpha) {
+  /// With [base] the weights are base * alpha^j (see DeepQuotientRef.precompute).
+  DeepWires _deepPrecompute(Wire zx, Wire zy, List<Wire> values, Wire alpha, {Wire? base}) {
     final zyc = _conj(zy), zxc = _conj(zx);
     final c = f.sub(zyc, zy);
     final dA = f.sub(zy, zyc);
     final dB = f.sub(zxc, zx);
     final dC = f.sub(f.mul(zx, zyc), f.mul(zy, zxc));
-    var w = f.one;
+    var w = base ?? f.one;
     Wire? aAcc, bAcc;
     final weights = <Wire>[];
     for (final v in values) {
@@ -977,19 +980,26 @@ class VerifierProgramBuilder {
       bAcc = bAcc == null ? wb : f.add(bAcc, wb);
       w = f.mul(w, alpha);
     }
-    return DeepWires(c, aAcc!, bAcc!, dA, dB, dC, weights);
+    return DeepWires(c, aAcc!, bAcc!, dA, dB, dC, weights, base: base);
   }
 
   /// q = (c Σ w_j f_j - y A - B) dInv with dInv checked against dA x + dB y + dC.
-  Wire _quotient(DeepWires k, Wire px, Wire py, List<Wire> openings, Wire dInv) {
-    final den = f.add(f.add(f.mul(k.dA, px), f.mul(k.dB, py)), k.dC);
-    assertEq(f.mul(den, dInv), f.one);
+  Wire _quotient(DeepWires k, Wire px, Wire py, List<Wire> openings, Wire dInv) =>
+      _quotientOfSum(k, px, py, _weightedSum(k, openings), dInv);
+
+  Wire _weightedSum(DeepWires k, List<Wire> openings) {
     Wire? s;
     for (int j = 0; j < openings.length; j++) {
       final term = f.mul(k.weights[j], openings[j]);
       s = s == null ? term : f.add(s, term);
     }
-    final num = f.sub(f.sub(f.mul(k.c, s!), f.mul(k.A, py)), k.B);
+    return s!;
+  }
+
+  Wire _quotientOfSum(DeepWires k, Wire px, Wire py, Wire s, Wire dInv) {
+    final den = f.add(f.add(f.mul(k.dA, px), f.mul(k.dB, py)), k.dC);
+    assertEq(f.mul(den, dInv), f.one);
+    final num = f.sub(f.sub(f.mul(k.c, s), f.mul(k.A, py)), k.B);
     return f.mul(num, dInv);
   }
 
@@ -1256,5 +1266,7 @@ class VerifierProgramBuilder {
 class DeepWires {
   final Wire c, A, B, dA, dB, dC;
   final List<Wire> weights;
-  DeepWires(this.c, this.A, this.B, this.dA, this.dB, this.dC, this.weights);
+  /// The scalar this group's weights carry over alpha^j (null: one).
+  final Wire? base;
+  DeepWires(this.c, this.A, this.B, this.dA, this.dB, this.dC, this.weights, {this.base});
 }
