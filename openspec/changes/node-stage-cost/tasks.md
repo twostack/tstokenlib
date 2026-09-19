@@ -28,9 +28,10 @@
 - [ ] 4.1 Add a kernel entry point that searches nonce blocks in parallel and
   returns the smallest nonce satisfying the predicate, for both hash flavours;
   `TranscriptRef.grind` delegates to it when the kernels are available.
-- [ ] 4.2 Test that the kernel nonce equals the Dart loop's for a case whose
-  smallest nonce falls outside the first block, and record the round's grinding
-  total.
+- [ ] 4.2 Test that the kernel nonce equals the Dart loop's at a grind size
+  whose smallest nonce falls outside the first block that the parallel search
+  hands to a thread (the existing byte-identity suites grind 1 byte, where it
+  never does), and record the round's grinding total.
 
 ## 5. FFT parallelism on the CPU path
 

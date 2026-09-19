@@ -71,10 +71,16 @@ proposal.md for the round totals that follow.
 
 - [Fused DEEP complexity] Two numerators per row block double the live state, so
   row blocks of 256 instead of 512 keep it in L1.
-- [Grinding determinism] A parallel search that returns a different nonce would
-  break byte-identity without failing any existing test, since the proof would
-  still verify. The byte-identity test must cover a grind whose smallest nonce is
-  not in the first block.
+- [Grinding determinism] The verifier accepts any nonce whose hash has the
+  required leading zeros, and the nonce feeds nothing downstream (`checkGrinding`
+  does not advance the transcript, and the query indices come from the state
+  alone), so a parallel search that returns a later hit still produces a proof
+  that verifies. It would differ from the Dart prover's in those 4 bytes, which
+  `test/stark_kernels_test.dart` does compare. But that suite grinds 1 byte,
+  where the smallest nonce is around 256 and sits in the first block of any
+  split, so it would pass while production, grinding 2 bytes for a nonce around
+  65,536, returned a different one. The new test must grind wide enough that the
+  smallest nonce falls outside the first block.
 - [Composition stays the largest] If the profile shows the cost is the constraint
   program rather than the evaluation, the cut is a GPU port of the program
   interpreter, which is a larger piece of work than this change should absorb;
