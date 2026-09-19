@@ -22,19 +22,33 @@ import '../script_gen/pool_spend_air.dart';
 import 'verifier_air.dart';
 import 'verifier_program.dart';
 
-/// The coordinator's aggregation: [arity]^depth spend proofs (Poseidon2
-/// flavour) folded level by level into verifier proofs of the same
-/// flavour, then the top proof re-proved by the wide root program (SHA256
-/// flavour) whose public inputs are every transfer's publics and the round
-/// chunks. One compiled program per level; the levels' preprocessed roots
-/// are constants of the root program.
+/// One level of the aggregation tree: its nodes are verifier proofs on
+/// 2^[logTrace] rows proved with [params], each verifying [arity] proofs
+/// of the level below (spends at level 1).
+class AggregationLevel {
+  final StarkParams params;
+  final int logTrace;
+  final int arity;
+  const AggregationLevel({required this.params, required this.logTrace, required this.arity});
+}
+
+/// The coordinator's aggregation: spend proofs (Poseidon2 flavour) folded
+/// level by level into verifier proofs of the same flavour, each level with
+/// its own arity, trace size and parameters, then the top proof re-proved
+/// by the wide root program (SHA256 flavour) whose public inputs are every
+/// transfer's publics and the round chunks. One compiled program per level;
+/// the levels' preprocessed roots are constants of the root program.
+///
+/// Inner proofs never reach the chain, so their parameters follow prover
+/// throughput (see [throughput]): low blowup with more queries costs the
+/// prover little and the next circuit more periods, and the trade-off is
+/// won by wide, low-blowup nodes. Only the top proof must fit the root's
+/// budget, so the last levels narrow back to the root's parameters.
 class PoolAggregation {
   final StarkParams spendP;
-  final List<StarkParams> levelP;
-  final List<int> levelLog;
+  final List<AggregationLevel> levelSpec;
   final StarkParams rootP;
   final int rootLog;
-  final int arity;
   static const p2 = Poseidon2ProofHash();
   static const sha = Sha256ProofHash();
 
@@ -44,33 +58,88 @@ class PoolAggregation {
   late final AggregationTree tree;
   late final VerifierProgram root;
 
-  PoolAggregation({
-    required this.spendP,
-    required this.levelP,
-    required this.levelLog,
-    required this.rootP,
-    required this.rootLog,
-    this.arity = 2,
-  }) {
-    if (levelP.length != levelLog.length || levelP.isEmpty) throw ArgumentError('one trace size per level');
+  /// Compiles every level's program and the root's. With [dryRun] the
+  /// levels' preprocessed roots are zeros instead of real commitments
+  /// (gigabytes at production size), which is enough to size the programs
+  /// (periods, transfers) but not to prove.
+  PoolAggregation({required this.spendP, required this.levelSpec, required this.rootP, required this.rootLog, bool dryRun = false}) {
+    if (levelSpec.isEmpty || levelSpec.any((l) => l.arity < 1)) throw ArgumentError('at least one level, arities >= 1');
     var shape = InnerShape(spendP, PoolSpendAir.air(PoolPublicInputs.zero()));
     levels = [];
     levelShapes = [];
     preRoots = [];
-    for (int l = 0; l < levelP.length; l++) {
-      final prog = VerifierProgram.compileAll(List.filled(arity, shape), levelLog[l]);
+    for (final level in levelSpec) {
+      final prog = VerifierProgram.compileAll(List.filled(level.arity, shape), level.logTrace);
       final air = prog.air(List.filled(VerifierAir.numPublicLanes, 0));
       levels.add(prog);
-      shape = InnerShape(levelP[l], air);
+      shape = InnerShape(level.params, air);
       levelShapes.add(shape);
-      preRoots.add(PreCommitment.root(air, levelP[l], p2));
+      preRoots.add(dryRun ? List.filled(8, 0) : PreCommitment.root(air, level.params, p2));
     }
-    tree = AggregationTree(PoolPublicInputs.count, const [], [for (int l = 0; l < levelP.length; l++) (levelShapes[l], preRoots[l])], arity);
+    tree = AggregationTree(PoolPublicInputs.count, const [], [for (int l = 0; l < levelSpec.length; l++) (levelShapes[l], preRoots[l])],
+        [for (final l in levelSpec) l.arity]);
     root = VerifierProgram.compileWide(tree, rootLog);
   }
 
+  /// The same [arity] and one parameter set per level, as the first
+  /// aggregated rounds were built.
+  PoolAggregation.uniform({
+    required StarkParams spendP,
+    required List<StarkParams> levelP,
+    required List<int> levelLog,
+    required StarkParams rootP,
+    required int rootLog,
+    int arity = 2,
+    bool dryRun = false,
+  }) : this(spendP: spendP, levelSpec: _uniformSpec(levelP, levelLog, arity), rootP: rootP, rootLog: rootLog, dryRun: dryRun);
+
+  static List<AggregationLevel> _uniformSpec(List<StarkParams> levelP, List<int> levelLog, int arity) {
+    if (levelP.length != levelLog.length) throw ArgumentError('one trace size per level');
+    return [for (int l = 0; l < levelP.length; l++) AggregationLevel(params: levelP[l], logTrace: levelLog[l], arity: arity)];
+  }
+
+  // ---- the production plan, sized for prover throughput ----
+
+  /// Spend proofs for aggregation: blowup 256 with 11 queries (about 104
+  /// bits with the 16-bit grind), 5 s to prove in the wallet, 2,453 periods
+  /// to verify in-circuit against 3,364 at the on-chain parameters.
+  static const spendThroughputParams =
+      StarkParams(logTrace: PoolSpendAir.logTrace, logBlowup: 8, logExpand: 3, logFinal: 13, numQueries: 11, grindBytes: 2, zkRandomizers: 128);
+
+  /// Inner verifier proofs: blowup 8 with 30 queries at 2^20 and 2^21.
+  static const innerParams20 = StarkParams(logTrace: 20, logBlowup: 3, logExpand: 3, logFinal: 8, numQueries: 30, grindBytes: 2);
+  static const innerParams21 = StarkParams(logTrace: 21, logBlowup: 3, logExpand: 3, logFinal: 8, numQueries: 30, grindBytes: 2);
+
+  /// The root's parameters, and those of the narrowing levels below it:
+  /// blowup 32 with 18 queries (the on-chain verifier is priced per query).
+  static const chainParams19 = StarkParams(logTrace: 19, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
+  static const chainParams20 = StarkParams(logTrace: 20, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
+
+  /// The 260-transfer plan (13 × 5 × 2 × 2): level 1 on 2^20 folds 13
+  /// spends (67 s measured), level 2 on 2^21 folds 5 level-1 proofs, then
+  /// two narrowing levels at the root's parameters (2^20 verifying two
+  /// level-2 proofs, 2^19 verifying two of those) so the root on 2^19 can
+  /// verify the top proof beside the 260 statements. About 25 nodes.
+  static const throughputLevels = [
+    AggregationLevel(params: innerParams20, logTrace: 20, arity: 13),
+    AggregationLevel(params: innerParams21, logTrace: 21, arity: 5),
+    AggregationLevel(params: chainParams20, logTrace: 20, arity: 2),
+    AggregationLevel(params: chainParams19, logTrace: 19, arity: 2),
+  ];
+
+  static PoolAggregation throughput({bool dryRun = false}) => PoolAggregation(
+      spendP: spendThroughputParams, levelSpec: throughputLevels, rootP: chainParams19, rootLog: 19, dryRun: dryRun);
+
   int get transfers => tree.transfers;
+  int get depth => levelSpec.length;
   int get widePublicsCount => tree.roundOffset + 8 * AggregationTree.roundChunks;
+
+  /// Periods used by each level's program and by the root's, of the
+  /// periods its trace holds.
+  List<(int, int)> get periods => [
+        for (int l = 0; l < depth; l++) (levels[l].periodsUsed, 1 << (levelSpec[l].logTrace - 5)),
+        (root.periodsUsed, 1 << (rootLog - 5)),
+      ];
 
   /// The root verifier AIR for the wide [publics] (any of the right length
   /// gives the same locking script).
@@ -99,14 +168,14 @@ class PoolAggregation {
     var curProofs = proofs;
     var digests = [for (final s in shapes) VerifierProgram.statementDigest(s.air, const [])];
     for (int l = 0; l < levels.length; l++) {
-      final prog = levels[l];
+      final prog = levels[l], level = levelSpec[l];
       final nextShapes = <InnerShape>[], nextProofs = <StarkProof>[], nextDigests = <List<int>>[];
-      for (int m = 0; m < curProofs.length ~/ arity; m++) {
-        final lo = arity * m, hi = lo + arity;
+      for (int m = 0; m < curProofs.length ~/ level.arity; m++) {
+        final lo = level.arity * m, hi = lo + level.arity;
         final rows = prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi));
         final air = prog.air(VerifierProgram.nodeDigest(digests.sublist(lo, hi)));
-        nextProofs.add(StarkProver.prove(levelP[l], air, rows, rng: rng, hash: p2));
-        nextShapes.add(InnerShape(levelP[l], air));
+        nextProofs.add(StarkProver.prove(level.params, air, rows, rng: rng, hash: p2));
+        nextShapes.add(InnerShape(level.params, air));
         nextDigests.add(VerifierProgram.statementDigest(air, preRoots[l]));
       }
       shapes = nextShapes;

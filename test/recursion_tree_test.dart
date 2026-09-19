@@ -101,7 +101,7 @@ void main() {
     final preRoot2 = PreCommitment.root(air2, p2p, p2);
 
     // ---- the root: wide statement over the four transfers ----
-    final tree = AggregationTree(PoolPublicInputs.count, const [], [(shape1, preRoot1), (InnerShape(p2p, air2), preRoot2)], 2);
+    final tree = AggregationTree.uniform(PoolPublicInputs.count, const [], [(shape1, preRoot1), (InnerShape(p2p, air2), preRoot2)], 2);
     final progR = VerifierProgram.compileWide(tree, 15);
     print('  root program: ${progR.periodsUsed} periods, ${progR.vmRows} VM rows, ${progR.hintRows} hints');
     // the commitment tree: the round's subtree appended to an empty pool tree

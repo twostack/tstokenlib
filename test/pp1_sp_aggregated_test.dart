@@ -73,7 +73,7 @@ void main() {
 
   test('the generators: aggregation programs, the root slot and the state script', () {
     final sw = Stopwatch()..start();
-    agg = PoolAggregation(spendP: spendP, levelP: const [p1, p2p], levelLog: const [15, 16], rootP: rootP, rootLog: 15, arity: 2);
+    agg = PoolAggregation.uniform(spendP: spendP, levelP: const [p1, p2p], levelLog: const [15, 16], rootP: rootP, rootLog: 15, arity: 2);
     print('  aggregation compiled in ${sw.elapsedMilliseconds} ms: ${agg.transfers} transfers, ${agg.widePublicsCount} public lanes');
     final slot = VerifierSlotGen(rootP, airFor: agg.rootAir, numPublics: agg.widePublicsCount);
     gen = PP1SpScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);

@@ -1420,6 +1420,18 @@ dominate a node (out-of-domain evaluation 13 s, aux round 8 s, composition
 upload 6 s of the 67), so their native ports are now the next lever and would
 take a node to roughly 40 s, the round to about 25 minutes on one machine.
 
+*Wired.* `PoolAggregation` takes one `AggregationLevel` (parameters, trace
+size, arity) per level and `AggregationTree` one arity per level;
+`PoolAggregation.throughput()` is the plan above as a 260-transfer tree
+(13 × 5 × 2 × 2: level 1 on 2^20 at blowup 8, level 2 on 2^21 at blowup 8, then
+2^20 and 2^19 at blowup 32 to narrow to a top proof the 2^19 root verifies),
+and a dry run compiles it without the multi-gigabyte commitments: the levels use
+31,889 of 32,768, 61,070 of 65,536, 26,232 of 32,768 and 16,292 of 16,384
+periods, the root 11,890 of 16,384 beside 14,584 public lanes. A 3 × 2 tree
+with its own parameters per level proves and verifies end to end at small
+parameters (`test/pool_aggregation_test.dart`). Rounds with fewer than 260
+transfers still need the coordinator's dummy padding.
+
 ### Moving proving to the edge (considered)
 
 The round's work is a tree whose leaves are the transfers, so it distributes

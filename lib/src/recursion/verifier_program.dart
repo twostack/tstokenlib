@@ -14,7 +14,6 @@
    limitations under the License.
 */
 
-import 'dart:math' show pow;
 import '../crypto/m31.dart';
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/poseidon2_m31.dart';
@@ -145,24 +144,32 @@ class _WireRing extends Ring<Wire> {
 /// Level 0 is the spends ([spendPublics] public lanes each, preprocessed
 /// root [spendPreRoot], empty for the pool's spend AIR); level l + 1 holds
 /// the verifier proofs of shape [levels][l] (with that circuit's
-/// preprocessed root), each verifying [arity] proofs of the level below.
+/// preprocessed root), each verifying `arities[l]` proofs of the level below.
 /// The root verifies one proof of the last level and takes every spend's
 /// publics as its own (wide) statement.
 class AggregationTree {
   final int spendPublics;
   final List<int> spendPreRoot;
   final List<(InnerShape, List<int>)> levels;
-  final int arity;
+
+  /// Proofs verified per node, level by level (level 1 folds spends).
+  final List<int> arities;
 
   /// The chunks of each spend's publics that are commitment-tree leaves,
   /// in leaf order (the pool's cm1, cm2).
   final List<int> leafChunks;
-  AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arity, {this.leafChunks = const [3, 4]}) {
+  AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arities, {this.leafChunks = const [3, 4]}) {
     if (levels.isEmpty) throw ArgumentError('at least one aggregation level');
-    if (arity < 1) throw ArgumentError('arity');
+    if (arities.length != levels.length || arities.any((a) => a < 1)) throw ArgumentError('one arity per level');
   }
+
+  /// The same [arity] at every level.
+  AggregationTree.uniform(int spendPublics, List<int> spendPreRoot, List<(InnerShape, List<int>)> levels, int arity,
+      {List<int> leafChunks = const [3, 4]})
+      : this(spendPublics, spendPreRoot, levels, List.filled(levels.length, arity), leafChunks: leafChunks);
+
   int get depth => levels.length;
-  int get transfers => pow(arity, depth).toInt();
+  int get transfers => arities.fold(1, (n, a) => n * a);
 
   /// Pinned chunks per spend: its publics padded to whole chunks.
   int get spendChunks => (spendPublics + 7) ~/ 8;
@@ -735,8 +742,9 @@ class VerifierProgramBuilder {
     for (int l = 0; l < t.depth; l++) {
       final (shape, preRoot) = t.levels[l];
       final next = <Wire>[];
-      for (int m = 0; m < digests.length ~/ t.arity; m++) {
-        final d = _digestWire(_chain(digests.sublist(t.arity * m, t.arity * (m + 1))));
+      final arity = t.arities[l];
+      for (int m = 0; m < digests.length ~/ arity; m++) {
+        final d = _digestWire(_chain(digests.sublist(arity * m, arity * (m + 1))));
         final (st, pubLane, root8) = _statementBound(shape.air, d, preRoot);
         if (l == t.depth - 1) {
           _verifyInner(0, pubLane, root8);
