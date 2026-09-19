@@ -20,7 +20,7 @@ import 'circle_fft.dart';
 import 'm31.dart';
 import 'proof_hash.dart';
 import 'stark_kernels.dart';
-import 'stark_prover_ref.dart' show StarkParams, StarkProof, QueryProof, solveQ, embed, composeColumns;
+import 'stark_prover_ref.dart' show StarkParams, StarkProof, QueryProof, solveQ, embed;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef;
 import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
 import '../script_gen/air.dart' show Air, ConstraintGroup;
@@ -150,16 +150,19 @@ class StarkProver {
     // ---- 2. composition on D_{t+e} (twin layout of HalfCoset(t+e-1)) ----
     final logC = t + P.logExpand, mC = 1 << (logC - 1), nC = 2 * mC;
     final domC = CosetTables.of(logC - 1);
-    var traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
-    _lap('trace on comp domain');
     final shift = 1 << (logC - t); // p * g_t is a shift by 2^(logC-t) in cyclic order
     // periodic columns on D_{logC}: F_k on D_{logPeriod+logExpand}, index mod its size
     final logPC = air.logPeriod + P.logExpand;
     final perOnC = [for (final c in air.periodicCoefs) CircleFft.evaluate(c, logPC - 1)];
-    // public columns on D_logC: extended like trace columns
-    var pubOnC = air.numPubCols == 0
+    // public columns: coefficients padded to the trace columns' length (the
+    // same polynomial), extended like trace columns
+    final coefLen = allCoefs[0].length;
+    final pubCoefs = air.numPubCols == 0
         ? <Uint32List>[]
-        : kernels.evaluateColumns(PreCommitment.twinCoefs(air.pubColumns(), t, kernels), logC - 1);
+        : [
+            for (final c in PreCommitment.twinCoefs(air.pubColumns(), t, kernels))
+              c.length == coefLen ? c : (Uint32List(coefLen)..setRange(0, c.length, c))
+          ];
     // v_t(x) on the composition domain, batch-inverted
     final vInv = CircleFft.batchInv(Uint32List.fromList([for (int i = 0; i < mC; i++) air.vanishingM31(domC.x[i])]));
     // linear forms on the composition domain; the ones used as group divisors
@@ -192,20 +195,24 @@ class StarkProver {
       }
     }
     List<Uint32List>? compLimbs = _nativeComposition(
-        groups, groupPow, beta, chal, traceOnC, pubOnC, perOnC, linOnC, vInv, divInv, logC, logPC, shift);
+        groups, groupPow, beta, chal, [...allCoefs, ...pubCoefs], perOnC, linOnC, vInv, divInv, logC, logPC, shift, coefLen);
     if (compLimbs != null) {
-      _lap('composition values (native)');
+      _lap('composition values (native, from coefficients)');
     } else {
+      final traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
+      final pubOnC = pubCoefs.isEmpty ? <Uint32List>[] : kernels.evaluateColumns(pubCoefs, logC - 1);
+      _lap('trace on comp domain');
       compLimbs = _compositionInDart(groups, groupPow, beta, chal, traceOnC, pubOnC, perOnC, linOnC, vInv, divInv, logC, logPC, shift);
       _lap('composition values');
     }
-    // the composition-domain values are dead from here (1.3 GB at 2^19)
-    traceOnC = const [];
-    pubOnC = const [];
     final compCoefs = kernels.interpolateColumns(compLimbs, logC - 1);
-    final domA = CosetTables.of(P.logCompHalf);
-    final mA = domA.size;
-    final (compEv, compTree) = kernels.commitColumns(compCoefs, P.logCompHalf, hash);
+    // the coefficient blocks, 4 limb columns per block, committed on the trace domain
+    final chunkLen = 1 << P.logTraceBound;
+    final chunkCoefs = [
+      for (int k = 0; k < P.compChunks; k++)
+        for (int l = 0; l < 4; l++) compCoefs[l].sublist(k * chunkLen, (k + 1) * chunkLen)
+    ];
+    final (compEv, compTree) = kernels.commitColumns(chunkCoefs, P.logTraceHalf, hash);
     _lap('composition LDE + merkle');
 
     ts.absorb(compTree.root);
@@ -217,38 +224,37 @@ class StarkProver {
     final zgy = zx.scale(gT.y) + zy.scale(gT.x);
     final traceAtZ = kernels.evalAt(allCoefs, zx, zy);
     final traceAtZg = kernels.evalAt(allCoefs, zgx, zgy);
-    final compAtZ = kernels.evalAt(compCoefs, zx, zy);
+    final compAtZ = kernels.evalAt(chunkCoefs, zx, zy);
     final rhs = air.compositionAt(
         traceAtZ, traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
-    if (composeColumns(compAtZ) != rhs) throw StateError('composition relation fails at z');
+    if (P.compositionFromChunks(compAtZ, zx) != rhs) throw StateError('composition relation fails at z');
     ts.absorbLimbs([for (final v in [...traceAtZ, ...traceAtZg, ...compAtZ]) ...v.limbs]);
-    final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
+    final lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
     final dbg = <String, Object>{
       'beta': beta, 'tch': tch, 'zx': zx, 'zy': zy, 'zgx': zgx, 'zgy': zgy,
-      'lamA': lamA, 'lamB': lamB, 'lamC': lamC, 'alC': alC,
+      'lamB': lamB, 'lamC': lamC, 'alC': alC,
       'probeOn': CircleFft.evalAt(traceCoefs[0], embed(CosetTables.of(t - 1).x[1]), embed(CosetTables.of(t - 1).y[1])),
       'probeOff': embed(traceEv[0][3]),
     };
     _lap('oods');
 
     // ---- DEEP quotients (flat QM31 arrays, 4 limbs per position) ----
-    final kA = DeepQuotientRef.precompute(zx, zy, compAtZ, lamA);
-    final kB = DeepQuotientRef.precompute(zx, zy, traceAtZ, lamB);
+    // group B: every column opened at z (trace, aux, pre, then the
+    // composition blocks); group C: the trace columns at z*g
+    final kB = DeepQuotientRef.precompute(zx, zy, [...traceAtZ, ...compAtZ], lamB);
     final kC = DeepQuotientRef.precompute(zgx, zgy, traceAtZg, lamB, base: lamC);
-    for (final (tag, k) in [('A', kA), ('B', kB), ('C', kC)]) {
+    for (final (tag, k) in [('B', kB), ('C', kC)]) {
       dbg['c$tag'] = k.c; dbg['A$tag'] = k.A; dbg['B$tag'] = k.B;
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;
       dbg['w${tag}1'] = k.weights[1];
     }
-    final qA = kernels.deepQuotients(kA, compEv, P.logCompHalf);
-    final l0 = kernels.circleFold(qA, P.logCompHalf, alC);
-    _lap('deep quotient A + circle fold');
-    final qBC = kernels.deepQuotients(kB, allEv, P.logTraceHalf);
+    final qBC = kernels.deepQuotients(kB, [...allEv, ...compEv], P.logTraceHalf);
     kernels.deepQuotients(kC, allEv, P.logTraceHalf, into: qBC);
-    _lap('deep quotients B, C');
+    final l0 = kernels.circleFold(qBC, P.logTraceHalf, alC);
+    _lap('deep quotients + circle fold');
 
     // ---- 4. FRI line layers ----
-    final a = P.logCompHalf;
+    final a = P.logTraceHalf;
     final layers = <Uint32List>[l0];
     final trees = <MerkleCommitment>[];
     final alphas = <QM31>[];
@@ -262,10 +268,6 @@ class StarkProver {
       alphas.add(al);
       dbg['al$l'] = al;
       final next = kernels.lineFold(curL, logLen, al);
-      if (l == P.foldInIndex) {
-        if (next.length != 4 * mB) throw StateError('fold-in size mismatch');
-        kernels.circleFold(qBC, P.logTraceHalf, al, into: next);
-      }
       layers.add(next);
     }
     _lap('fri layers');
@@ -297,24 +299,19 @@ class StarkProver {
     }
     {
       final i = indices[0];
-      dbg['xA'] = domA.x[i]; dbg['yA'] = domA.y[i];
-      final iB = i % mB;
-      dbg['xB'] = domB.x[iB]; dbg['yB'] = domB.y[iB];
-      dbg['qAp'] = qAt(qA, i); dbg['qAc'] = qAt(qA, mA + i);
+      dbg['xB'] = domB.x[i]; dbg['yB'] = domB.y[i];
       dbg['circleOut'] = qAt(l0, i);
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
         il = il % (layers[l].length ~/ 8);
         dbg['fold$l'] = qAt(layers[l + 1], il);
       }
-      dbg['qTp'] = qAt(qBC, iB); dbg['qTc'] = qAt(qBC, mB + iB);
+      dbg['qTp'] = qAt(qBC, i); dbg['qTc'] = qAt(qBC, mB + i);
     }
 
     // ---- 6. openings ----
-    final yAInv = domA.yInv;
     final queries = <QueryProof>[];
     for (final i in indices) {
-      final px = domA.x[i], py = domA.y[i];
       final lineF0 = <QM31>[], lineF1 = <QM31>[], linePaths = <List<List<int>>>[], lineXInv = <int>[];
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
@@ -325,15 +322,12 @@ class StarkProver {
         linePaths.add(trees[l].path(il));
         lineXInv.add(CosetTables.of(a - l).xInv[il]);
       }
-      final iB = i % mB;
+      final iB = i;
       final pBx = domB.x[iB], pBy = domB.y[iB];
       queries.add(QueryProof(
         index: i,
-        compLeaf: [for (int k = 0; k < 4; k++) compEv[k][i], for (int k = 0; k < 4; k++) compEv[k][mA + i]],
-        compPath: compTree.path(i),
-        yAInv: yAInv[i],
-        dAInvP: DeepQuotientRef.denominator(kA, px, py).inv,
-        dAInvC: DeepQuotientRef.denominator(kA, px, M31.neg(py)).inv,
+        compLeaf: [for (final c in compEv) c[iB], for (final c in compEv) c[mB + iB]],
+        compPath: compTree.path(iB),
         lineF0: lineF0, lineF1: lineF1, linePaths: linePaths, lineXInv: lineXInv,
         traceLeaf: [for (int j = 0; j < nCols; j++) traceEv[j][iB], for (int j = 0; j < nCols; j++) traceEv[j][mB + iB]],
         tracePath: traceTree.path(iB),
@@ -448,22 +442,22 @@ class StarkProver {
       List<QM31> groupPow,
       QM31 beta,
       List<QM31> chal,
-      List<Uint32List> traceOnC,
-      List<Uint32List> pubOnC,
+      List<Uint32List> coefs,
       List<Uint32List> perOnC,
       List<Uint32List> linOnC,
       Uint32List vInv,
       Map<int, Uint32List> divInv,
       int logC,
       int logPC,
-      int shift) {
+      int shift,
+      int coefLen) {
     if (kernels is DartKernels) return null;
     final main = air.mainProgram();
     if (main == null || !CompositionJob.baseOnly(main)) return null;
     final aux = air.auxProgram();
     if (air.numAuxConstraints > 0 && aux == null) return null;
     if (main.outputs.length != air.numConstraints || (aux?.outputs.length ?? 0) != air.numAuxConstraints) return null;
-    final nAll = traceOnC.length, nPer = perOnC.length;
+    final nAll = coefs.length - air.numPubCols, nPer = perOnC.length;
     final mainSrc = CompositionJob.resolve(main, nAll, nPer, air.publicValues);
     final auxSrc = aux == null ? Uint32List(0) : CompositionJob.resolve(aux, nAll, nPer, air.publicValues);
     if (mainSrc == null || auxSrc == null) return null;
@@ -497,7 +491,8 @@ class StarkProver {
       aux: aux,
       mainSrc: mainSrc,
       auxSrc: auxSrc,
-      cols: [...traceOnC, ...pubOnC],
+      cols: coefs,
+      coefLen: coefLen,
       per: perOnC,
       lin: linOnC,
       divs: divs,

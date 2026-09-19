@@ -115,14 +115,14 @@ class PoolAggregation {
   static const chainParams19 = StarkParams(logTrace: 19, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
   static const chainParams20 = StarkParams(logTrace: 20, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
 
-  /// The 260-transfer plan (13 × 5 × 2 × 2): level 1 on 2^20 folds 13
-  /// spends (67 s measured), level 2 on 2^21 folds 5 level-1 proofs, then
-  /// two narrowing levels at the root's parameters (2^20 verifying two
+  /// The 256-transfer plan (16 × 4 × 2 × 2): level 1 on 2^20 folds 16
+  /// spends (34 s for 13 measured), level 2 on 2^21 folds 4 level-1 proofs,
+  /// then two narrowing levels at the root's parameters (2^20 verifying two
   /// level-2 proofs, 2^19 verifying two of those) so the root on 2^19 can
-  /// verify the top proof beside the 260 statements. About 25 nodes.
+  /// verify the top proof beside the 256 statements. 24 nodes.
   static const throughputLevels = [
-    AggregationLevel(params: innerParams20, logTrace: 20, arity: 13),
-    AggregationLevel(params: innerParams21, logTrace: 21, arity: 5),
+    AggregationLevel(params: innerParams20, logTrace: 20, arity: 16),
+    AggregationLevel(params: innerParams21, logTrace: 21, arity: 4),
     AggregationLevel(params: chainParams20, logTrace: 20, arity: 2),
     AggregationLevel(params: chainParams19, logTrace: 19, arity: 2),
   ];

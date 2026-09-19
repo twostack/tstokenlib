@@ -73,7 +73,7 @@ void main() {
       final q0 = proof.queries[0];
       final badQ = QueryProof(
         index: q0.index, compLeaf: [...q0.compLeaf]..[2] = (q0.compLeaf[2] + 1) % M31.p,
-        compPath: q0.compPath, yAInv: q0.yAInv, dAInvP: q0.dAInvP, dAInvC: q0.dAInvC,
+        compPath: q0.compPath,
         lineF0: q0.lineF0, lineF1: q0.lineF1, linePaths: q0.linePaths, lineXInv: q0.lineXInv,
         traceLeaf: q0.traceLeaf, tracePath: q0.tracePath, yBInv: q0.yBInv,
         dBInvP: q0.dBInvP, dBInvC: q0.dBInvC, dCInvP: q0.dCInvP, dCInvC: q0.dCInvC,
@@ -128,8 +128,8 @@ void main() {
           prodAir).generate();
       final perQuery = (lock.buffer.length - one.buffer.length) / 15;
       print('--- production parameters ---');
-      print('  comp half-coset log size : ${prod.logCompHalf}  (line folds: ${prod.numLineFolds}, fold-in at ${prod.foldInIndex})');
-      print('  zk: R=${prod.zkRandomizers} randomizers, ${prod.revealedPerColumn} revealed points/column, trace half-coset log ${prod.logTraceHalf}, fold-in at ${prod.foldInIndex}');
+      print('  comp half-coset log size : composition blocks ${prod.compChunks}  (line folds: ${prod.numLineFolds})');
+      print('  zk: R=${prod.zkRandomizers} randomizers, ${prod.revealedPerColumn} revealed points/column, trace half-coset log ${prod.logTraceHalf}');
       print('  full locking script      : ${lock.buffer.length} bytes  (${(lock.buffer.length / 1024).toStringAsFixed(0)} KB)');
       print('  without zk masking       : ${noZk.buffer.length} bytes  (zk cost ${lock.buffer.length - noZk.buffer.length} bytes)');
       print('  per query                : ${perQuery.toStringAsFixed(0)} bytes');

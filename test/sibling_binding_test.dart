@@ -252,8 +252,7 @@ void main() {
         finalCoefs: proof.finalCoefs, nonce: proof.nonce,
         queries: [
           QueryProof(
-              index: q0.index, compLeaf: q0.compLeaf, compPath: q0.compPath, yAInv: q0.yAInv, dAInvP: q0.dAInvP,
-              dAInvC: q0.dAInvC, lineF0: q0.lineF0, lineF1: q0.lineF1, linePaths: q0.linePaths, lineXInv: q0.lineXInv,
+              index: q0.index, compLeaf: q0.compLeaf, compPath: q0.compPath, lineF0: q0.lineF0, lineF1: q0.lineF1, linePaths: q0.linePaths, lineXInv: q0.lineXInv,
               traceLeaf: q0.traceLeaf, tracePath: q0.tracePath,
               auxLeaf: [...q0.auxLeaf]..[0] ^= 1, auxPath: q0.auxPath,
               yBInv: q0.yBInv, dBInvP: q0.dBInvP, dBInvC: q0.dBInvC, dCInvP: q0.dCInvP, dCInvC: q0.dCInvC),

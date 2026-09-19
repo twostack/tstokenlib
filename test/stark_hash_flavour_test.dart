@@ -126,8 +126,7 @@ void main() {
         finalCoefs: proof.finalCoefs, nonce: proof.nonce,
         queries: [
           QueryProof(
-              index: q.index, compLeaf: [...q.compLeaf]..[0] ^= 1, compPath: q.compPath, yAInv: q.yAInv,
-              dAInvP: q.dAInvP, dAInvC: q.dAInvC, lineF0: q.lineF0, lineF1: q.lineF1, linePaths: q.linePaths,
+              index: q.index, compLeaf: [...q.compLeaf]..[0] ^= 1, compPath: q.compPath, lineF0: q.lineF0, lineF1: q.lineF1, linePaths: q.linePaths,
               lineXInv: q.lineXInv, traceLeaf: q.traceLeaf, tracePath: q.tracePath, auxLeaf: q.auxLeaf,
               auxPath: q.auxPath, yBInv: q.yBInv, dBInvP: q.dBInvP, dBInvC: q.dBInvC, dCInvP: q.dCInvP, dCInvC: q.dCInvC),
           ...proof.queries.sublist(1)

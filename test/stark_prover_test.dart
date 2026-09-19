@@ -39,9 +39,6 @@ void _expectSameProof(StarkProof a, StarkProof b) {
     expect(x.index, y.index);
     expect(x.compLeaf, y.compLeaf);
     expect(x.compPath, y.compPath);
-    expect(x.yAInv, y.yAInv);
-    expect(x.dAInvP, y.dAInvP);
-    expect(x.dAInvC, y.dAInvC);
     expect(x.lineF0, y.lineF0);
     expect(x.lineF1, y.lineF1);
     expect(x.linePaths, y.linePaths);

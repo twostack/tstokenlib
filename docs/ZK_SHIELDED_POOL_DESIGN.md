@@ -1434,10 +1434,37 @@ memory), the preprocessed commitment 6.1 (cached across a level's nodes in a
 real round), the trace extension 4.1 and the aux round 4.0. Per transfer at
 level 1 that is 3.8 s.
 
+*Composition split built (protocol change).* The composition polynomial has
+2^(t+e) coefficients, eight times the trace's, and used to be committed on its
+own domain eight times the trace's, where its extension, Merkle tree, DEEP
+quotient and FRI cost most of a node. It is now cut into 2^e blocks of
+trace-size coefficient ranges in the circle FFT basis (block k's coefficients
+are relative to the basis elements M_k(x), products of the doubling chain of x
+from pi_{t-1}), each block committed as four limb columns on the trace domain.
+The verifier recombines C(z) = sum_k M_k(z_x) C_k(z) from the doubling chain it
+already computes, one DEEP group covers every column opened at z (trace, aux,
+preprocessed, then the blocks; group C stays the trace at z·g), the quotient is
+circle-folded once and FRI starts at the trace domain, three layers shorter.
+Every query walks one domain, so the verifier's per-query work shrank in the
+script and in the circuit: an in-circuit verification costs 15 to 19% fewer
+periods, and the level-1 node on 2^20 now holds 16 spends. The 2^20 node over
+13 spends: 34 s (from 49), of which composition 7.6, preprocessed commitment
+6.3 (cached in a round), composition extension and Merkle 5.8, trace
+extension 4.4, aux round 4.2, DEEP 3.3, FRI 1.2; proof 327 KB (from 394),
+peak memory 12 GB (from 20). A spend proof at blowup 256 takes 3.2 s and 64 KB
+(from 5.1 s and 79 KB). Both provers, the reference verifier, the script and
+the in-circuit verifier were updated together; proofs stay byte-identical
+between the FFT prover and the reference, and every suite passes with the
+templates re-exported. The plan is re-cut to 16 × 4 × 2 × 2 = 256 transfers
+(24 nodes), fitting at 31,872 of 32,768, 40,724 of 65,536, 21,986 of 32,768,
+13,642 of 16,384 and 10,473 of 16,384 periods: about 16 × 34 s at level 1 and
+an estimated 5 minutes above it, so roughly 14 minutes on one machine and, with
+level 1 at the edge, about 5 minutes for the coordinator.
+
 *Wired.* `PoolAggregation` takes one `AggregationLevel` (parameters, trace
 size, arity) per level and `AggregationTree` one arity per level;
-`PoolAggregation.throughput()` is the plan above as a 260-transfer tree
-(13 × 5 × 2 × 2: level 1 on 2^20 at blowup 8, level 2 on 2^21 at blowup 8, then
+`PoolAggregation.throughput()` is the plan above as a 256-transfer tree
+(16 × 4 × 2 × 2 after the composition split; 13 × 5 × 2 × 2 before: level 1 on 2^20 at blowup 8, level 2 on 2^21 at blowup 8, then
 2^20 and 2^19 at blowup 32 to narrow to a top proof the 2^19 root verifies),
 and a dry run compiles it without the multi-gigabyte commitments: the levels use
 31,889 of 32,768, 61,070 of 65,536, 26,232 of 32,768 and 16,292 of 16,384

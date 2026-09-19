@@ -65,10 +65,10 @@ void main() {
     expect(() => StarkVerifierRef(rootP, agg.rootAir(bad), hash: sha).verify(proof), throwsA(isA<VerificationFailure>()));
   }, timeout: const Timeout(Duration(minutes: 20)));
 
-  test('the throughput plan compiles: 260 transfers, every level fits', () {
+  test('the throughput plan compiles: 256 transfers, every level fits', () {
     final sw = Stopwatch()..start();
     final agg = PoolAggregation.throughput(dryRun: true);
-    expect(agg.transfers, 260);
+    expect(agg.transfers, 256);
     final periods = agg.periods;
     print('  compiled in ${sw.elapsedMilliseconds} ms: ${agg.transfers} transfers, ${agg.widePublicsCount} public lanes, periods $periods');
     for (final (used, cap) in periods) {

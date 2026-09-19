@@ -235,11 +235,11 @@ class DeepQuotientScriptGen {
 
   /// S_k = Σ_j w_{j,k} o_j over group [weightsTag]'s weights (lazy, unreduced).
   /// Consumes the openings.
-  static void emitSum(StackEmitter e, List<String> openings, String weightsTag, List<String> out) {
+  static void emitSum(StackEmitter e, List<String> openings, String weightsTag, List<String> out, {int weightOffset = 0}) {
     final C = openings.length;
     for (int k = 0; k < 4; k++) {
       for (int j = 0; j < C; j++) {
-        e.pick('w$weightsTag${j}_$k');
+        e.pick('w$weightsTag${weightOffset + j}_$k');
         if (k == 3) {
           e.roll(openings[j]);
         } else {

@@ -76,7 +76,7 @@ class StarkVerifierGen {
     for (int j = 0; j < CT; j++) {
       names.addAll(L('tzg$j'));
     }
-    for (int k = 0; k < StarkParams.compCols; k++) {
+    for (int k = 0; k < P.compCols; k++) {
       names.addAll(L('cz$k'));
     }
     for (int l = 0; l < P.numLineFolds; l++) {
@@ -86,13 +86,10 @@ class StarkVerifierGen {
       names.addAll(L('fc$i'));
     }
     names.add('nonce');
-    final a = P.logCompHalf;
+    final a = P.logTraceHalf;
     for (int q = 0; q < P.numQueries; q++) {
-      names.addAll(List.generate(8, (i) => 'cl${q}_$i'));
+      names.addAll(List.generate(2 * P.compCols, (i) => 'cl${q}_$i'));
       names.addAll(List.generate(a, (i) => 'cs${q}_$i'));
-      names.add('yai$q');
-      names.addAll(L('dap$q'));
-      names.addAll(L('dac$q'));
       for (int l = 0; l < P.numLineFolds; l++) {
         names.addAll(L('lf${q}_$l'));
         names.addAll(L('lg${q}_$l'));
@@ -168,9 +165,6 @@ class StarkVerifierGen {
       for (final s in q.compPath) {
         b.addData(Uint8List.fromList(s));
       }
-      _pushNum(b, q.yAInv);
-      _pushQ(b, q.dAInvP);
-      _pushQ(b, q.dAInvC);
       for (int l = 0; l < P.numLineFolds; l++) {
         _pushQ(b, q.lineF0[l]);
         _pushQ(b, q.lineF1[l]);
@@ -228,28 +222,6 @@ class StarkVerifierGen {
     }
   }
 
-  /// (x, y) <- (2x² - 1, 2xy), keeping names.
-  static void _doublePoint(StackEmitter e, String x, String y) {
-    e.pick(x);
-    e.pick(y);
-    e.mul();
-    e.dup();
-    e.add();
-    e.reduce();
-    e.nameTop('_ny');
-    e.roll(x);
-    e.dup();
-    e.mul();
-    e.dup();
-    e.add();
-    e.pushConst(1);
-    e.sub();
-    e.reduce();
-    e.nameTop(x);
-    e.dropNamed(y);
-    e.rename('_ny', y);
-  }
-
   /// z*g for the constant M31 point g: (zx gx - zy gy, zx gy + zy gx).
   static void _mulByConstPoint(StackEmitter e, List<String> zx, List<String> zy, CirclePoint g,
       List<String> ox, List<String> oy) {
@@ -275,17 +247,100 @@ class StarkVerifierGen {
 
   /// qB + qC at one query point from one weighted sum of the [openings]
   /// (consumed): S over group B's weights, then S * lamC for group C.
-  void _sharedQuotients(StackEmitter e, List<String> openings, List<String> hintB, List<String> hintC,
+  /// comp{l} (l < 4) = sum_k M_k(zx) cz{4k+l}: the composition's limb
+  /// values at z recombined from its blocks' (see
+  /// [StarkParams.chunkMultipliers]; the OOD check composes the four limbs).
+  /// M_k is built by doublings of zx and products of the doubling chain.
+  void _emitCompositionAtZ(StackEmitter e) {
+    final nF = P.logComp - P.logTraceBound;
+    void pushOne(List<String> names) {
+      for (int k = 0; k < 4; k++) {
+        e.pushConst(k == 0 ? 1 : 0);
+        e.nameTop(names[k]);
+      }
+    }
+    void doubleW() {
+      // _w = 2 _w^2 - 1
+      _copy(e, L('_w'), L('_wc'));
+      M31Ops.qm31Mul(e, L('_w'), L('_wc'), L('_w2'));
+      _copy(e, L('_w2'), L('_w2c'));
+      _addQ(e, L('_w2'), L('_w2c'), L('_w3'));
+      pushOne(L('_one'));
+      M31Ops.qm31Sub(e, L('_w3'), L('_one'), L('_w'));
+    }
+    _copy(e, L('zx'), L('_w'));
+    for (int i = 0; i < P.logTraceBound - 1; i++) {
+      doubleW();
+    }
+    for (int j = 0; j < nF; j++) {
+      _copy(e, L('_w'), L('mf$j'));
+      doubleW();
+    }
+    for (final n in L('_w')) {
+      e.dropNamed(n);
+    }
+    // M_k = M_{k without its lowest bit} * factor_{lowest bit}
+    pushOne(L('mk0'));
+    for (int k = 1; k < P.compChunks; k++) {
+      int low = 0;
+      while ((k >> low) & 1 == 0) {
+        low++;
+      }
+      _copy(e, L('mk${k & (k - 1)}'), L('_ma'));
+      _copy(e, L('mf$low'), L('_mb'));
+      M31Ops.qm31Mul(e, L('_ma'), L('_mb'), L('mk$k'));
+    }
+    for (int j = 0; j < nF; j++) {
+      for (final n in L('mf$j')) {
+        e.dropNamed(n);
+      }
+    }
+    for (int l = 0; l < 4; l++) {
+      _copy(e, L('cz$l'), L('_acc'));
+      for (int k = 1; k < P.compChunks; k++) {
+        _copy(e, L('mk$k'), L('_ma'));
+        _copy(e, L('cz${4 * k + l}'), L('_mb'));
+        M31Ops.qm31Mul(e, L('_ma'), L('_mb'), L('_mt'));
+        _addQ(e, L('_acc'), L('_mt'), L('_acc2'));
+        for (int i = 0; i < 4; i++) {
+          e.rename('_acc2_$i', '_acc_$i');
+        }
+      }
+      for (int i = 0; i < 4; i++) {
+        e.roll('_acc_$i');
+        e.reduce();
+        e.nameTop('comp${l}_$i');
+      }
+    }
+    for (int k = 0; k < P.compChunks; k++) {
+      for (final n in L('mk$k')) {
+        e.dropNamed(n);
+      }
+    }
+  }
+
+  /// Both DEEP quotients at p (or conj p) from one weighted sum of the
+  /// trace openings: group C's weights are lamC times group B's, and group
+  /// B also covers the composition blocks' openings (weights continue after
+  /// the trace columns').
+  void _sharedQuotients(StackEmitter e, List<String> openings, List<String> compOpenings, List<String> hintB, List<String> hintC,
       List<String> out, {required bool negY}) {
-    DeepQuotientScriptGen.emitSum(e, openings, 'B', L('_SB'));
+    DeepQuotientScriptGen.emitSum(e, openings, 'B', L('_ST'));
+    for (int k = 0; k < 4; k++) {
+      e.roll('_ST_$k');
+      e.reduce();
+      e.nameTop('_ST_$k');
+    }
+    _copy(e, L('_ST'), L('_SC'));
+    _copy(e, L('lamC'), L('_lc'));
+    M31Ops.qm31Mul(e, L('_SC'), L('_lc'), L('_SC2'));
+    DeepQuotientScriptGen.emitSum(e, compOpenings, 'B', L('_SK'), weightOffset: openings.length);
+    _addQ(e, L('_ST'), L('_SK'), L('_SB'));
     for (int k = 0; k < 4; k++) {
       e.roll('_SB_$k');
       e.reduce();
       e.nameTop('_SB_$k');
     }
-    _copy(e, L('_SB'), L('_SC'));
-    _copy(e, L('lamC'), L('_lc'));
-    M31Ops.qm31Mul(e, L('_SC'), L('_lc'), L('_SC2'));
     DeepQuotientScriptGen.emitQuotientFromSum(e, 'xB', 'yB', L('_SB'), hintB, L('_qB'), tag: 'B', negY: negY);
     DeepQuotientScriptGen.emitQuotientFromSum(e, 'xB', 'yB', L('_SC2'), hintC, L('_qC'), tag: 'C', negY: negY);
     _addQ(e, L('_qB'), L('_qC'), out);
@@ -368,8 +423,8 @@ class StarkVerifierGen {
     prologue?.call(e);
     AirScriptGen.probe = profile == null ? null : (label) => profile!['ood.$label'] = _opsSoFar();
     _checkpoint(e, 0, []);
-    final a = P.logCompHalf;
-    final hA = HalfCoset(a);
+    final a = P.logTraceHalf, K = P.compCols;
+    final hB = HalfCoset(a);
     final gT = CirclePoint.subgroupGen(P.logTrace);
 
     // ---- transcript: beta, z ----
@@ -401,14 +456,13 @@ class StarkVerifierGen {
     final oodsLimbs = <String>[
       for (int j = 0; j < CT; j++) ...L('tz$j'),
       for (int j = 0; j < CT; j++) ...L('tzg$j'),
-      for (int k = 0; k < StarkParams.compCols; k++) ...L('cz$k'),
+      for (int k = 0; k < K; k++) ...L('cz$k'),
     ];
     FiatShamirScriptGen.emitAbsorbLimbs(e, oodsLimbs);
-    FiatShamirScriptGen.emitSqueezeQM31(e, L('lamA'));
     FiatShamirScriptGen.emitSqueezeQM31(e, L('lamB'));
     FiatShamirScriptGen.emitSqueezeQM31(e, L('lamC'));
     FiatShamirScriptGen.emitSqueezeQM31(e, L('alC'));
-    _checkpoint(e, 4, ['lamA', 'lamB', 'lamC', 'alC']);
+    _checkpoint(e, 4, ['lamB', 'lamC', 'alC']);
     if (_stopped) return b.build();
 
     // ---- OODS constraint check (on copies; the challenges are consumed) ----
@@ -418,9 +472,7 @@ class StarkVerifierGen {
     for (int j = 0; j < CT; j++) {
       _copy(e, L('tzg$j'), L('next$j'));
     }
-    for (int k = 0; k < 4; k++) {
-      _copy(e, L('cz$k'), L('comp$k'));
-    }
+    _emitCompositionAtZ(e);
     _copy(e, L('beta'), L('beta2'));
     for (final l in L('beta')) {
       e.dropNamed(l);
@@ -444,18 +496,17 @@ class StarkVerifierGen {
     _checkpoint(e, 5, []);
     if (_stopped) return b.build();
 
-    // ---- z*g and DEEP precompute for the three sample groups ----
+    // ---- z*g and DEEP precompute for the two sample groups ----
     _mulByConstPoint(e, L('zx'), L('zy'), gT, L('zgx'), L('zgy'));
     _checkpoint(e, 6, ['zgx', 'zgy']);
     if (_stopped) return b.build();
-    DeepQuotientScriptGen.emitPrecompute(e, L('zx'), L('zy'), L('lamA'),
-        List.generate(4, (k) => L('cz$k')), tag: 'A');
+    // group B: every column at z (trace, aux, pre, then the composition blocks)
     DeepQuotientScriptGen.emitPrecompute(e, L('zx'), L('zy'), L('lamB'),
-        List.generate(CT, (j) => L('tz$j')), tag: 'B');
+        [for (int j = 0; j < CT; j++) L('tz$j'), for (int k = 0; k < K; k++) L('cz$k')], tag: 'B');
     // group C's weights are lamC * group B's: the per-query sums are shared
     DeepQuotientScriptGen.emitPrecompute(e, L('zgx'), L('zgy'), L('lamB'),
         List.generate(CT, (j) => L('tzg$j')), tag: 'C', weightsTag: 'B', base: L('lamC'));
-    _checkpoint(e, 7, ['cA', 'AA', 'BA', 'dAA', 'dBA', 'dCA', 'wA1', 'cB', 'AB', 'BB', 'wB1', 'cC', 'AC', 'BC', 'dCC']);
+    _checkpoint(e, 7, ['cB', 'AB', 'BB', 'wB1', 'cC', 'AC', 'BC', 'dCC']);
     if (_stopped) return b.build();
 
     // ---- FRI roots / alphas, final coefficients, grinding, indices ----
@@ -476,34 +527,52 @@ class StarkVerifierGen {
       // reads them (bit k of the layer-l index is bit k of the query index)
       final qb = List.generate(a, (k) => 'qb$k');
       FriFoldScriptGen.emitIndexBits(e, 'qi$q', a, 'qb');
-      FriFoldScriptGen.emitDomainPointXYBits(e, hA, qb, asX: 'xA', asY: 'yA');
-      e.pick('xA', as: 'xB');
-      e.pick('yA', as: 'yB');
-      for (int i = 0; i < P.logCompHalf - P.logTraceHalf; i++) {
-        _doublePoint(e, 'xB', 'yB');
-      }
+      FriFoldScriptGen.emitDomainPointXYBits(e, hB, qb, asX: 'xB', asY: 'yB');
       if (q == 0) {
-        _checkpoint(e, 9, ['xA', 'yA', 'xB', 'yB']);
+        _checkpoint(e, 9, ['xB', 'yB']);
         if (_stopped) return b.build();
       }
-      // composition opening
-      FriFoldScriptGen.emitLeafHashN(e, List.generate(8, (i) => 'cl${q}_$i'), as: 'leaf');
+      // every commitment is opened at leaf i of the trace domain
+      FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * K, (i) => 'cl${q}_$i'), as: 'leaf');
       FriFoldScriptGen.emitMerklePathBits(e, 'leaf', List.generate(a, (i) => 'cs${q}_$i'), qb, as: 'root');
       _equalVerifyNamed(e, 'root', 'croot');
+      FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * C, (i) => 'tl${q}_$i'), as: 'tleaf');
+      FriFoldScriptGen.emitMerklePathBits(e, 'tleaf', List.generate(a, (i) => 'ts${q}_$i'), qb, as: 'troot2');
+      _equalVerifyNamed(e, 'troot2', 'troot');
+      if (A > 0) {
+        FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * A, (i) => 'axl${q}_$i'), as: 'aleaf');
+        FriFoldScriptGen.emitMerklePathBits(e, 'aleaf', List.generate(a, (i) => 'axs${q}_$i'), qb, as: 'aroot2');
+        _equalVerifyNamed(e, 'aroot2', 'aroot');
+      }
+      if (R > 0) {
+        FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * R, (i) => 'prl${q}_$i'), as: 'pleaf');
+        FriFoldScriptGen.emitMerklePathBits(e, 'pleaf', List.generate(a, (i) => 'prs${q}_$i'), qb, as: 'proot2');
+        _equalVerifyNamed(e, 'proot2', 'proot');
+      }
       if (q == 0) {
         _checkpoint(e, 10, []);
         if (_stopped) return b.build();
       }
-      // DEEP group A at p and conj p, then circle fold
-      DeepQuotientScriptGen.emitQuotient(e, 'xA', 'yA', List.generate(4, (i) => 'cl${q}_$i'), L('dap$q'), L('qAp'), tag: 'A');
-      DeepQuotientScriptGen.emitQuotient(e, 'xA', 'yA', List.generate(4, (i) => 'cl${q}_${4 + i}'), L('dac$q'), L('qAc'), tag: 'A', negY: true);
+      // column openings at p: trace, aux, preprocessed (+ composition blocks for group B); likewise at conj p
+      final atP = [
+        for (int i = 0; i < C; i++) 'tl${q}_$i',
+        for (int i = 0; i < A; i++) 'axl${q}_$i',
+        for (int i = 0; i < R; i++) 'prl${q}_$i'
+      ];
+      final atC = [
+        for (int i = 0; i < C; i++) 'tl${q}_${C + i}',
+        for (int i = 0; i < A; i++) 'axl${q}_${A + i}',
+        for (int i = 0; i < R; i++) 'prl${q}_${R + i}'
+      ];
+      _sharedQuotients(e, atP, List.generate(K, (i) => 'cl${q}_$i'), L('dbp$q'), L('dcp$q'), L('qTp'), negY: false);
+      _sharedQuotients(e, atC, List.generate(K, (i) => 'cl${q}_${K + i}'), L('dbc$q'), L('dcc$q'), L('qTc'), negY: true);
+      M31Ops.verifyInverse(e, 'yB', 'ybi$q', consumeInv: false);
       if (q == 0) {
-        _checkpoint(e, 11, ['qAp', 'qAc']);
+        _checkpoint(e, 13, ['qTp', 'qTc']);
         if (_stopped) return b.build();
       }
-      M31Ops.verifyInverse(e, 'yA', 'yai$q', consumeInv: false);
       _copy(e, L('alC'), L('_al'));
-      FriFoldScriptGen.emitFoldLine(e, L('qAp'), L('qAc'), 'yai$q', L('_al'), out);
+      FriFoldScriptGen.emitFoldLine(e, L('qTp'), L('qTc'), 'ybi$q', L('_al'), out);
       if (q == 0) {
         for (int k = 0; k < 4; k++) {
           e.rename('out_$k', 'circleOut_$k');
@@ -514,64 +583,19 @@ class StarkVerifierGen {
           e.rename('circleOut_$k', 'out_$k');
         }
       }
+      e.pick('xB', as: 'xA');
       e.pick(qb[a - 1], as: 'topbit');
       FriFoldScriptGen.emitSignStep(e, 'xA', 'topbit');
       FriFoldScriptGen.emitSelectCompare(e, out, L('lf${q}_0'), L('lg${q}_0'), 'topbit');
 
       for (int l = 0; l < P.numLineFolds; l++) {
         final d = a - 1 - l;
-        final bool foldIn = l == P.foldInIndex;
-        if (foldIn) {
-          // trace opening at p_B = 8 p_A, leaf index = the low bits
-          final tb = qb.sublist(0, P.logTraceHalf);
-          FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * C, (i) => 'tl${q}_$i'), as: 'tleaf');
-          FriFoldScriptGen.emitMerklePathBits(e, 'tleaf', List.generate(P.logTraceHalf, (i) => 'ts${q}_$i'), tb, as: 'troot2');
-          _equalVerifyNamed(e, 'troot2', 'troot');
-          if (A > 0) {
-            // aux-round opening at the same index, against the aux root
-            FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * A, (i) => 'axl${q}_$i'), as: 'aleaf');
-            FriFoldScriptGen.emitMerklePathBits(e, 'aleaf', List.generate(P.logTraceHalf, (i) => 'axs${q}_$i'), tb, as: 'aroot2');
-            _equalVerifyNamed(e, 'aroot2', 'aroot');
-          }
-          if (R > 0) {
-            // preprocessed opening at the same index, against the baked root
-            FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * R, (i) => 'prl${q}_$i'), as: 'pleaf');
-            FriFoldScriptGen.emitMerklePathBits(e, 'pleaf', List.generate(P.logTraceHalf, (i) => 'prs${q}_$i'), tb, as: 'proot2');
-            _equalVerifyNamed(e, 'proot2', 'proot');
-          }
-          // column openings at p: trace, aux, preprocessed; likewise at conj p
-          final atP = [
-            for (int i = 0; i < C; i++) 'tl${q}_$i',
-            for (int i = 0; i < A; i++) 'axl${q}_$i',
-            for (int i = 0; i < R; i++) 'prl${q}_$i'
-          ];
-          final atC = [
-            for (int i = 0; i < C; i++) 'tl${q}_${C + i}',
-            for (int i = 0; i < A; i++) 'axl${q}_${A + i}',
-            for (int i = 0; i < R; i++) 'prl${q}_${R + i}'
-          ];
-          _sharedQuotients(e, atP, L('dbp$q'), L('dcp$q'), L('qTp'), negY: false);
-          _sharedQuotients(e, atC, L('dbc$q'), L('dcc$q'), L('qTc'), negY: true);
-          M31Ops.verifyInverse(e, 'yB', 'ybi$q', consumeInv: false);
-          if (q == 0) {
-            _checkpoint(e, 13, ['qTp', 'qTc']);
-            if (_stopped) return b.build();
-          }
-          _copy(e, L('al$l'), L('_al'));
-          FriFoldScriptGen.emitFoldLine(e, L('qTp'), L('qTc'), 'ybi$q', L('_al'), L('outT'));
-        }
         FriFoldScriptGen.emitLeafHash(e, L('lf${q}_$l'), L('lg${q}_$l'), as: 'leaf');
         FriFoldScriptGen.emitMerklePathBits(e, 'leaf', List.generate(d, (i) => 'ls${q}_${l}_$i'), qb.sublist(0, d), as: 'root');
         _equalVerifyNamed(e, 'root', 'fr$l');
         M31Ops.verifyInverse(e, 'xA', 'lxi${q}_$l', consumeInv: false);
         _copy(e, L('al$l'), L('_al'));
         FriFoldScriptGen.emitFoldLine(e, L('lf${q}_$l'), L('lg${q}_$l'), 'lxi${q}_$l', L('_al'), out);
-        if (foldIn) {
-          _addQ(e, out, L('outT'), L('out2'));
-          for (int k = 0; k < 4; k++) {
-            e.rename('out2_$k', out[k]);
-          }
-        }
         if (q == 0) {
           for (int k = 0; k < 4; k++) {
             e.rename('out_$k', 'fold${l}_$k');
@@ -607,7 +631,7 @@ class StarkVerifierGen {
           }
         }
       }
-      for (final n in ['xA', 'yA', 'xB', 'yB', ...qb]) {
+      for (final n in ['xB', 'yB', ...qb]) {
         e.dropNamed(n);
       }
       if (profile != null) profile!['q$q'] = _opsSoFar();

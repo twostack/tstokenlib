@@ -17,7 +17,7 @@
 import 'm31.dart';
 import 'proof_hash.dart';
 import 'stark_prover.dart' show PreCommitment;
-import 'stark_prover_ref.dart' show StarkParams, StarkProof, composeColumns;
+import 'stark_prover_ref.dart' show StarkParams, StarkProof;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef, DeepConstants;
 import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
 import '../script_gen/air.dart' show Air;
@@ -101,13 +101,13 @@ class StarkVerifierRef {
   }
 
   void _verify(StarkProof pf) {
-    final a = P.logCompHalf;
-    final CT = air.totalCols, C = air.numCols, A = air.numAuxCols, R = air.numPreCols;
+    final a = P.logTraceHalf;
+    final CT = air.totalCols, C = air.numCols, A = air.numAuxCols, R = air.numPreCols, K = P.compCols;
     final gT = CirclePoint.subgroupGen(P.logTrace);
     _need(pf.traceRoot.length == hash.digestLen, 'trace root length');
     _need(pf.compRoot.length == hash.digestLen, 'composition root length');
     _need(pf.traceAtZ.length == CT && pf.traceAtZg.length == CT, 'out-of-domain value count');
-    _need(pf.compAtZ.length == StarkParams.compCols, 'composition value count');
+    _need(pf.compAtZ.length == K, 'composition value count');
     _need(pf.friRoots.length == P.numLineFolds, 'FRI root count');
     _need(pf.finalCoefs.length == P.finalDegree, 'final coefficient count');
     _need(pf.queries.length == P.numQueries, 'query count');
@@ -129,17 +129,16 @@ class StarkVerifierRef {
     _need((QM31.one + t2) * pf.zHint == QM31.one, 'z hint');
     final zx = (QM31.one - t2) * pf.zHint, zy = (tch + tch) * pf.zHint;
     ts.absorbLimbs([for (final v in [...pf.traceAtZ, ...pf.traceAtZg, ...pf.compAtZ]) ...v.limbs]);
-    final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
+    final lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
 
-    // ---- out-of-domain constraint check ----
+    // ---- out-of-domain constraint check: the blocks recombined at z ----
     final rhs = air.compositionAt(pf.traceAtZ, pf.traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
-    _need(composeColumns(pf.compAtZ) == rhs, 'composition relation at z');
+    _need(P.compositionFromChunks(pf.compAtZ, zx) == rhs, 'composition relation at z');
 
     // ---- z*g and the DEEP constants ----
     final zgx = zx.scale(gT.x) - zy.scale(gT.y);
     final zgy = zx.scale(gT.y) + zy.scale(gT.x);
-    final kA = DeepQuotientRef.precompute(zx, zy, pf.compAtZ, lamA);
-    final kB = DeepQuotientRef.precompute(zx, zy, pf.traceAtZ, lamB);
+    final kB = DeepQuotientRef.precompute(zx, zy, [...pf.traceAtZ, ...pf.compAtZ], lamB);
     final kC = DeepQuotientRef.precompute(zgx, zgy, pf.traceAtZg, lamB, base: lamC);
 
     // ---- FRI roots and alphas, final coefficients, grinding, indices ----
@@ -154,66 +153,50 @@ class StarkVerifierRef {
     final indices = ts.squeezeIndices(P.numQueries, a);
 
     // ---- queries ----
-    final hA = HalfCoset(a);
+    final hB = HalfCoset(a);
     for (int q = 0; q < P.numQueries; q++) {
       final qp = pf.queries[q];
       final i = indices[q];
       _need(qp.index == i, 'query $q index');
-      final pA = hA.at(i);
-      var xA = pA.x;
-      final yA = pA.y;
-      var xB = xA, yB = yA;
-      for (int k = 0; k < a - P.logTraceHalf; k++) {
-        final nx = _double(xB), ny = M31.mul(2, M31.mul(xB, yB));
-        xB = nx;
-        yB = ny;
-      }
-      // composition opening
-      _need(qp.compLeaf.length == 8, 'query $q composition leaf');
+      final pB = hB.at(i);
+      final xB = pB.x, yB = pB.y;
+      // every commitment is opened at leaf i of the trace domain
+      _need(qp.compLeaf.length == 2 * K, 'query $q composition leaf');
       _need(qp.compPath.length == a, 'query $q composition path');
       _need(_same(_root(hash.leaf(qp.compLeaf), qp.compPath, i), pf.compRoot), 'query $q composition root');
+      _need(qp.traceLeaf.length == 2 * C, 'query $q trace leaf');
+      _need(qp.tracePath.length == a, 'query $q trace path');
+      _need(_same(_root(hash.leaf(qp.traceLeaf), qp.tracePath, i), pf.traceRoot), 'query $q trace root');
+      if (A > 0) {
+        _need(qp.auxLeaf.length == 2 * A, 'query $q aux leaf');
+        _need(_same(_root(hash.leaf(qp.auxLeaf), qp.auxPath, i), pf.auxRoot), 'query $q aux root');
+      }
+      if (R > 0) {
+        _need(qp.preLeaf.length == 2 * R, 'query $q preprocessed leaf');
+        _need(_same(_root(hash.leaf(qp.preLeaf), qp.prePath, i), pf.preRoot), 'query $q preprocessed root');
+      }
+      final atP = [...qp.traceLeaf.sublist(0, C), ...qp.auxLeaf.sublist(0, A), ...qp.preLeaf.sublist(0, R)];
+      final atC = [...qp.traceLeaf.sublist(C, 2 * C), ...qp.auxLeaf.sublist(A, 2 * A), ...qp.preLeaf.sublist(R, 2 * R)];
+      // DEEP groups B (with the composition blocks) and C at p and conj p, then the circle fold
+      final qTp = _quotient(kB, xB, yB, [...atP, ...qp.compLeaf.sublist(0, K)], qp.dBInvP, 'query $q D_B(p)') +
+          _quotient(kC, xB, yB, atP, qp.dCInvP, 'query $q D_C(p)');
+      final qTc = _quotient(kB, xB, M31.neg(yB), [...atC, ...qp.compLeaf.sublist(K, 2 * K)], qp.dBInvC, 'query $q D_B(conj p)') +
+          _quotient(kC, xB, M31.neg(yB), atC, qp.dCInvC, 'query $q D_C(conj p)');
+      _need(M31.mul(yB, qp.yBInv) == 1, 'query $q y_B inverse');
+      var out = _fold(qTp, qTc, qp.yBInv, alC);
       var idx = i & ((1 << (a - 1)) - 1);
       var topBit = i >> (a - 1);
-      // DEEP group A at p and conj p, then the circle fold
-      final qAp = _quotient(kA, xA, yA, qp.compLeaf.sublist(0, 4), qp.dAInvP, 'query $q D_A(p)');
-      final qAc = _quotient(kA, xA, M31.neg(yA), qp.compLeaf.sublist(4, 8), qp.dAInvC, 'query $q D_A(conj p)');
-      _need(M31.mul(yA, qp.yAInv) == 1, 'query $q y_A inverse');
-      var out = _fold(qAp, qAc, qp.yAInv, alC);
       // circle-to-line: layer 0's leaf (i mod 2^(a-1)) has twiddle ±x_i
-      xA = topBit == 1 ? M31.neg(xA) : xA;
+      var xA = topBit == 1 ? M31.neg(xB) : xB;
       _need(out == (topBit == 1 ? qp.lineF1[0] : qp.lineF0[0]), 'query $q circle fold vs layer 0');
 
       for (int l = 0; l < P.numLineFolds; l++) {
         final d = a - 1 - l;
-        QM31? outT;
-        if (l == P.foldInIndex) {
-          // trace (and aux) opening at p_B, whose leaf index is the current idx
-          _need(qp.traceLeaf.length == 2 * C, 'query $q trace leaf');
-          _need(qp.tracePath.length == P.logTraceHalf, 'query $q trace path');
-          _need(_same(_root(hash.leaf(qp.traceLeaf), qp.tracePath, idx), pf.traceRoot), 'query $q trace root');
-          if (A > 0) {
-            _need(qp.auxLeaf.length == 2 * A, 'query $q aux leaf');
-            _need(_same(_root(hash.leaf(qp.auxLeaf), qp.auxPath, idx), pf.auxRoot), 'query $q aux root');
-          }
-          if (R > 0) {
-            _need(qp.preLeaf.length == 2 * R, 'query $q preprocessed leaf');
-            _need(_same(_root(hash.leaf(qp.preLeaf), qp.prePath, idx), pf.preRoot), 'query $q preprocessed root');
-          }
-          final atP = [...qp.traceLeaf.sublist(0, C), ...qp.auxLeaf.sublist(0, A), ...qp.preLeaf.sublist(0, R)];
-          final atC = [...qp.traceLeaf.sublist(C, 2 * C), ...qp.auxLeaf.sublist(A, 2 * A), ...qp.preLeaf.sublist(R, 2 * R)];
-          final qTp = _quotient(kB, xB, yB, atP, qp.dBInvP, 'query $q D_B(p)') +
-              _quotient(kC, xB, yB, atP, qp.dCInvP, 'query $q D_C(p)');
-          final qTc = _quotient(kB, xB, M31.neg(yB), atC, qp.dBInvC, 'query $q D_B(conj p)') +
-              _quotient(kC, xB, M31.neg(yB), atC, qp.dCInvC, 'query $q D_C(conj p)');
-          _need(M31.mul(yB, qp.yBInv) == 1, 'query $q y_B inverse');
-          outT = _fold(qTp, qTc, qp.yBInv, alphas[l]);
-        }
         _need(qp.linePaths[l].length == d, 'query $q layer $l path');
         final leaf = hash.leaf([...qp.lineF0[l].limbs, ...qp.lineF1[l].limbs]);
         _need(_same(_root(leaf, qp.linePaths[l], idx), pf.friRoots[l]), 'query $q layer $l root');
         _need(M31.mul(xA, qp.lineXInv[l]) == 1, 'query $q layer $l x inverse');
         out = _fold(qp.lineF0[l], qp.lineF1[l], qp.lineXInv[l], alphas[l]);
-        if (outT != null) out = out + outT;
         if (l < P.numLineFolds - 1) {
           topBit = idx >> (d - 1);
           idx = idx & ((1 << (d - 1)) - 1);
@@ -253,20 +236,20 @@ class StarkVerifierRef {
 /// QM31 values) without push opcodes.
 class ProofSize {
   static int bytes(StarkParams P, Air air, ProofHash hash) {
-    final a = P.logCompHalf, d = hash.digestBytes, CT = air.totalCols, A = air.numAuxCols, R = air.numPreCols;
+    final a = P.logTraceHalf, d = hash.digestBytes, CT = air.totalCols, A = air.numAuxCols, R = air.numPreCols;
     var n = 0;
     n += 4 * air.numPublics;
     n += d * (2 + (A > 0 ? 1 : 0) + (R > 0 ? 1 : 0) + P.numLineFolds); // trace, (aux), (pre), comp, FRI roots
-    n += 16 * (1 + 2 * CT + StarkParams.compCols + P.finalDegree); // zHint, OOD values, final coefs
+    n += 16 * (1 + 2 * CT + P.compCols + P.finalDegree); // zHint, OOD values, final coefs
     n += hash.nonceBytes;
     var q = 0;
-    q += 8 * 4 + a * d + 4 + 2 * 16; // comp leaf, path, yAInv, dA inverses
+    q += 2 * P.compCols * 4 + a * d; // comp leaf, path
     for (int l = 0; l < P.numLineFolds; l++) {
       q += 2 * 16 + (a - 1 - l) * d + 4; // pair, path, x inverse
     }
-    q += 2 * air.numCols * 4 + P.logTraceHalf * d; // trace leaf, path
-    if (A > 0) q += 2 * A * 4 + P.logTraceHalf * d;
-    if (R > 0) q += 2 * R * 4 + P.logTraceHalf * d;
+    q += 2 * air.numCols * 4 + a * d; // trace leaf, path
+    if (A > 0) q += 2 * A * 4 + a * d;
+    if (R > 0) q += 2 * R * 4 + a * d;
     q += 4 + 4 * 16; // yBInv, dB/dC inverses
     return n + P.numQueries * q;
   }

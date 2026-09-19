@@ -761,8 +761,8 @@ class VerifierProgramBuilder {
   void _verifyInner(int i, List<Wire> pubLane, Wire? preRoot) {
     final shape = shapes[i];
     final P = shape.P, air = shape.air;
-    final A = shape.A, CT = shape.CT;
-    final a = P.logCompHalf;
+    final A = shape.A, CT = shape.CT, C = shape.C, R = shape.R, K = P.compCols;
+    final a = P.logTraceHalf;
     final gT = CirclePoint.subgroupGen(P.logTrace);
     StarkProof pf() => pfAt(i);
 
@@ -785,23 +785,56 @@ class VerifierProgramBuilder {
     final zx = f.mul(f.sub(f.one, t2), zHint), zy = f.mul(f.add(tch, tch), zHint);
     final traceAtZ = [for (int j = 0; j < CT; j++) hint4('tz$j', () => pf().traceAtZ[j])];
     final traceAtZg = [for (int j = 0; j < CT; j++) hint4('tzg$j', () => pf().traceAtZg[j])];
-    final compAtZ = [for (int k = 0; k < 4; k++) hint4('cz$k', () => pf().compAtZ[k])];
+    final compAtZ = [for (int k = 0; k < K; k++) hint4('cz$k', () => pf().compAtZ[k])];
     final oods = [...traceAtZ, ...traceAtZg, ...compAtZ];
     for (int k = 0; k < oods.length; k += 2) {
       _cur = _absorb(a: oods[k], b: k + 1 < oods.length ? oods[k + 1] : f.zero);
     }
-    final lamA = squeeze4('lamA'), lamB = squeeze4('lamB'), lamC = squeeze4('lamC'), alC = squeeze4('alC');
+    final lamB = squeeze4('lamB'), lamC = squeeze4('lamC'), alC = squeeze4('alC');
 
-    // ---- out-of-domain check of the inner AIR ----
+    // ---- out-of-domain check of the inner AIR: the composition's limb
+    // values at z are its blocks' recombined with M_k(zx) (StarkParams.chunkMultipliers)
+    final compLimbsAtZ = <Wire>[];
+    {
+      Wire dbl(Wire w) {
+        final w2 = f.mul(w, w);
+        return f.sub(f.add(w2, w2), f.one);
+      }
+      var w = zx;
+      for (int j = 0; j < P.logTraceBound - 1; j++) {
+        w = dbl(w);
+      }
+      final factors = <Wire>[];
+      for (int j = 0; j < P.logComp - P.logTraceBound; j++) {
+        factors.add(w);
+        w = dbl(w);
+      }
+      final mk = <Wire?>[null];
+      for (int k = 1; k < P.compChunks; k++) {
+        int low = 0;
+        while ((k >> low) & 1 == 0) {
+          low++;
+        }
+        final rest = mk[k & (k - 1)];
+        mk.add(rest == null ? factors[low] : f.mul(rest, factors[low]));
+      }
+      for (int l = 0; l < 4; l++) {
+        var acc = compAtZ[l];
+        for (int k = 1; k < P.compChunks; k++) {
+          acc = f.add(acc, f.mul(mk[k]!, compAtZ[4 * k + l]));
+        }
+        compLimbsAtZ.add(acc);
+      }
+    }
     _withPublics(air, pubLane, () {
-      assertZero(air.oodCheckG(f, traceAtZ, traceAtZg, compAtZ, beta, zx, zy, chal: chal));
+      assertZero(air.oodCheckG(f, traceAtZ, traceAtZg, compLimbsAtZ, beta, zx, zy, chal: chal));
     });
 
-    // ---- z*g and the DEEP constants ----
+    // ---- z*g and the DEEP constants: group B is every column at z (trace,
+    // aux, pre, then the composition blocks), group C the trace columns at z*g
     final zgx = f.sub(f.scale(zx, gT.x), f.scale(zy, gT.y));
     final zgy = f.add(f.scale(zx, gT.y), f.scale(zy, gT.x));
-    final kA = _deepPrecompute(zx, zy, compAtZ, lamA);
-    final kB = _deepPrecompute(zx, zy, traceAtZ, lamB);
+    final kB = _deepPrecompute(zx, zy, [...traceAtZ, ...compAtZ], lamB);
     final kC = _deepPrecompute(zgx, zgy, traceAtZg, lamB, base: lamC);
 
     // ---- FRI roots and alphas, final coefficients, grinding, indices ----
@@ -830,10 +863,10 @@ class VerifierProgramBuilder {
     final indices = [for (int q = 0; q < P.numQueries; q++) squeeze1('idx$q')];
 
     // ---- queries ----
-    final hA = HalfCoset(a);
+    final hB = HalfCoset(a);
     final stepPow = <CirclePoint>[];
     {
-      var g = hA.step;
+      var g = hB.step;
       for (int k = 0; k < a; k++) {
         stepPow.add(g);
         g = g.double_();
@@ -842,12 +875,40 @@ class VerifierProgramBuilder {
     for (int q = 0; q < P.numQueries; q++) {
       final idx = indices[q];
       QueryProof qp() => pf().queries[q];
-      // composition opening and walk
-      final cl0 = hint4('cl${q}a', () => _q4(qp().compLeaf, 0)), cl1 = hint4('cl${q}b', () => _q4(qp().compLeaf, 4));
-      final leaf = _leaf([cl0, cl1]);
-      final bits = _walk(leaf, idx, a, compRoot, () => qp().compPath);
+      List<Wire> chunks(String tag, int lanes, List<int> Function() src) {
+        final n = (lanes + 3) ~/ 4;
+        final out = <Wire>[];
+        for (int c = 0; c < n; c++) {
+          final k = c;
+          out.add(hint4('$tag${q}_$c', () {
+            final s = src();
+            int at(int i) => i < s.length ? s[i] : 0;
+            return QM31.fromLimbs(at(4 * k), at(4 * k + 1), at(4 * k + 2), at(4 * k + 3));
+          }));
+        }
+        if (out.length.isOdd) out.add(f.zero);
+        return out;
+      }
+      List<Wire> lanesOf(List<Wire> ch, int from, int count) =>
+          [for (int j = 0; j < count; j++) f.limb(ch[(from + j) ~/ 4], (from + j) % 4)];
+
+      // every commitment is opened at leaf idx of the trace domain
+      final cl = chunks('cl', 2 * K, () => qp().compLeaf);
+      final bits = _walk(_leaf(cl), idx, a, compRoot, () => qp().compPath);
+      final tl = chunks('tl', 2 * C, () => qp().traceLeaf);
+      _walk(_leaf(tl), idx, a, traceRoot, () => qp().tracePath);
+      List<Wire> al = const [], pl = const [];
+      if (A > 0) {
+        al = chunks('axl', 2 * A, () => qp().auxLeaf);
+        _walk(_leaf(al), idx, a, auxRoot!, () => qp().auxPath);
+      }
+      if (R > 0) {
+        // the root the statement absorbed: one wire for the statement and every query
+        pl = chunks('prl', 2 * R, () => qp().preLeaf);
+        _walk(_leaf(pl), idx, a, preRoot!, () => qp().prePath);
+      }
       // the query point from its bits: acc = initial * Π step^(2^k b_k)
-      var px = f.constM31(hA.initial.x), py = f.constM31(hA.initial.y);
+      var px = f.constM31(hB.initial.x), py = f.constM31(hB.initial.y);
       for (int k = 0; k < a; k++) {
         final g = stepPow[k];
         final nx = f.sub(f.scale(px, g.x), f.scale(py, g.y));
@@ -855,21 +916,22 @@ class VerifierProgramBuilder {
         px = f.add(px, f.mul(bits[k], f.sub(nx, px)));
         py = f.add(py, f.mul(bits[k], f.sub(ny, py)));
       }
-      var xB = px, yB = py;
-      for (int k = 0; k < a - P.logTraceHalf; k++) {
-        final x2 = f.mul(xB, xB);
-        final nx = f.sub(f.add(x2, x2), f.one);
-        final xy = f.mul(xB, yB);
-        yB = f.add(xy, xy);
-        xB = nx;
-      }
-      // DEEP group A at p and conj p, then the circle fold
-      final dAp = hint4('dap$q', () => qp().dAInvP), dAc = hint4('dac$q', () => qp().dAInvC);
-      final qAp = _quotient(kA, px, py, [for (int k = 0; k < 4; k++) f.limb(cl0, k)], dAp);
-      final qAc = _quotient(kA, px, f.neg(py), [for (int k = 0; k < 4; k++) f.limb(cl1, k)], dAc);
-      final yAi = hint1('yai$q', () => qp().yAInv);
-      assertEq(f.mul(yAi, py), f.one);
-      var out = _fold(qAp, qAc, yAi, alC);
+      // DEEP groups B and C at p and conj p from one weighted sum of the
+      // trace openings (group C's weights are kC.base times group B's; group
+      // B adds the composition blocks with the weights after the trace's)
+      final atP = [...lanesOf(tl, 0, C), ...lanesOf(al, 0, A), ...lanesOf(pl, 0, R)];
+      final atC = [...lanesOf(tl, C, C), ...lanesOf(al, A, A), ...lanesOf(pl, R, R)];
+      final compP = lanesOf(cl, 0, K), compC = lanesOf(cl, K, K);
+      final dBp = hint4('dbp$q', () => qp().dBInvP), dBc = hint4('dbc$q', () => qp().dBInvC);
+      final dCp = hint4('dcp$q', () => qp().dCInvP), dCc = hint4('dcc$q', () => qp().dCInvC);
+      final sTp = _weightedSum(kB, atP), sTc = _weightedSum(kB, atC);
+      final sBp = f.add(sTp, _weightedSumFrom(kB, compP, CT)), sBc = f.add(sTc, _weightedSumFrom(kB, compC, CT));
+      final qTp = f.add(_quotientOfSum(kB, px, py, sBp, dBp), _quotientOfSum(kC, px, py, f.mul(kC.base!, sTp), dCp));
+      final npy = f.neg(py);
+      final qTc = f.add(_quotientOfSum(kB, px, npy, sBc, dBc), _quotientOfSum(kC, px, npy, f.mul(kC.base!, sTc), dCc));
+      final yBi = hint1('ybi$q', () => qp().yBInv);
+      assertEq(f.mul(yBi, py), f.one);
+      var out = _fold(qTp, qTc, yBi, alC);
       var top = bits[a - 1];
       var xA = f.add(px, f.mul(top, f.neg(f.add(px, px)))); // -x when the top bit is set
       // FRI layers
@@ -878,14 +940,11 @@ class VerifierProgramBuilder {
         final lf = hint4('lf${q}_$l', () => qp().lineF0[l]), lg = hint4('lg${q}_$l', () => qp().lineF1[l]);
         // the previous output is the component of this layer's pair the top bit selects
         assertEq(out, f.add(lf, f.mul(top, f.sub(lg, lf))));
-        Wire? outT;
-        if (l == P.foldInIndex) outT = _foldIn(i, q, idx, traceRoot, auxRoot, preRoot, kB, kC, xB, yB, alphas[l]);
         final lLeaf = _leaf([lf, lg]);
         final lbits = _walk(lLeaf, idx, d, friRoots[l], () => qp().linePaths[l]);
         final xi = hint1('lxi${q}_$l', () => qp().lineXInv[l]);
         assertEq(f.mul(xi, xA), f.one);
-        var next = _fold(lf, lg, xi, alphas[l]);
-        if (outT != null) next = f.add(next, outT);
+        final next = _fold(lf, lg, xi, alphas[l]);
         final x2 = f.mul(xA, xA);
         final dbl = f.sub(f.add(x2, x2), f.one);
         if (l < P.numLineFolds - 1) {
@@ -899,8 +958,6 @@ class VerifierProgramBuilder {
     }
   }
 
-  static QM31 _q4(List<int> l, int from) => QM31.fromLimbs(l[from], l[from + 1], l[from + 2], l[from + 3]);
-
   void _withPublics(Air air, List<Wire> pubLane, void Function() body) {
     if (air is Poseidon2ChainAir) air.publicsOverride = pubLane;
     if (air is VerifierAir) air.publicsOverride = pubLane;
@@ -910,54 +967,6 @@ class VerifierProgramBuilder {
       if (air is Poseidon2ChainAir) air.publicsOverride = null;
       if (air is VerifierAir) air.publicsOverride = null;
     }
-  }
-
-  Wire _foldIn(int i, int q, Wire idx, Wire traceRoot, Wire? auxRoot, Wire? preRoot, DeepWires kB, DeepWires kC, Wire xB,
-      Wire yB, Wire alpha) {
-    final shape = shapes[i];
-    final C = shape.C, A = shape.A, R = shape.R;
-    QueryProof qp() => pfAt(i).queries[q];
-    List<Wire> chunks(String tag, int lanes, List<int> Function() src) {
-      final n = (lanes + 3) ~/ 4;
-      final out = <Wire>[];
-      for (int c = 0; c < n; c++) {
-        final k = c;
-        out.add(hint4('$tag${q}_$c', () {
-          final s = src();
-          int at(int i) => i < s.length ? s[i] : 0;
-          return QM31.fromLimbs(at(4 * k), at(4 * k + 1), at(4 * k + 2), at(4 * k + 3));
-        }));
-      }
-      if (out.length.isOdd) out.add(f.zero);
-      return out;
-    }
-
-    final tl = chunks('tl', 2 * C, () => qp().traceLeaf);
-    _walk(_leaf(tl), idx, shape.P.logTraceHalf, traceRoot, () => qp().tracePath);
-    List<Wire> al = const [], pl = const [];
-    if (A > 0) {
-      al = chunks('axl', 2 * A, () => qp().auxLeaf);
-      _walk(_leaf(al), idx, shape.P.logTraceHalf, auxRoot!, () => qp().auxPath);
-    }
-    if (R > 0) {
-      // the root the statement absorbed: one wire for the statement and every query
-      pl = chunks('prl', 2 * R, () => qp().preLeaf);
-      _walk(_leaf(pl), idx, shape.P.logTraceHalf, preRoot!, () => qp().prePath);
-    }
-    List<Wire> lanesOf(List<Wire> ch, int from, int count) =>
-        [for (int j = 0; j < count; j++) f.limb(ch[(from + j) ~/ 4], (from + j) % 4)];
-    final atP = [...lanesOf(tl, 0, C), ...lanesOf(al, 0, A), ...lanesOf(pl, 0, R)];
-    final atC = [...lanesOf(tl, C, C), ...lanesOf(al, A, A), ...lanesOf(pl, R, R)];
-    final dBp = hint4('dbp$q', () => qp().dBInvP), dBc = hint4('dbc$q', () => qp().dBInvC);
-    final dCp = hint4('dcp$q', () => qp().dCInvP), dCc = hint4('dcc$q', () => qp().dCInvC);
-    // group C's weights are kC.base times group B's: one weighted sum per point
-    final sP = _weightedSum(kB, atP), sC = _weightedSum(kB, atC);
-    final qTp = f.add(_quotientOfSum(kB, xB, yB, sP, dBp), _quotientOfSum(kC, xB, yB, f.mul(kC.base!, sP), dCp));
-    final nyB = f.neg(yB);
-    final qTc = f.add(_quotientOfSum(kB, xB, nyB, sC, dBc), _quotientOfSum(kC, xB, nyB, f.mul(kC.base!, sC), dCc));
-    final yBi = hint1('ybi$q', () => qp().yBInv);
-    assertEq(f.mul(yBi, yB), f.one);
-    return _fold(qTp, qTc, yBi, alpha);
   }
 
   Wire _fold(Wire f0, Wire f1, Wire twInv, Wire alpha) => f.add(f.add(f0, f1), f.mul(alpha, f.mul(twInv, f.sub(f0, f1))));
@@ -991,14 +1000,13 @@ class VerifierProgramBuilder {
     return DeepWires(c, aAcc!, bAcc!, dA, dB, dC, weights, base: base);
   }
 
-  /// q = (c Σ w_j f_j - y A - B) dInv with dInv checked against dA x + dB y + dC.
-  Wire _quotient(DeepWires k, Wire px, Wire py, List<Wire> openings, Wire dInv) =>
-      _quotientOfSum(k, px, py, _weightedSum(k, openings), dInv);
+  Wire _weightedSum(DeepWires k, List<Wire> openings) => _weightedSumFrom(k, openings, 0);
 
-  Wire _weightedSum(DeepWires k, List<Wire> openings) {
+  /// The weighted sum with the weights from index [offset] on.
+  Wire _weightedSumFrom(DeepWires k, List<Wire> openings, int offset) {
     Wire? s;
     for (int j = 0; j < openings.length; j++) {
-      final term = f.mul(k.weights[j], openings[j]);
+      final term = f.mul(k.weights[offset + j], openings[j]);
       s = s == null ? term : f.add(s, term);
     }
     return s!;

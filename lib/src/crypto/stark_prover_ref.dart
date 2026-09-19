@@ -32,15 +32,19 @@ import '../script_gen/air.dart' show Air;
 /// Protocol (transcript order):
 ///   1. absorb trace root            -> beta (constraint combination)
 ///   2. absorb composition root      -> t, z = circlePoint(t)
-///   3. absorb OODS values           -> lambdaA, lambdaB, lambdaC, alphaCircle
-///      (trace cols at z, trace cols at z*g, comp cols at z)
+///   3. absorb OODS values           -> lambdaB, lambdaC, alphaCircle
+///      (trace cols at z, trace cols at z*g, composition blocks at z)
 ///   4. for each FRI line layer l: absorb root_l -> alpha_l
 ///   5. absorb final polynomial coefficients; grinding; query indices
 ///
-/// Domains: trace on D_t (size 2^t), committed on D_{t+b}; composition on
-/// D_{t+e} (constraint degree 6, e = 3), committed on D_{t+b+e}. FRI starts
-/// from the composition quotient's circle fold (line size 2^a, a = t+b+e-1)
-/// and folds the trace quotients in at line size 2^(t+b-1).
+/// Domains: trace on D_t (size 2^t), committed on D_{t+b}. The composition
+/// polynomial (2^(t+e) coefficients, constraint degree <= 2^e) is split into
+/// 2^e blocks of trace-size coefficient ranges in the circle FFT basis and
+/// committed as 4 limb columns per block on the same D_{t+b}; its value at z
+/// is the blocks' values combined with StarkParams.chunkMultipliers. One
+/// DEEP quotient over every opened column (group B: trace, aux, pre, blocks
+/// at z; group C: trace at z*g) is circle-folded once and FRI runs from
+/// line size 2^(t+b-1).
 class StarkParams {
   final int logTrace, logBlowup, logExpand, logFinal, numQueries, grindBytes;
 
@@ -63,19 +67,55 @@ class StarkParams {
 
   /// Masked columns have degree up to N and are committed in the 2N space.
   int get logTraceBound => logTrace + (zk ? 1 : 0);
-  int get logCompHalf => logTrace + logBlowup + logExpand - 1; // a
   int get logTraceHalf => logTraceBound + logBlowup - 1;
-  int get numLineFolds => logCompHalf - logFinal;
-  /// Fold whose output line layer has the trace group's size.
-  int get foldInIndex => logCompHalf - logTraceHalf - 1;
+
+  /// The composition polynomial has 2^(logTrace + logExpand) coefficients;
+  /// it is committed as [compChunks] blocks of 2^logTraceBound coefficients
+  /// each (4 limb columns per block) on the trace domain, so every
+  /// commitment, the DEEP quotient and FRI live on one domain. The value at
+  /// a point is the blocks' values combined with [chunkMultipliers].
+  int get logComp => logTrace + logExpand;
+  int get compChunks => 1 << (logComp - logTraceBound);
+  int get compCols => 4 * compChunks;
+  int get numLineFolds => logTraceHalf - logFinal;
   int get finalDegree => 1 << (logFinal - logBlowup);
+
+  /// M_k(x) for each block k: the product over the set bits j of k of
+  /// pi_{logTraceBound - 1 + j}(x), where pi_0(x) = x and pi_{j+1} = 2 pi_j^2 - 1
+  /// (the circle basis element the block's coefficients are relative to).
+  List<QM31> chunkMultipliers(QM31 zx) {
+    var w = zx;
+    for (int i = 0; i < logTraceBound - 1; i++) {
+      w = w * w + w * w - QM31.one;
+    }
+    final factors = <QM31>[];
+    for (int j = 0; j < logComp - logTraceBound; j++) {
+      factors.add(w);
+      w = w * w + w * w - QM31.one;
+    }
+    return [
+      for (int k = 0; k < compChunks; k++)
+        [for (int j = 0; j < factors.length; j++) if ((k >> j) & 1 == 1) factors[j]].fold(QM31.one, (a, b) => a * b)
+    ];
+  }
+
+  /// The composition value at a point from its blocks' values there
+  /// (4 limbs per block, in block order).
+  QM31 compositionFromChunks(List<QM31> compAtZ, QM31 zx) {
+    if (compAtZ.length != compCols) throw ArgumentError('$compCols composition values expected');
+    final m = chunkMultipliers(zx);
+    var total = QM31.zero;
+    for (int k = 0; k < compChunks; k++) {
+      total = total + m[k] * composeColumns(compAtZ.sublist(4 * k, 4 * k + 4));
+    }
+    return total;
+  }
 
   /// Points at which a trace column's value is revealed, directly (p, conj p
   /// per query) or through the composition openings (p*g, conj(p)*g), plus
   /// the two QM31 out-of-domain evaluations (4 M31 dimensions each).
   int get revealedPerColumn => 4 * numQueries + 8;
   bool get zkSufficient => zk && zkRandomizers >= revealedPerColumn && zkRandomizers < (1 << logTrace);
-  static const compCols = 4;
 }
 
 List<int> sha(List<int> a) => crypto.sha256.convert(a).bytes;
@@ -106,6 +146,42 @@ class MerkleTreeRef {
       i >>= 1;
     }
     return out;
+  }
+}
+
+/// A polynomial in the circle FFT basis (the one `CircleFft.evalAt` reads):
+/// coefficient i multiplies y^(bit 0 of i) times, for every set bit j >= 1
+/// of i, pi_{j-1}(x) with pi_0(x) = x and pi_{j+1} = 2 pi_j^2 - 1. The
+/// composition's blocks are contiguous coefficient ranges in this basis.
+class CircleBasisPolyRef {
+  final List<QM31> coef;
+  CircleBasisPolyRef(this.coef);
+
+  /// The basis vector of size n at (x, y).
+  static List<QM31> basisAt(int n, QM31 x, QM31 y) {
+    var out = n == 1 ? [QM31.one] : [QM31.one, y];
+    var tw = x;
+    while (out.length < n) {
+      out = [...out, ...out.map((v) => v * tw)];
+      tw = tw * tw + tw * tw - QM31.one;
+    }
+    return out;
+  }
+
+  QM31 eval(QM31 x, QM31 y) {
+    final b = basisAt(coef.length, x, y);
+    var acc = QM31.zero;
+    for (int i = 0; i < coef.length; i++) {
+      acc = acc + coef[i] * b[i];
+    }
+    return acc;
+  }
+
+  QM31 evalP(CirclePoint p) => eval(embed(p.x), embed(p.y));
+
+  static List<CircleBasisPolyRef> interpolateMulti(List<CirclePoint> pts, List<List<QM31>> vals) {
+    final a = [for (final p in pts) basisAt(pts.length, embed(p.x), embed(p.y))];
+    return [for (final c in solveQMulti(a, vals)) CircleBasisPolyRef(c)];
   }
 }
 
@@ -200,10 +276,8 @@ class CirclePolyRef {
 
 class QueryProof {
   final int index;
-  final List<int> compLeaf; // 4 at p, 4 at conj p
+  final List<int> compLeaf; // compCols at p, compCols at conj p
   final List<List<int>> compPath;
-  final int yAInv;
-  final QM31 dAInvP, dAInvC;
   final List<QM31> lineF0, lineF1; // per line layer
   final List<List<List<int>>> linePaths;
   final List<int> lineXInv;
@@ -218,8 +292,7 @@ class QueryProof {
   final int yBInv;
   final QM31 dBInvP, dBInvC, dCInvP, dCInvC;
   QueryProof({
-    required this.index, required this.compLeaf, required this.compPath, required this.yAInv,
-    required this.dAInvP, required this.dAInvC, required this.lineF0, required this.lineF1,
+    required this.index, required this.compLeaf, required this.compPath, required this.lineF0, required this.lineF1,
     required this.linePaths, required this.lineXInv, required this.traceLeaf, required this.tracePath,
     this.auxLeaf = const [], this.auxPath = const [], this.preLeaf = const [], this.prePath = const [],
     required this.yBInv, required this.dBInvP, required this.dBInvC, required this.dCInvP, required this.dCInvC,
@@ -352,14 +425,22 @@ class StarkProverRef {
       return air.compositionAt(cur, next, air.pointColumnsAt(px, py), air.linearAt(px, py), beta, px, chal: chal);
     }
     final compVals = [for (final p in dC) compAt(p)];
-    final compPolys = CirclePolyRef.interpolateMulti(dC, [
+    // the composition's limb polynomials in the circle FFT basis, whose
+    // contiguous coefficient ranges are the blocks
+    final compPolys = CircleBasisPolyRef.interpolateMulti(dC, [
       for (int k = 0; k < 4; k++) [for (final v in compVals) embed(v.limbs[k])]
     ]);
-    final hA = HalfCoset(P.logCompHalf);
-    List<int> compValsAt(CirclePoint p) => [for (final q in compPolys) q.evalP(p).c0.a];
-    final compAtP = [for (int i = 0; i < hA.size; i++) compValsAt(hA.at(i))];
-    final compAtCj = [for (int i = 0; i < hA.size; i++) compValsAt(CirclePoint(hA.at(i).x, M31.neg(hA.at(i).y)))];
-    final compTree = MerkleTreeRef([for (int i = 0; i < hA.size; i++) hash.leaf([...compAtP[i], ...compAtCj[i]])], hash: hash);
+    // the composition's coefficient blocks (4 limb polynomials per block),
+    // committed on the trace domain like the trace columns
+    final chunkLen = 1 << P.logTraceBound;
+    final chunkPolys = [
+      for (int k = 0; k < P.compChunks; k++)
+        for (int l = 0; l < 4; l++) CircleBasisPolyRef(compPolys[l].coef.sublist(k * chunkLen, (k + 1) * chunkLen))
+    ];
+    List<int> compValsAt(CirclePoint p) => [for (final q in chunkPolys) q.evalP(p).c0.a];
+    final compAtP = [for (int i = 0; i < hB.size; i++) compValsAt(hB.at(i))];
+    final compAtCj = [for (int i = 0; i < hB.size; i++) compValsAt(CirclePoint(hB.at(i).x, M31.neg(hB.at(i).y)))];
+    final compTree = MerkleTreeRef([for (int i = 0; i < hB.size; i++) hash.leaf([...compAtP[i], ...compAtCj[i]])], hash: hash);
 
     ts.absorb(compTree.root);
     final tch = ts.squeezeQM31();
@@ -370,47 +451,41 @@ class StarkProverRef {
     final zgy = zx.scale(gT.y) + zy.scale(gT.x);
     final traceAtZ = [for (final q in allPolys) q.eval(zx, zy)];
     final traceAtZg = [for (final q in allPolys) q.eval(zgx, zgy)];
-    final compAtZ = [for (final q in compPolys) q.eval(zx, zy)];
+    final compAtZ = [for (final q in chunkPolys) q.eval(zx, zy)];
     // pipeline sanity: composition relation holds at z
     final rhs = air.compositionAt(
         traceAtZ, traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
-    if (composeColumns(compAtZ) != rhs) throw StateError('composition relation fails at z');
+    if (P.compositionFromChunks(compAtZ, zx) != rhs) throw StateError('composition relation fails at z');
     ts.absorbLimbs([for (final v in [...traceAtZ, ...traceAtZg, ...compAtZ]) ...v.limbs]);
-    final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
+    final lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
     final dbg = <String, Object>{
       'beta': beta, 'tch': tch, 'zx': zx, 'zy': zy, 'zgx': zgx, 'zgy': zgy,
-      'lamA': lamA, 'lamB': lamB, 'lamC': lamC, 'alC': alC,
-      // masking probes: column 0 at a trace row (must equal the trace) and at
-      // a fixed off-domain point (must vary with the randomizers)
+      'lamB': lamB, 'lamC': lamC, 'alC': alC,
       'probeOn': tracePolys[0].evalP(dT[2]),
       'probeOff': tracePolys[0].evalP(HalfCoset(P.logTraceHalf).at(3)),
     };
 
-    // ---- DEEP quotients ----
-    final kA = DeepQuotientRef.precompute(zx, zy, compAtZ, lamA);
-    final kB = DeepQuotientRef.precompute(zx, zy, traceAtZ, lamB);
+    // group B: every column opened at z (trace, aux, pre, then the
+    // composition blocks); group C: the trace columns at z*g
+    final kB = DeepQuotientRef.precompute(zx, zy, [...traceAtZ, ...compAtZ], lamB);
     final kC = DeepQuotientRef.precompute(zgx, zgy, traceAtZg, lamB, base: lamC);
-    for (final (tag, k) in [('A', kA), ('B', kB), ('C', kC)]) {
+    for (final (tag, k) in [('B', kB), ('C', kC)]) {
       dbg['c$tag'] = k.c; dbg['A$tag'] = k.A; dbg['B$tag'] = k.B;
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;
       dbg['w${tag}1'] = k.weights[1];
     }
-    final l0 = <QM31>[];
-    for (int i = 0; i < hA.size; i++) {
-      final p = hA.at(i);
-      final qp = DeepQuotientRef.quotient(kA, p.x, p.y, compAtP[i]);
-      final qc = DeepQuotientRef.quotient(kA, p.x, M31.neg(p.y), compAtCj[i]);
-      l0.add(foldPair(qp, qc, p.y, alC));
-    }
+    // the DEEP quotients at every trace-domain point, folded once to layer 0
     final qBCp = <QM31>[], qBCc = <QM31>[];
+    final l0 = <QM31>[];
     for (int i = 0; i < hB.size; i++) {
       final p = hB.at(i);
-      qBCp.add(DeepQuotientRef.quotient(kB, p.x, p.y, allAtP[i]) + DeepQuotientRef.quotient(kC, p.x, p.y, allAtP[i]));
-      qBCc.add(DeepQuotientRef.quotient(kB, p.x, M31.neg(p.y), allAtC[i]) + DeepQuotientRef.quotient(kC, p.x, M31.neg(p.y), allAtC[i]));
+      final atP = [...allAtP[i], ...compAtP[i]], atC = [...allAtC[i], ...compAtCj[i]];
+      qBCp.add(DeepQuotientRef.quotient(kB, p.x, p.y, atP) + DeepQuotientRef.quotient(kC, p.x, p.y, allAtP[i]));
+      qBCc.add(DeepQuotientRef.quotient(kB, p.x, M31.neg(p.y), atC) + DeepQuotientRef.quotient(kC, p.x, M31.neg(p.y), allAtC[i]));
+      l0.add(foldPair(qBCp[i], qBCc[i], p.y, alC));
     }
 
-    // ---- 4. FRI line layers ----
-    final a = P.logCompHalf;
+    final a = P.logTraceHalf;
     final layers = <List<QM31>>[l0];
     final trees = <MerkleTreeRef>[];
     final alphas = <QM31>[];
@@ -425,12 +500,6 @@ class StarkProverRef {
       dbg['al$l'] = al;
       final coset = HalfCoset(a - l);
       final next = [for (int i = 0; i < half; i++) foldPair(cur[i], cur[i + half], coset.at(i).x, al)];
-      if (l == P.foldInIndex) {
-        if (next.length != hB.size) throw StateError('fold-in size mismatch');
-        for (int i = 0; i < half; i++) {
-          next[i] = next[i] + foldPair(qBCp[i], qBCc[i], hB.at(i).y, al);
-        }
-      }
       layers.add(next);
     }
     // ---- 5. final polynomial (monomial in x), must be low degree ----
@@ -452,25 +521,20 @@ class StarkProverRef {
     // query 0 intermediates
     {
       final i = indices[0];
-      final p = hA.at(i);
-      dbg['xA'] = p.x; dbg['yA'] = p.y;
-      final pB = hB.at(i % hB.size);
+      final pB = hB.at(i);
       dbg['xB'] = pB.x; dbg['yB'] = pB.y;
-      dbg['qAp'] = DeepQuotientRef.quotient(kA, p.x, p.y, compAtP[i]);
-      dbg['qAc'] = DeepQuotientRef.quotient(kA, p.x, M31.neg(p.y), compAtCj[i]);
       dbg['circleOut'] = l0[i];
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
         il = il % (layers[l].length ~/ 2);
         dbg['fold$l'] = layers[l + 1][il];
       }
-      dbg['qTp'] = qBCp[i % hB.size]; dbg['qTc'] = qBCc[i % hB.size];
+      dbg['qTp'] = qBCp[i]; dbg['qTc'] = qBCc[i];
     }
 
     // ---- 6. openings ----
     final queries = <QueryProof>[];
     for (final i in indices) {
-      final p = hA.at(i);
       final lineF0 = <QM31>[], lineF1 = <QM31>[], linePaths = <List<List<int>>>[], lineXInv = <int>[];
       var il = i;
       for (int l = 0; l < P.numLineFolds; l++) {
@@ -481,15 +545,12 @@ class StarkProverRef {
         linePaths.add(trees[l].path(il));
         lineXInv.add(M31.inv(HalfCoset(a - l).at(il).x));
       }
-      final iB = i % hB.size;
+      final iB = i;
       final pB = hB.at(iB);
       queries.add(QueryProof(
         index: i,
         compLeaf: [...compAtP[i], ...compAtCj[i]],
         compPath: compTree.path(i),
-        yAInv: M31.inv(p.y),
-        dAInvP: DeepQuotientRef.denominator(kA, p.x, p.y).inv,
-        dAInvC: DeepQuotientRef.denominator(kA, p.x, M31.neg(p.y)).inv,
         lineF0: lineF0, lineF1: lineF1, linePaths: linePaths, lineXInv: lineXInv,
         traceLeaf: [...traceAtP[iB], ...traceAtC[iB]],
         tracePath: traceTree.path(iB),

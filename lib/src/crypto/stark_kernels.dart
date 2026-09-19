@@ -101,6 +101,10 @@ class CompositionJob {
   final Uint32List mainSrc, auxSrc; // (kind, index) per input
   final List<Uint32List> cols, per, lin, divs;
   final int logC, logPC;
+
+  /// When > 0, [cols] are coefficient columns of this length (all equal)
+  /// that the kernel evaluates on the composition domain itself.
+  final int coefLen;
   final Uint32List idxNext, idxPer;
   final List<QM31> chal;
   final List<QM31> weights;
@@ -121,6 +125,7 @@ class CompositionJob {
     required this.chal,
     required this.weights,
     required this.divSel,
+    this.coefLen = 0,
   });
 
   /// Resolves [prog]'s input names against the layout: `cur{j}`/`next{j}`
@@ -562,14 +567,14 @@ class StarkKernels implements ProverKernels {
     final desc = _upload1(Uint32List.fromList([
       job.logC, job.cols.length, job.per.length, job.logPC, job.lin.length, job.divs.length,
       job.main.numInputs, job.main.ops.length, job.main.outputs.length,
-      job.aux?.numInputs ?? 0, job.aux?.ops.length ?? 0, job.aux?.outputs.length ?? 0, job.chal.length,
+      job.aux?.numInputs ?? 0, job.aux?.ops.length ?? 0, job.aux?.outputs.length ?? 0, job.chal.length, job.coefLen,
     ]));
     final mainOps = _upload1(CompositionJob.encode(job.main)), mainSrc = _upload1(job.mainSrc);
     final mainOut = _upload1(Uint32List.fromList(job.main.outputs));
     final auxOps = _upload1(job.aux == null ? Uint32List(0) : CompositionJob.encode(job.aux!)), auxSrc = _upload1(job.auxSrc);
     final auxOut = _upload1(Uint32List.fromList(job.aux?.outputs ?? const []));
     final chal = _upload1(Uint32List.fromList([for (final c in job.chal) ...c.limbs]));
-    final cols = _upload(job.cols, nC), per = _upload(job.per, nPC), lin = _upload(job.lin, nC), divs = _upload(job.divs, nC);
+    final cols = _upload(job.cols, job.coefLen > 0 ? job.coefLen : nC), per = _upload(job.per, nPC), lin = _upload(job.lin, nC), divs = _upload(job.divs, nC);
     final idxNext = _upload1(job.idxNext), idxPer = _upload1(job.idxPer);
     final weights = _upload1(Uint32List.fromList([for (final w in job.weights) ...w.limbs])), divSel = _upload1(job.divSel);
     final out = calloc<ffi.Uint32>(4 * nC);

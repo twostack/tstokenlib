@@ -76,8 +76,7 @@ void main() {
         friRoots: proof.friRoots, finalCoefs: proof.finalCoefs, nonce: proof.nonce,
         queries: [
           QueryProof(
-              index: q.index, compLeaf: q.compLeaf, compPath: q.compPath, yAInv: q.yAInv, dAInvP: q.dAInvP,
-              dAInvC: q.dAInvC, lineF0: q.lineF0, lineF1: q.lineF1, linePaths: q.linePaths, lineXInv: q.lineXInv,
+              index: q.index, compLeaf: q.compLeaf, compPath: q.compPath, lineF0: q.lineF0, lineF1: q.lineF1, linePaths: q.linePaths, lineXInv: q.lineXInv,
               traceLeaf: q.traceLeaf, tracePath: q.tracePath, auxLeaf: q.auxLeaf, auxPath: q.auxPath,
               preLeaf: [...q.preLeaf]..[2] ^= 1, prePath: q.prePath, yBInv: q.yBInv, dBInvP: q.dBInvP,
               dBInvC: q.dBInvC, dCInvP: q.dCInvP, dCInvC: q.dCInvC),

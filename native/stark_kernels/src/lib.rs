@@ -898,7 +898,9 @@ pub unsafe extern "C" fn sk_sha256(data: *const u8, len: usize, out: *mut u8) {
 //
 // Encodings (all u32):
 //   desc: [log_c, n_cols, n_per, log_pc, n_lin, n_div,
-//          main_n_inputs, main_n_ops, main_n_out, aux_n_inputs, aux_n_ops, aux_n_out, n_chal]
+//          main_n_inputs, main_n_ops, main_n_out, aux_n_inputs, aux_n_ops, aux_n_out, n_chal,
+//          coef_len (0: cols hold values on the domain; else n_cols coefficient columns of coef_len
+//          words, evaluated on the domain here so the values never cross the FFI boundary)]
 //   ops:  7 words per op: kind (0 add, 1 sub, 2 mul, 3 scale, 4 constant), a, b, imm0..imm3
 //   src:  2 words per input: kind (0 cur, 1 next, 2 per, 3 lin, 4 const, 5 chal), index
 //   cols: n_cols x nC (cur at q, next at idx_next[q]); per: n_per x 2^log_pc (at idx_per[q]);
@@ -1023,7 +1025,7 @@ pub unsafe extern "C" fn sk_composition(
     divs: *const u32,
     out: *mut u32,
 ) {
-    let d = std::slice::from_raw_parts(desc, 13);
+    let d = std::slice::from_raw_parts(desc, 14);
     let (log_c, n_cols, n_per, log_pc, n_lin, n_div) =
         (d[0], d[1] as usize, d[2] as usize, d[3], d[4] as usize, d[5] as usize);
     let n_c = 1usize << log_c;
@@ -1041,10 +1043,19 @@ pub unsafe extern "C" fn sk_composition(
         outs: std::slice::from_raw_parts(aux_out, d[11] as usize),
     };
     let n_out = main.outs.len() + aux.outs.len();
+    let coef_len = d[13] as usize;
+    let evaluated: Vec<u32> = if coef_len == 0 {
+        Vec::new()
+    } else {
+        let coefs = std::slice::from_raw_parts(cols, n_cols * coef_len);
+        let mut ev = vec![0u32; n_cols * n_c];
+        par_fill_u32(&mut ev, n_c, 2, |j, col| evaluate(&coefs[j * coef_len..(j + 1) * coef_len], log_c - 1, col));
+        ev
+    };
     let ctx = RowCtx {
         n_c,
         n_pc,
-        cols: std::slice::from_raw_parts(cols, n_cols * n_c),
+        cols: if coef_len == 0 { std::slice::from_raw_parts(cols, n_cols * n_c) } else { &evaluated },
         per: std::slice::from_raw_parts(per, n_per * n_pc),
         lin: std::slice::from_raw_parts(lin, n_lin * n_c),
         chal: std::slice::from_raw_parts(chal, 4 * d[12] as usize),
