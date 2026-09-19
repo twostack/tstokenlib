@@ -52,6 +52,7 @@ class StarkVerifierGen {
 
   // ---- unlocking-script layout (bottom to top) ----
   List<String> layout() {
+    if (air.numPreCols > 0) throw UnimplementedError('the script verifier does not open preprocessed columns yet');
     final names = <String>[
       for (int k = 0; k < air.numPublics; k++) Air.publicName(k),
       'troot',

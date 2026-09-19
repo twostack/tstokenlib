@@ -1190,6 +1190,73 @@ extension), and whole proofs at test and production parameters. What remains in 
 is the composition evaluation (0.35 s, AIR-specific) and the openings; porting the
 Poseidon2 chain constraint evaluator would bring the prover to about 0.4 s.
 
+### Recursion (built): a verifier inside the proof
+
+The route to hundreds of spends per round is one verifier slot per round checking one
+proof that itself verifies many spend proofs. The building block is a STARK whose
+statement is "this inner proof verifies", and the test of the design is that it can
+verify *itself* without growing: the same circuit, the same proof size and the same
+prover time at every depth.
+
+**Hash flavours.** Inner proofs commit and run their transcript with Poseidon2 over M31
+(`Poseidon2ProofHash`): one permutation is 32 rows of the chain AIR, whereas SHA256
+would cost tens of thousands of constraints. Only the outermost proof, the one a script
+verifies, keeps SHA256. The transcript is in *chain form* (an 8-lane state h, h' =
+P(h ‖ block)[0..8]) so every transcript step is one period of the chain; the
+statement (publics padded to 64 lanes, then the preprocessed root or zeros) is absorbed
+in nine fixed periods, and the state afterwards is the *statement digest*, the only
+public input of the verifier circuit. `StarkVerifierRef` is the Dart reference verifier
+for both flavours, check for check the script's order, and the executable spec the
+circuit follows.
+
+**Generic constraints and preprocessed columns.** An AIR's constraints are written
+once against a `Ring<T>` (`constraintsG`): over QM31 they are the spec, over `M31Ring`
+the prover's fast path, and over an `ExprRing` or the circuit's own `_WireRing` they
+become straight-line arithmetic. The cleared-denominator out-of-domain check
+(`Air.oodCheckG`) is what the script does and what the circuit evaluates. A fourth
+commitment holds *preprocessed columns* (`Air.numPreCols`), fixed per circuit
+instance, opened per query, root pinned by the verifier.
+
+**The verifier AIR (`VerifierAir`).** One circuit for every inner shape: 24 main
+columns (16 Poseidon2 state lanes, two 4-limb bus operands A and B), 20 aux columns
+(a LogUp accumulator with tags and four helper inverses), 32 preprocessed program
+columns, 69 + 8 main constraints and 5 aux constraints. The hash side is the chain:
+the transcript replay, leaf chains and Merkle walks whose direction bits are the
+(boolean) swap bits. Every value lives on the *bus* (producers tagged by row,
+consumers by program tag, multiplicities from the program); a small VM (add, sub,
+mul, mul-by-immediate, constant, limb extract) does the field arithmetic: the inner
+AIR's constraint program at z, the DEEP quotients, folds, the query points from
+their bits, the range checks that bind walk bits and grinding bits to the squeezed
+lanes. `VerifierProgram.compile(shape, logTrace)` lays out the verification of an
+inner shape as periods and VM rows and fills the program columns;
+`witness(proof)` runs the same builder with values.
+
+**Measured.** `test/recursion_depth_test.dart` (small parameters, 2^15 trace) and
+`test/recursion_production_test.dart` (production-grade: the spend proof exactly as
+the pool makes it, 106 conjectured bits; verifier levels at blowup 16, 22 queries,
+14-bit grinding, about 102 bits, on a 2^18 trace):
+
+| Level | Inner statement | Periods used | VM rows | Prover | Proof | Verify |
+|---|---|---|---|---|---|---|
+| 0 | the spend (production params) | | | 1.3 s | 107,852 B | |
+| 1 | the spend proof | 3,341 of 8,192 | 42,060 | 62.2 s | 255,892 B | 83 ms |
+| 2 | level 1 (a verifier proof) | 7,950 of 8,192 | 80,160 | 60.6 s | 255,892 B | 84 ms |
+| 3 | level 2 | 7,950 of 8,192 | 80,160 | 62.4 s | 255,892 B | 84 ms |
+| 4 | level 3 | 7,950 of 8,192 | 80,160 | 62.6 s | 255,892 B | 81 ms |
+
+From level 2 on the program columns are identical (the test asserts it), so the
+circuit, the preprocessed root, the proof size and the prover time are the same at
+every further depth. Of the 61 s per level, 35 s is the composition evaluation of the
+verifier's own constraints in Dart (through the generic `M31Ring`); the native kernels
+do the rest in about 26 s. Porting that evaluation to the Rust crate is the next
+lever and would bring a level to roughly half a minute. Compile and witness
+generation are under 0.4 s.
+
+**What remains for the pool.** The outermost level needs a SHA256-flavour proof and a
+script verifier for `VerifierAir` (its constraint emitter and the preprocessed
+opening in `StarkVerifierGen`), and the round then aggregates N spend proofs in one
+verifier statement rather than one. Neither changes the circuit above.
+
 ## Open Items
 
 - ~~**Deposits bloat the nullifier set.**~~ Done: the public `real1`/`real2` flags

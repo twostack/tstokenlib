@@ -18,12 +18,14 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'circle_fft.dart';
 import 'm31.dart';
+import 'proof_hash.dart';
 import 'stark_kernels.dart';
 import 'stark_prover_ref.dart' show StarkParams, StarkProof, QueryProof, solveQ, embed, composeColumns;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef;
 import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
 import '../script_gen/air.dart' show Air;
 
+export 'proof_hash.dart' show ProofHash, Sha256ProofHash, Poseidon2ProofHash;
 export 'stark_kernels.dart' show MerkleTree, MerkleCommitment, ProverKernels, DartKernels, StarkKernels;
 
 /// FFT-based Circle-STARK prover producing proofs in exactly the layout
@@ -40,10 +42,15 @@ class StarkProver {
   final Air air;
   final bool verbose;
   final ProverKernels kernels;
+
+  /// The hash flavour: SHA256 for a proof a script verifies, Poseidon2 for
+  /// one another proof verifies (see [ProofHash]).
+  final ProofHash hash;
   final Stopwatch _sw = Stopwatch()..start();
   int _last = 0;
 
-  StarkProver(this.P, this.air, {this.verbose = false, ProverKernels? kernels}) : kernels = kernels ?? ProverKernels.best;
+  StarkProver(this.P, this.air, {this.verbose = false, ProverKernels? kernels, this.hash = const Sha256ProofHash()})
+      : kernels = kernels ?? ProverKernels.best;
 
   void _lap(String what) {
     if (!verbose) return;
@@ -54,8 +61,8 @@ class StarkProver {
 
   /// [rows] is the trace: 2^logTrace rows of air.numCols values.
   static StarkProof prove(StarkParams P, Air air, List<List<int>> rows,
-          {Random? rng, bool verbose = false, ProverKernels? kernels}) =>
-      StarkProver(P, air, verbose: verbose, kernels: kernels)._prove(rows, rng ?? Random.secure());
+          {Random? rng, bool verbose = false, ProverKernels? kernels, ProofHash hash = const Sha256ProofHash()}) =>
+      StarkProver(P, air, verbose: verbose, kernels: kernels, hash: hash)._prove(rows, rng ?? Random.secure());
 
   // ---------------------------------------------------------------- prove
 
@@ -64,7 +71,7 @@ class StarkProver {
     final gT = CirclePoint.subgroupGen(t);
     final nCols = air.numCols;
     if (rows.length != n) throw ArgumentError('trace must have $n rows');
-    if (verbose) print('  [prover] kernels: ${kernels.name}');
+    if (verbose) print('  [prover] kernels: ${kernels.name}, hash: ${hash.name}');
 
     // ---- 1. trace on D_t (cyclic order) -> twin layout -> coefficients ----
     final domB = CosetTables.of(P.logTraceHalf);
@@ -74,7 +81,7 @@ class StarkProver {
     /// f' = f + v_t * r, deg_x r < R/2. v_t(x) = π^(t-1)(x) is the x-basis
     /// element of index 2^(t-1), so multiplying r by it shifts r's
     /// coefficients by 2^t in combined index.
-    List<Uint32List> coefsFor(List<Uint32List> cols) {
+    List<Uint32List> coefsFor(List<Uint32List> cols, {bool mask = true}) {
       final twin = <Uint32List>[];
       for (final col in cols) {
         final vals = Uint32List(n);
@@ -84,7 +91,7 @@ class StarkProver {
         twin.add(vals);
       }
       final coefs = kernels.interpolateColumns(twin, t - 1);
-      if (!P.zk) return coefs;
+      if (!P.zk || !mask) return coefs;
       final R = P.zkRandomizers;
       if (R > n) throw ArgumentError('zkRandomizers must be <= trace size');
       return [
@@ -96,7 +103,7 @@ class StarkProver {
     }
 
     /// Commit column coefficients on HalfCoset(logTraceHalf) ∪ conj.
-    (List<Uint32List>, MerkleCommitment) commit(List<Uint32List> coefs) => kernels.commitColumns(coefs, P.logTraceHalf);
+    (List<Uint32List>, MerkleCommitment) commit(List<Uint32List> coefs) => kernels.commitColumns(coefs, P.logTraceHalf, hash);
 
     final traceCoefs = coefsFor([
       for (int j = 0; j < nCols; j++) Uint32List.fromList([for (int k = 0; k < n; k++) rows[k][j]])
@@ -105,8 +112,22 @@ class StarkProver {
     final (traceEv, traceTree) = commit(traceCoefs);
     _lap('trace LDE + merkle');
 
-    final ts = TranscriptRef();
-    if (air.numPublics > 0) ts.absorbLimbs(air.publicValues);
+    // preprocessed columns: public, unmasked, committed on the same domain
+    // (cached per instance: the verifier knows this root)
+    var preCoefs = <Uint32List>[];
+    var preEv = <Uint32List>[];
+    MerkleCommitment? preTree;
+    if (air.numPreCols > 0) {
+      final pc = PreCommitment.of(air, P, hash, kernels: kernels);
+      // same coefficient length as the (masked) trace columns: zero-padding is the same polynomial
+      preCoefs = [for (final c in pc.coefs) c.length == traceCoefs[0].length ? c : (Uint32List(traceCoefs[0].length)..setRange(0, c.length, c))];
+      preEv = pc.ev;
+      preTree = pc.tree;
+      _lap('preprocessed columns');
+    }
+
+    final ts = hash.transcript();
+    ts.absorbStatement(air.publicValues, preTree?.root ?? const []);
     ts.absorb(traceTree.root);
 
     // ---- interaction round: challenges, aux columns, aux commitment ----
@@ -122,8 +143,8 @@ class StarkProver {
       ts.absorb(auxTree.root);
       _lap('aux round');
     }
-    final allCoefs = [...traceCoefs, ...auxCoefs];
-    final allEv = [...traceEv, ...auxEv];
+    final allCoefs = [...traceCoefs, ...auxCoefs, ...preCoefs];
+    final allEv = [...traceEv, ...auxEv, ...preEv];
     final nAll = allCoefs.length;
     final beta = ts.squeezeQM31();
 
@@ -212,7 +233,7 @@ class StarkProver {
     final compCoefs = kernels.interpolateColumns(compLimbs, logC - 1);
     final domA = CosetTables.of(P.logCompHalf);
     final mA = domA.size;
-    final (compEv, compTree) = kernels.commitColumns(compCoefs, P.logCompHalf);
+    final (compEv, compTree) = kernels.commitColumns(compCoefs, P.logCompHalf, hash);
     _lap('composition LDE + merkle');
 
     ts.absorb(compTree.root);
@@ -262,7 +283,7 @@ class StarkProver {
     for (int l = 0; l < P.numLineFolds; l++) {
       final curL = layers[l];
       final logLen = a - l;
-      final tree = kernels.merklePairs(curL, logLen);
+      final tree = kernels.merklePairs(curL, logLen, hash);
       trees.add(tree);
       ts.absorb(tree.root);
       final al = ts.squeezeQM31();
@@ -346,6 +367,8 @@ class StarkProver {
         tracePath: traceTree.path(iB),
         auxLeaf: [for (final c in auxEv) c[iB], for (final c in auxEv) c[mB + iB]],
         auxPath: auxTree?.path(iB) ?? const [],
+        preLeaf: [for (final c in preEv) c[iB], for (final c in preEv) c[mB + iB]],
+        prePath: preTree?.path(iB) ?? const [],
         yBInv: domB.yInv[iB],
         dBInvP: DeepQuotientRef.denominator(kB, pBx, pBy).inv,
         dBInvC: DeepQuotientRef.denominator(kB, pBx, M31.neg(pBy)).inv,
@@ -355,11 +378,49 @@ class StarkProver {
     }
     _lap('openings');
     final proof = StarkProof(
-      traceRoot: traceTree.root, compRoot: compTree.root, auxRoot: auxTree?.root ?? const [], zHint: zHint,
+      traceRoot: traceTree.root, compRoot: compTree.root, auxRoot: auxTree?.root ?? const [],
+      preRoot: preTree?.root ?? const [], zHint: zHint,
       traceAtZ: traceAtZ, traceAtZg: traceAtZg, compAtZ: compAtZ,
       friRoots: trees.map((t) => t.root).toList(), finalCoefs: finalCoefs, nonce: nonce, queries: queries,
     );
     proof.debug.addAll(dbg);
     return proof;
   }
+}
+
+/// The commitment of an AIR's preprocessed columns under given parameters
+/// and hash: coefficients, evaluations and tree, computed once per
+/// instance (the prover needs all three, the verifier only the root).
+class PreCommitment {
+  final List<Uint32List> coefs, ev;
+  final MerkleCommitment tree;
+  PreCommitment(this.coefs, this.ev, this.tree);
+
+  static final Map<String, PreCommitment> _cache = {};
+
+  static String _key(Air air, StarkParams P, ProofHash hash) =>
+      '${identityHashCode(air)}:${P.logTrace}:${P.logTraceHalf}:${hash.name}';
+
+  static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) =>
+      _cache.putIfAbsent(_key(air, P, hash), () {
+        final k = kernels ?? ProverKernels.best;
+        final t = P.logTrace, n = 1 << t;
+        final cols = air.preColumns();
+        if (cols.length != air.numPreCols) throw StateError('preColumns returned ${cols.length} columns');
+        final twin = <Uint32List>[];
+        for (final col in cols) {
+          if (col.length != n) throw StateError('preprocessed column has ${col.length} rows');
+          final vals = Uint32List(n);
+          for (int r = 0; r < n; r++) {
+            vals[CircleFft.twinIndex(t, r)] = col[r];
+          }
+          twin.add(vals);
+        }
+        final coefs = k.interpolateColumns(twin, t - 1);
+        final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
+        return PreCommitment(coefs, ev, tree);
+      });
+
+  /// The root the verifier expects for [air].
+  static List<int> root(Air air, StarkParams P, ProofHash hash) => of(air, P, hash).tree.root;
 }

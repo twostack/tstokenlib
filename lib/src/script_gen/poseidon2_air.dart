@@ -16,9 +16,9 @@
 
 import 'dart:typed_data';
 import '../crypto/circle_fft.dart';
-import '../crypto/m31.dart';
 import '../crypto/poseidon2_m31.dart';
 import 'air.dart';
+import 'air_ring.dart';
 import 'm31_script_gen.dart';
 import 'deep_quotient_script_gen.dart' show limbNames;
 import 'air_ood_script_gen.dart' show AirOodScriptGen;
@@ -125,38 +125,36 @@ class Poseidon2Air extends Air {
   // ---------------------------------------------------------------- QM31 spec
 
   @override
-  List<QM31> constraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin) {
+  List<T> constraintsG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> per, List<T> lin) {
     final sE = per[_colSE], sP = per[_colSP], sL = per[_colSL];
-    final t = List.generate(16, (k) => _pow5Q(cur[k] + per[k]));
-    final a = List.generate(16, (k) => sE * t[k] + sL * cur[k]);
-    final b = List.generate(16, (k) => sP * (k == 0 ? t[0] : cur[k]));
-    final mea = _externalLayerQ(a);
-    var sum = QM31.zero;
-    for (final v in b) {
-      sum = sum + v;
+    final t = List.generate(16, (k) => pow5G(f, f.add(cur[k], per[k])));
+    final a = List.generate(16, (k) => f.add(f.mul(sE, t[k]), f.mul(sL, cur[k])));
+    final b = List.generate(16, (k) => f.mul(sP, k == 0 ? t[0] : cur[k]));
+    final mea = externalLayerG(f, a);
+    var sum = b[0];
+    for (int k = 1; k < 16; k++) {
+      sum = f.add(sum, b[k]);
     }
-    final s = sE + sP + sL;
-    return List.generate(16, (j) => s * next[j] - mea[j] - (sum + b[j].scale(Poseidon2M31.internalDiag[j])));
+    final s = f.add(f.add(sE, sP), sL);
+    return List.generate(
+        16, (j) => f.sub(f.sub(f.mul(s, next[j]), mea[j]), f.add(sum, f.scale(b[j], Poseidon2M31.internalDiag[j]))));
   }
 
-  static QM31 _pow5Q(QM31 x) {
-    final x2 = x * x;
-    return x2 * x2 * x;
+  static T pow5G<T>(Ring<T> f, T x) {
+    final x2 = f.mul(x, x);
+    return f.mul(f.mul(x2, x2), x);
   }
 
-  static List<QM31> _externalLayerQ(List<QM31> s) {
-    final y = List<QM31>.filled(16, QM31.zero);
+  /// The external linear layer circ(2·M4, M4, M4, M4) over a ring.
+  static List<T> externalLayerG<T>(Ring<T> f, List<T> s) {
+    final y = <T>[];
     for (int b = 0; b < 4; b++) {
       for (int r = 0; r < 4; r++) {
-        var acc = QM31.zero;
-        for (int c = 0; c < 4; c++) {
-          acc = acc + s[4 * b + c].scale(Poseidon2M31.m4[r][c]);
-        }
-        y[4 * b + r] = acc;
+        y.add(f.linear([for (int c = 0; c < 4; c++) s[4 * b + c]], Poseidon2M31.m4[r]));
       }
     }
-    final sums = List<QM31>.generate(4, (r) => y[r] + y[4 + r] + y[8 + r] + y[12 + r]);
-    return List.generate(16, (i) => y[i] + sums[i % 4]);
+    final sums = List<T>.generate(4, (r) => f.add(f.add(y[r], y[4 + r]), f.add(y[8 + r], y[12 + r])));
+    return List.generate(16, (i) => f.add(y[i], sums[i % 4]));
   }
 
   // ---------------------------------------------------------------- M31 fast path

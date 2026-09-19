@@ -432,6 +432,130 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+// ------------------------------------------------------------------ Poseidon2 over M31 (width 16)
+
+const P2_WIDTH: usize = 16;
+const P2_HALF_FULL: usize = 4;
+const P2_FULL: usize = 8;
+const P2_PARTIAL: usize = 14;
+/// Round constants: external 8 x 16, then internal 14 (passed in from Dart,
+/// which derives them; see `Poseidon2M31`).
+const P2_RC_LEN: usize = P2_FULL * P2_WIDTH + P2_PARTIAL;
+
+const M4: [[u32; 4]; 4] = [[5, 7, 1, 3], [4, 6, 1, 1], [1, 3, 5, 7], [1, 1, 4, 6]];
+
+fn p2_internal_diag() -> [u32; 16] {
+    let shifts = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16];
+    let mut d = [0u32; 16];
+    d[0] = P - 2;
+    for (i, s) in shifts.iter().enumerate() {
+        d[i + 1] = 1u32 << s;
+    }
+    d
+}
+
+#[inline(always)]
+fn pow5(x: u32) -> u32 {
+    let x2 = mul(x, x);
+    mul(mul(x2, x2), x)
+}
+
+fn p2_external_layer(s: &mut [u32; 16]) {
+    let mut y = [0u32; 16];
+    for b in 0..4 {
+        for r in 0..4 {
+            let mut acc = 0u32;
+            for c in 0..4 {
+                acc = add(acc, mul(s[4 * b + c], M4[r][c]));
+            }
+            y[4 * b + r] = acc;
+        }
+    }
+    for r in 0..4 {
+        let sum = add(add(y[r], y[4 + r]), add(y[8 + r], y[12 + r]));
+        for b in 0..4 {
+            y[4 * b + r] = add(y[4 * b + r], sum);
+        }
+    }
+    *s = y;
+}
+
+fn p2_internal_layer(s: &mut [u32; 16], diag: &[u32; 16]) {
+    let mut sum = 0u32;
+    for v in s.iter() {
+        sum = add(sum, *v);
+    }
+    for j in 0..16 {
+        s[j] = add(sum, mul(diag[j], s[j]));
+    }
+}
+
+/// The full permutation, exactly as `Poseidon2M31.permute`.
+fn p2_permute(s: &mut [u32; 16], rc: &[u32], diag: &[u32; 16]) {
+    p2_external_layer(s);
+    for r in 0..P2_HALF_FULL {
+        for k in 0..16 {
+            s[k] = pow5(add(s[k], rc[r * 16 + k]));
+        }
+        p2_external_layer(s);
+    }
+    for r in 0..P2_PARTIAL {
+        s[0] = pow5(add(s[0], rc[P2_FULL * 16 + r]));
+        p2_internal_layer(s, diag);
+    }
+    for r in P2_HALF_FULL..P2_FULL {
+        for k in 0..16 {
+            s[k] = pow5(add(s[k], rc[r * 16 + k]));
+        }
+        p2_external_layer(s);
+    }
+}
+
+/// P(left || right)[0..8]
+#[inline]
+fn p2_compress(left: &[u32], right: &[u32], rc: &[u32], diag: &[u32; 16], out: &mut [u32]) {
+    let mut s = [0u32; 16];
+    s[..8].copy_from_slice(left);
+    s[8..].copy_from_slice(right);
+    p2_permute(&mut s, rc, diag);
+    out.copy_from_slice(&s[..8]);
+}
+
+/// Leaf over lanes: h = 0; h = P(h || chunk)[0..8] per zero-padded 8-lane chunk.
+fn p2_leaf(lanes: &[u32], rc: &[u32], diag: &[u32; 16], out: &mut [u32]) {
+    let mut h = [0u32; 8];
+    let chunks = if lanes.is_empty() { 1 } else { (lanes.len() + 7) / 8 };
+    for c in 0..chunks {
+        let mut chunk = [0u32; 8];
+        for i in 0..8 {
+            let k = c * 8 + i;
+            if k < lanes.len() {
+                chunk[i] = lanes[k];
+            }
+        }
+        let mut next = [0u32; 8];
+        p2_compress(&h, &chunk, rc, diag, &mut next);
+        h = next;
+    }
+    out.copy_from_slice(&h);
+}
+
+/// Build the levels above the leaves already written at `tree[..leaves*8]` (lanes).
+fn merkle_above_p2(tree: &mut [u32], leaves: usize, rc: &[u32], diag: &[u32; 16]) {
+    let mut offset = 0usize;
+    let mut len = leaves;
+    while len > 1 {
+        let next = len / 2;
+        let (below, above) = tree.split_at_mut(offset + len * 8);
+        let prev = &below[offset..offset + len * 8];
+        par_fill_u32(&mut above[..next * 8], 8, 2048, |i, node| {
+            p2_compress(&prev[16 * i..16 * i + 8], &prev[16 * i + 8..16 * i + 16], rc, diag, node);
+        });
+        offset += len * 8;
+        len = next;
+    }
+}
+
 // ------------------------------------------------------------------ parallel helpers
 
 fn threads() -> usize {
@@ -517,7 +641,70 @@ fn tree_bytes(leaves: usize) -> usize {
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    1
+    2
+}
+
+/// One Poseidon2 permutation of 16 lanes in place, with the round constants
+/// `rc` (external 8 x 16, then internal 14).
+#[no_mangle]
+pub unsafe extern "C" fn sk_poseidon2_permute(state: *mut u32, rc: *const u32) {
+    let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
+    let s = std::slice::from_raw_parts_mut(state, 16);
+    let diag = p2_internal_diag();
+    let mut st = [0u32; 16];
+    st.copy_from_slice(s);
+    p2_permute(&mut st, rc, &diag);
+    s.copy_from_slice(&st);
+}
+
+/// [sk_commit_columns] with Poseidon2: leaf i is the Poseidon2 leaf of the
+/// 2k lanes `ev[j][i]`, `ev[j][M+i]`; `out_tree` holds `(2M - 1) * 8` lanes.
+#[no_mangle]
+pub unsafe extern "C" fn sk_commit_columns_p2(
+    coefs: *const u32,
+    k: usize,
+    len: usize,
+    m: u32,
+    rc: *const u32,
+    out_ev: *mut u32,
+    out_tree: *mut u32,
+) {
+    let big_m = 1usize << m;
+    let n = 2 * big_m;
+    let coefs = std::slice::from_raw_parts(coefs, k * len);
+    let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
+    let ev = std::slice::from_raw_parts_mut(out_ev, k * n);
+    let tree = std::slice::from_raw_parts_mut(out_tree, (2 * big_m - 1) * 8);
+    let diag = p2_internal_diag();
+    par_fill_u32(ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
+    let ev: &[u32] = ev;
+    par_fill_u32(&mut tree[..big_m * 8], 8, 2048, |i, leaf| {
+        let mut lanes = vec![0u32; 2 * k];
+        for j in 0..k {
+            lanes[j] = ev[j * n + i];
+            lanes[k + j] = ev[j * n + big_m + i];
+        }
+        p2_leaf(&lanes, rc, &diag, leaf);
+    });
+    merkle_above_p2(tree, big_m, rc, &diag);
+}
+
+/// [sk_merkle_pairs] with Poseidon2; `out_tree` holds `(2h - 1) * 8` lanes.
+#[no_mangle]
+pub unsafe extern "C" fn sk_merkle_pairs_p2(cur: *const u32, log_len: u32, rc: *const u32, out_tree: *mut u32) {
+    let len = 1usize << log_len;
+    let h = len / 2;
+    let cur = std::slice::from_raw_parts(cur, 4 * len);
+    let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
+    let tree = std::slice::from_raw_parts_mut(out_tree, (2 * h - 1) * 8);
+    let diag = p2_internal_diag();
+    par_fill_u32(&mut tree[..h * 8], 8, 2048, |i, leaf| {
+        let mut lanes = [0u32; 8];
+        lanes[..4].copy_from_slice(&cur[4 * i..4 * i + 4]);
+        lanes[4..].copy_from_slice(&cur[4 * (h + i)..4 * (h + i) + 4]);
+        p2_leaf(&lanes, rc, &diag, leaf);
+    });
+    merkle_above_p2(tree, h, rc, &diag);
 }
 
 /// `k` columns of 2^(m+1) values (twin layout) -> `k` columns of coefficients.

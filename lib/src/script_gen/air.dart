@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 import '../crypto/circle_fft.dart';
 import '../crypto/m31.dart';
+import 'air_ring.dart';
 import 'm31_script_gen.dart';
 import 'deep_quotient_script_gen.dart' show limbNames;
 import 'air_ood_script_gen.dart' show AirOodScriptGen;
@@ -97,8 +98,17 @@ abstract class Air {
   /// [numConstraints].
   List<ConstraintGroup> get groups => [ConstraintGroup(numConstraints)];
 
-  /// Constraint values over QM31 (the executable spec).
-  List<QM31> constraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin);
+  /// Constraint values over QM31 (the executable spec). By default the
+  /// generic formulation [constraintsG] evaluated over [QM31Ring].
+  List<QM31> constraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin) =>
+      constraintsG(QM31Ring.instance, cur, next, per, lin);
+
+  /// The constraints written once against a [Ring], so the same code yields
+  /// values (over QM31) or a [Program] (over [ExprRing]) for a verifier that
+  /// runs inside another circuit. AIRs that only provide [constraints]
+  /// cannot be verified recursively.
+  List<T> constraintsG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> per, List<T> lin) =>
+      throw UnimplementedError('$runtimeType has no generic constraints');
 
   /// Base-field fast path for the prover: fills [out] (numConstraints).
   void constraintsM31(Uint32List cur, Uint32List next, Uint32List per, Uint32List lin, Uint32List out);
@@ -124,7 +134,21 @@ abstract class Air {
   int get numChallenges => 0;
   int get numAuxCols => 0;
   int get numAuxConstraints => 0;
-  int get totalCols => numCols + numAuxCols;
+
+  // ---------------------------------------------------------------- preprocessed columns
+  //
+  // Fixed public columns of the circuit instance (a verifier AIR's program),
+  // committed once on the trace domain; the verifier knows the root. They
+  // are opened and evaluated out of domain like trace columns and occupy
+  // the indices after the aux columns in every cur/next list.
+
+  int get numPreCols => 0;
+
+  /// The preprocessed column values (numPreCols columns of 2^logTrace rows).
+  List<Uint32List> preColumns() => const [];
+
+  int get totalCols => numCols + numAuxCols + numPreCols;
+  int get preCol0 => numCols + numAuxCols;
   int get totalConstraints => numConstraints + numAuxConstraints;
 
   /// The aux column values (numAuxCols columns of 2^logTrace rows) for the
@@ -135,7 +159,11 @@ abstract class Air {
   /// entries. A QM31-valued aux column is four base columns whose values at a
   /// point compose as [composeLimbs].
   List<QM31> auxConstraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin, List<QM31> chal) =>
-      const [];
+      numAuxConstraints == 0 ? const [] : auxConstraintsG(QM31Ring.instance, cur, next, per, lin, chal);
+
+  /// Generic form of [auxConstraints] (see [constraintsG]).
+  List<T> auxConstraintsG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> per, List<T> lin, List<T> chal) =>
+      numAuxConstraints == 0 ? const [] : throw UnimplementedError('$runtimeType has no generic aux constraints');
 
   /// Base-field fast path: [cur]/[next] hold [totalCols] M31 values, [out]
   /// receives [numAuxConstraints] QM31 values.
@@ -216,6 +244,111 @@ abstract class Air {
       lo += g.count;
     }
     return total;
+  }
+
+  // ---------------------------------------------------------------- generic evaluation
+
+  /// The doubling chain from (x, y): x_i = π^i(x); returns (x_0..x_{n},
+  /// y_d) with d = logTrace - logPeriod, as the periodic evaluation needs.
+  (List<T>, T) doublingChainG<T>(Ring<T> f, T x, T y) {
+    final d = logTrace - logPeriod;
+    final xs = <T>[x];
+    var py = y;
+    for (int i = 0; i < logTrace - 1; i++) {
+      final xi = xs[i];
+      if (i < d) {
+        final xy = f.mul(xi, py);
+        py = f.add(xy, xy);
+      }
+      final x2 = f.mul(xi, xi);
+      xs.add(f.sub(f.add(x2, x2), f.one));
+    }
+    return (xs, py);
+  }
+
+  /// `CircleFft.evalAt` over a ring: an M31 coefficient vector at (x, y).
+  static T evalCoefsG<T>(Ring<T> f, List<int> coefs, T x, T y) {
+    final n = CircleFft.log2(coefs.length);
+    if (n == 0) return f.constM31(coefs[0]);
+    var v = List<T>.generate(coefs.length >> 1, (j) => f.add(f.constM31(coefs[2 * j]), f.scale(y, coefs[2 * j + 1])));
+    var tw = x;
+    for (int k = 1; k < n; k++) {
+      final t = tw;
+      v = List<T>.generate(v.length >> 1, (j) => f.add(v[2 * j], f.mul(t, v[2 * j + 1])));
+      final t2 = f.mul(tw, tw);
+      tw = f.sub(f.add(t2, t2), f.one);
+    }
+    return v[0];
+  }
+
+  /// [periodicAt] over a ring, given the doubling chain.
+  List<T> periodicAtG<T>(Ring<T> f, List<T> xs, T yd) {
+    final d = logTrace - logPeriod;
+    return [for (final c in periodicCoefs) evalCoefsG(f, c, xs[d], yd)];
+  }
+
+  List<T> linearAtG<T>(Ring<T> f, T x, T y) => [for (final lf in linearForms) f.linear([x, y], [lf.alpha, lf.gamma])];
+
+  /// The out-of-domain check with denominators cleared, exactly as the
+  /// script does it (`AirScriptGen.emitOodsCheck`): returns
+  ///   compose(comp) · v · Lall  −  (Lall · main + v · Σ_d S_d · Lskip_d)
+  /// which is zero iff `compose(comp) == compositionAt(...)` (divisors are
+  /// nonzero off the trace domain). Every constraint keeps its global power
+  /// of beta, as soundness requires.
+  T oodCheckG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> comp, T beta, T zx, T zy, {List<T> chal = const []}) {
+    final lin = linearAtG(f, zx, zy);
+    final (xs, yd) = doublingChainG(f, zx, zy);
+    final per = periodicAtG(f, xs, yd);
+    final v = xs[logTrace - 1];
+    final cs = [...constraintsG(f, cur, next, per, lin), ...auxConstraintsG(f, cur, next, per, lin, chal)];
+    final groups = allGroups;
+    final divs = <int>[];
+    for (final g in groups) {
+      if (g.divisor >= 0 && !divs.contains(g.divisor)) divs.add(g.divisor);
+    }
+    // per-group Horner weighted by beta^{lo}
+    T? main;
+    final byDiv = <int, T>{};
+    var lo = 0;
+    var bp = f.one;
+    for (final g in groups) {
+      var h = f.horner(cs.sublist(lo, lo + g.count), beta);
+      if (lo > 0) h = f.mul(h, bp);
+      if (g.divisor < 0) {
+        main = main == null ? h : f.add(main, h);
+      } else {
+        byDiv[g.divisor] = byDiv.containsKey(g.divisor) ? f.add(byDiv[g.divisor]!, h) : h;
+      }
+      for (int k = 0; k < g.count; k++) {
+        bp = f.mul(bp, beta);
+      }
+      lo += g.count;
+    }
+    final mainV = main ?? f.zero;
+    T rhs;
+    T? lall;
+    if (divs.isEmpty) {
+      rhs = mainV;
+    } else {
+      var l = lin[divs[0]];
+      for (int i = 1; i < divs.length; i++) {
+        l = f.mul(l, lin[divs[i]]);
+      }
+      lall = l;
+      rhs = f.mul(l, mainV);
+      for (final d in divs) {
+        T? skip;
+        for (final e in divs) {
+          if (e == d) continue;
+          skip = skip == null ? lin[e] : f.mul(skip, lin[e]);
+        }
+        final term = skip == null ? byDiv[d]! : f.mul(byDiv[d]!, skip);
+        rhs = f.add(rhs, f.mul(v, term));
+      }
+    }
+    var lhs = f.mul(f.composeLimbs(comp), v);
+    if (lall != null) lhs = f.mul(lhs, lall);
+    return f.sub(lhs, rhs);
   }
 
   /// Sanity check on the group declaration; call once from a test.

@@ -39,8 +39,8 @@ void main() {
       expect(native.evaluateColumns(cd, m), dart.evaluateColumns(cd, m), reason: 'evaluate m=$m');
       // low-degree extension: shorter coefficient vectors onto a larger domain, plus the commitment
       final short = [for (final c in cd) Uint32List.fromList(c.sublist(0, n ~/ 4))];
-      final (evD, treeD) = dart.commitColumns(short, m + 2);
-      final (evN, treeN) = native.commitColumns(short, m + 2);
+      final (evD, treeD) = dart.commitColumns(short, m + 2, const Sha256ProofHash());
+      final (evN, treeN) = native.commitColumns(short, m + 2, const Sha256ProofHash());
       expect(evN, evD, reason: 'LDE m=$m');
       expect(treeN.root, treeD.root, reason: 'root m=$m');
       expect(treeN.depth, treeD.depth);
@@ -71,7 +71,7 @@ void main() {
       // a line layer of length 2^m (4 limbs each)
       final layer = Uint32List.fromList(qD.sublist(0, 4 * mm));
       expect(native.lineFold(layer, m, alpha), dart.lineFold(layer, m, alpha), reason: 'line fold m=$m');
-      final tD = dart.merklePairs(layer, m), tN = native.merklePairs(layer, m);
+      final tD = dart.merklePairs(layer, m, const Sha256ProofHash()), tN = native.merklePairs(layer, m, const Sha256ProofHash());
       expect(tN.root, tD.root, reason: 'pairs root m=$m');
       expect(tN.path(mm ~/ 2 - 1), tD.path(mm ~/ 2 - 1), reason: 'pairs path m=$m');
     }

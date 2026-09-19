@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 import '../crypto/m31.dart';
 import 'air.dart';
+import 'air_ring.dart';
 import 'm31_script_gen.dart';
 import 'deep_quotient_script_gen.dart' show limbNames;
 import 'air_ood_script_gen.dart' show AirOodScriptGen;
@@ -399,6 +400,33 @@ class Poseidon2ChainAir extends Poseidon2Air {
     return accN - acc - sG * ((_gpow[9] - QM31.one) * acc + g * s);
   }
 
+  /// The aux constraint over a ring, with the gamma-derived constants
+  /// computed in the ring (no memoisation: a program records them once).
+  @override
+  List<T> auxConstraintsG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> per, List<T> lin, List<T> chal) {
+    if (binding == null) return const [];
+    final gamma = chal[0];
+    final gpow = <T>[f.one];
+    for (int j = 1; j <= 9; j++) {
+      gpow.add(f.mul(gpow[j - 1], gamma));
+    }
+    final c = f.pow(gpow[9], binding!.offset);
+    final wa = f.scale(f.addConst(c, 4), _halfM31);
+    final wb = f.scale(f.neg(f.addConst(c, 2)), _halfM31);
+    final acc = f.composeLimbs(cur.sublist(auxCol0, auxCol0 + 4));
+    final accN = f.composeLimbs(next.sublist(auxCol0, auxCol0 + 4));
+    final m = next[modeCol];
+    final g = f.mul(m, f.add(wa, f.mul(wb, m)));
+    T p = f.zero, q = f.zero;
+    for (int j = 7; j >= 0; j--) {
+      p = f.add(f.mul(p, gamma), next[8 + j]);
+      q = f.add(f.mul(q, gamma), f.sub(next[j], next[8 + j]));
+    }
+    final s = f.add(p, f.mul(cur[colSwapBit], f.add(q, gpow[8])));
+    final inner = f.add(f.mul(f.sub(gpow[9], f.one), acc), f.mul(g, s));
+    return [f.sub(f.sub(accN, acc), f.mul(per[_colSG], inner))];
+  }
+
   @override
   List<QM31> auxConstraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin, List<QM31> chal) {
     if (binding == null) return const [];
@@ -634,71 +662,87 @@ class Poseidon2ChainAir extends Poseidon2Air {
   static (int, int) lagrange(int a, int b) =>
       (M31.mul(M31.add(a, b), _half), M31.mul(M31.sub(a, b), _half));
 
-  // ---------------------------------------------------------------- QM31 spec
+  // ---------------------------------------------------------------- generic spec
+
+  /// The public inputs as ring values when set: a recorded program then
+  /// takes them at run time instead of baking in this instance's [publics].
+  List<Object>? publicsOverride;
 
   @override
-  List<QM31> constraints(List<QM31> cur, List<QM31> next, List<QM31> per, List<QM31> lin) {
-    final out = <QM31>[
-      ...super.constraints(cur.sublist(0, 16), next.sublist(0, 16), per.sublist(0, 19), const [])
+  List<T> constraintsG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> per, List<T> lin) {
+    final out = <T>[
+      ...super.constraintsG(f, cur.sublist(0, 16), next.sublist(0, 16), per.sublist(0, 19), const [])
     ];
     final sC = per[_colSC], sG = per[_colSG], sF = per[_colSFree];
-    var v = QM31.one;
-    for (final f in _breakForms) {
-      v = v * lin[f];
+    var v = f.one;
+    for (final fm in _breakForms) {
+      v = f.mul(v, lin[fm]);
     }
-    final t = sG * v;
+    final t = f.mul(sG, v);
     final b = cur[colSwapBit];
-    final u = sC + t, w = t * b;
+    final u = f.add(sC, t), w = f.mul(t, b);
     for (int j = 0; j < 8; j++) {
-      out.add(u * (next[j] - cur[j]) + w * (next[j + 8] - next[j]));
+      out.add(f.add(f.mul(u, f.sub(next[j], cur[j])), f.mul(w, f.sub(next[j + 8], next[j]))));
     }
-    out.add(sG * (b * b - b));
+    out.add(f.mul(sG, f.sub(f.mul(b, b), b)));
     for (int k = 0; k < registers.length; k++) {
-      var vr = QM31.one;
-      for (final f in _regForms[k]) {
-        vr = vr * lin[f];
+      var vr = f.one;
+      for (final fm in _regForms[k]) {
+        vr = f.mul(vr, lin[fm]);
       }
-      out.add(vr * (next[regCol0 + k] - cur[regCol0 + k]));
+      out.add(f.mul(vr, f.sub(next[regCol0 + k], cur[regCol0 + k])));
     }
-    var bits = QM31.zero;
-    for (int k = bitLanes - 1; k >= 0; k--) {
-      bits = bits + bits + cur[bitLane0 + k];
-    }
+    final bits = f.linear([for (int k = 0; k < bitLanes; k++) cur[bitLane0 + k]], [for (int k = 0; k < bitLanes; k++) 1 << k]);
     for (int a = 0; a < accumulators.length; a++) {
       final c = accCol0 + a;
-      out.add(next[c] - per[_colAcc0 + 2 * a] * cur[c] - per[_colAcc0 + 2 * a + 1] * bits);
+      out.add(f.sub(f.sub(next[c], f.mul(per[_colAcc0 + 2 * a], cur[c])), f.mul(per[_colAcc0 + 2 * a + 1], bits)));
     }
     for (int k = 0; k < bitLanes; k++) {
       final x = cur[bitLane0 + k];
-      out.add(sF * (x * x - x));
+      out.add(f.mul(sF, f.sub(f.mul(x, x), x)));
     }
     if (hasPosition) {
       // V * (pos' - pos - sG * m(2 - m) * (pos + b)), m the next row's mode,
       // V the form excepting the reset transition
       final m = next[modeCol], p = cur[posCol];
-      out.add(lin[_posForm] * (next[posCol] - p - sG * (m * (QM31.fromLimbs(2, 0, 0, 0) - m)) * (p + b)));
+      final w2 = f.mul(m, f.sub(f.constM31(2), m));
+      out.add(f.mul(lin[_posForm], f.sub(f.sub(next[posCol], p), f.mul(f.mul(sG, w2), f.add(p, b)))));
     }
+    final pubs = publicsOverride?.cast<T>();
     for (int i = 0; i < boundaries.length; i++) {
-      final s = _groupSel[i] < 0 ? QM31.zero : lin[_groupSel[i]];
+      final s = _groupSel[i] < 0 ? f.zero : lin[_groupSel[i]];
       for (final e in boundaries[i].exprs) {
-        var plain = QM31.zero, withS = QM31.zero;
+        T? plain, withS;
         for (final tm in e.terms) {
-          final x = (tm.next ? next : cur)[tm.col].scale(tm.coef);
+          final x = f.scale((tm.next ? next : cur)[tm.col], tm.coef);
           if (tm.timesS) {
-            withS = withS + x;
+            withS = withS == null ? x : f.add(withS, x);
           } else {
-            plain = plain + x;
+            plain = plain == null ? x : f.add(plain, x);
           }
         }
         final (m0, h0) = lagrange(e.constA, e.constB);
-        final (pm, ph) = e.pubLagrange(publics);
-        final m = M31.add(m0, pm), h = M31.add(h0, ph);
-        var v = plain + QM31.fromLimbs(m, 0, 0, 0) + (withS + QM31.fromLimbs(h, 0, 0, 0)) * s;
+        T m = f.constM31(m0), h = f.constM31(h0);
+        if (e.pubA >= 0 || e.pubB >= 0) {
+          if (pubs == null) {
+            final (pm, ph) = e.pubLagrange(publics);
+            m = f.constM31(M31.add(m0, pm));
+            h = f.constM31(M31.add(h0, ph));
+          } else {
+            // pubCoef * L(pub[A], pub[B]) = pubCoef * ((a+b)/2 + ((a-b)/2) s)
+            final pa = e.pubA < 0 ? f.zero : pubs[e.pubA], pb = e.pubB < 0 ? f.zero : pubs[e.pubB];
+            final ch = M31.mul(e.pubCoef, _half);
+            m = f.add(m, f.scale(f.add(pa, pb), ch));
+            h = f.add(h, f.scale(f.sub(pa, pb), ch));
+          }
+        }
+        var val = f.add(plain ?? f.zero, m);
+        val = f.add(val, f.mul(f.add(withS ?? f.zero, h), s));
         if (e.gateCol >= 0) {
           final g = cur[e.gateCol];
-          v = v * (e.gateNeg ? QM31.one - g : g);
+          val = f.mul(val, e.gateNeg ? f.sub(f.one, g) : g);
         }
-        out.add(v);
+        out.add(val);
       }
     }
     return out;

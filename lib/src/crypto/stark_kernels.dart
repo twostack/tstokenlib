@@ -21,6 +21,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart';
 import 'circle_fft.dart';
 import 'm31.dart';
+import 'proof_hash.dart';
 import '../script_gen/deep_quotient_script_gen.dart' show DeepConstants;
 
 /// The heavy arithmetic of the prover, behind one interface with two
@@ -42,9 +43,9 @@ abstract class ProverKernels {
   /// -> value columns on HalfCoset(m) ∪ conj.
   List<Uint32List> evaluateColumns(List<Uint32List> coefs, int m);
 
-  /// [evaluateColumns] plus the Merkle commitment whose leaf i is SHA256 of
-  /// the 2k little-endian words `ev[j][i]`, `ev[j][M + i]`.
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m);
+  /// [evaluateColumns] plus the Merkle commitment under [hash], whose leaf
+  /// i is `hash.leaf` of the 2k lanes `ev[j][i]`, `ev[j][M + i]`.
+  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash);
 
   /// DEEP quotients of value columns on HalfCoset(m) ∪ conj at every
   /// position: `(c Σ w_j col_j - A y - B) / (dA x + dB y + dC)`. Added into
@@ -59,40 +60,44 @@ abstract class ProverKernels {
   /// `(f_i + f_{i+h}) + alpha (f_i - f_{i+h}) / x_i`.
   Uint32List lineFold(Uint32List cur, int logLen, QM31 alpha);
 
-  /// Merkle commitment of a layer of length 2^logLen whose leaf i is SHA256
-  /// of the 8 limb words of `cur[i]`, `cur[i + h]`.
-  MerkleCommitment merklePairs(Uint32List cur, int logLen);
+  /// Merkle commitment under [hash] of a layer of length 2^logLen whose
+  /// leaf i is `hash.leaf` of the 8 limbs of `cur[i]`, `cur[i + h]`.
+  MerkleCommitment merklePairs(Uint32List cur, int logLen, ProofHash hash);
 
   /// The default: the native kernels when the library is built, else Dart.
   static ProverKernels get best => StarkKernels.tryLoad() ?? DartKernels();
 }
 
-/// A SHA256 Merkle tree: root, depth and authentication paths.
+/// A Merkle tree: root, depth and authentication paths. Digests are
+/// `List<int>`: bytes (SHA256) or lanes (Poseidon2).
 abstract class MerkleCommitment {
-  Uint8List get root;
+  List<int> get root;
   int get depth;
   List<List<int>> path(int leaf);
 }
 
-/// SHA256 Merkle tree over pre-hashed leaves; internal node = SHA256(left || right).
+/// Merkle tree over pre-hashed leaves with a pluggable node function
+/// (SHA256(left || right) by default).
 class MerkleTree implements MerkleCommitment {
-  final List<List<Uint8List>> levels;
+  final List<List<List<int>>> levels;
 
-  MerkleTree(List<Uint8List> leaves) : levels = [leaves] {
-    final buf = Uint8List(64);
+  MerkleTree(List<List<int>> leaves, {List<int> Function(List<int>, List<int>)? node}) : levels = [leaves] {
+    final nodeFn = node ?? _shaNode;
     while (levels.last.length > 1) {
       final prev = levels.last;
-      final next = List<Uint8List>.generate(prev.length ~/ 2, (i) {
-        buf.setRange(0, 32, prev[2 * i]);
-        buf.setRange(32, 64, prev[2 * i + 1]);
-        return Uint8List.fromList(crypto.sha256.convert(buf).bytes);
-      });
-      levels.add(next);
+      levels.add(List<List<int>>.generate(prev.length ~/ 2, (i) => nodeFn(prev[2 * i], prev[2 * i + 1])));
     }
   }
 
+  static final Uint8List _buf = Uint8List(64);
+  static List<int> _shaNode(List<int> l, List<int> r) {
+    _buf.setRange(0, 32, l);
+    _buf.setRange(32, 64, r);
+    return Uint8List.fromList(crypto.sha256.convert(_buf).bytes);
+  }
+
   @override
-  Uint8List get root => levels.last[0];
+  List<int> get root => levels.last[0];
   @override
   int get depth => levels.length - 1;
 
@@ -109,29 +114,37 @@ class MerkleTree implements MerkleCommitment {
 }
 
 /// A Merkle tree in the flat layout the native kernels write: the leaf
-/// level, then each level above it, the root last (`(2M - 1) * 32` bytes).
+/// level, then each level above it, the root last; [unit] entries per node
+/// (32 bytes for SHA256, 8 lanes for Poseidon2) in a typed list.
 class FlatMerkleTree implements MerkleCommitment {
-  final Uint8List bytes;
-  final int leaves;
+  final List<int> data;
+  final int leaves, unit;
   final List<int> _offsets = [];
 
-  FlatMerkleTree(this.bytes, this.leaves) {
+  FlatMerkleTree(this.data, this.leaves, {this.unit = 32}) {
     var off = 0, len = leaves;
     while (true) {
       _offsets.add(off);
       if (len == 1) break;
-      off += 32 * len;
+      off += unit * len;
       len ~/= 2;
     }
-    if (bytes.length != (2 * leaves - 1) * 32) throw ArgumentError('tree bytes');
+    if (data.length != (2 * leaves - 1) * unit) throw ArgumentError('tree length');
   }
 
   static int byteLength(int leaves) => (2 * leaves - 1) * 32;
+  static int laneLength(int leaves) => (2 * leaves - 1) * 8;
 
-  Uint8List node(int level, int i) => Uint8List.sublistView(bytes, _offsets[level] + 32 * i, _offsets[level] + 32 * i + 32);
+  List<int> node(int level, int i) {
+    final o = _offsets[level] + unit * i;
+    final d = data;
+    if (d is Uint8List) return Uint8List.sublistView(d, o, o + unit);
+    if (d is Uint32List) return Uint32List.sublistView(d, o, o + unit);
+    return d.sublist(o, o + unit);
+  }
 
   @override
-  Uint8List get root => node(depth, 0);
+  List<int> get root => List<int>.from(node(depth, 0));
   @override
   int get depth => _offsets.length - 1;
 
@@ -140,7 +153,7 @@ class FlatMerkleTree implements MerkleCommitment {
     final out = <List<int>>[];
     var i = leaf;
     for (int lv = 0; lv < depth; lv++) {
-      out.add(Uint8List.fromList(node(lv, i ^ 1)));
+      out.add(List<int>.from(node(lv, i ^ 1)));
       i >>= 1;
     }
     return out;
@@ -169,8 +182,6 @@ class DartKernels implements ProverKernels {
   @override
   String get name => 'dart';
 
-  static Uint8List _sha(List<int> a) => Uint8List.fromList(crypto.sha256.convert(a).bytes);
-
   static QM31 foldPair(QM31 f0, QM31 f1, int twiddleInv, QM31 alpha) => (f0 + f1) + alpha * (f0 - f1).scale(twiddleInv);
 
   static List<QM31> batchInvQ(List<QM31> xs) {
@@ -197,18 +208,18 @@ class DartKernels implements ProverKernels {
   List<Uint32List> evaluateColumns(List<Uint32List> coefs, int m) => [for (final c in coefs) CircleFft.evaluate(c, m)];
 
   @override
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m) {
+  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
     final ev = evaluateColumns(coefs, m);
     final k = coefs.length, mB = 1 << m;
-    final leaves = List<Uint8List>.generate(mB, (i) {
-      final bd = ByteData(8 * k);
+    final lanes = List<int>.filled(2 * k, 0);
+    final leaves = List<List<int>>.generate(mB, (i) {
       for (int j = 0; j < k; j++) {
-        bd.setUint32(4 * j, ev[j][i], Endian.little);
-        bd.setUint32(4 * (k + j), ev[j][mB + i], Endian.little);
+        lanes[j] = ev[j][i];
+        lanes[k + j] = ev[j][mB + i];
       }
-      return _sha(bd.buffer.asUint8List());
+      return hash.leaf(lanes);
     });
-    return (ev, MerkleTree(leaves));
+    return (ev, MerkleTree(leaves, node: hash.node));
   }
 
   @override
@@ -261,16 +272,11 @@ class DartKernels implements ProverKernels {
   }
 
   @override
-  MerkleCommitment merklePairs(Uint32List cur, int logLen) {
+  MerkleCommitment merklePairs(Uint32List cur, int logLen, ProofHash hash) {
     final len = 1 << logLen, h = len >> 1;
-    return MerkleTree(List<Uint8List>.generate(h, (i) {
-      final bd = ByteData(32);
-      for (int l = 0; l < 4; l++) {
-        bd.setUint32(4 * l, cur[4 * i + l], Endian.little);
-        bd.setUint32(16 + 4 * l, cur[4 * (h + i) + l], Endian.little);
-      }
-      return _sha(bd.buffer.asUint8List());
-    }));
+    return MerkleTree(List<List<int>>.generate(h, (i) {
+      return hash.leaf([for (int l = 0; l < 4; l++) cur[4 * i + l], for (int l = 0; l < 4; l++) cur[4 * (h + i) + l]]);
+    }), node: hash.node);
   }
 }
 
@@ -294,6 +300,14 @@ typedef _LineFoldC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.
 typedef _LineFoldD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _MerklePairsC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint8>);
 typedef _MerklePairsD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint8>);
+typedef _CommitP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>,
+    ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _CommitP2D = void Function(
+    ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _MerklePairsP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _MerklePairsP2D = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _PermuteP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _PermuteP2D = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _ShaC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Pointer<ffi.Uint8>);
 typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>);
 
@@ -305,7 +319,7 @@ typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8
 /// arithmetic. Every kernel is exact, so [tryLoad] returning null (library
 /// not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 1;
+  static const abiVersion = 2;
   static const envVar = 'STARK_KERNELS_LIB';
 
   final ffi.DynamicLibrary _lib;
@@ -318,6 +332,11 @@ class StarkKernels implements ProverKernels {
   late final _LineFoldD _lineFold = _lib.lookupFunction<_LineFoldC, _LineFoldD>('sk_line_fold');
   late final _MerklePairsD _merklePairs = _lib.lookupFunction<_MerklePairsC, _MerklePairsD>('sk_merkle_pairs');
   late final _ShaD _sha = _lib.lookupFunction<_ShaC, _ShaD>('sk_sha256');
+  late final _CommitP2D _commitP2 = _lib.lookupFunction<_CommitP2C, _CommitP2D>('sk_commit_columns_p2');
+  late final _MerklePairsP2D _merklePairsP2 = _lib.lookupFunction<_MerklePairsP2C, _MerklePairsP2D>('sk_merkle_pairs_p2');
+  late final _PermuteP2D _permuteP2 = _lib.lookupFunction<_PermuteP2C, _PermuteP2D>('sk_poseidon2_permute');
+  late final Uint32List _rc = Poseidon2ProofHash.roundConstants;
+  final DartKernels _fallback = DartKernels();
 
   StarkKernels._(this._lib, this.path);
 
@@ -439,21 +458,54 @@ class StarkKernels implements ProverKernels {
     }
   }
 
-  @override
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m) {
-    final mm = 1 << m, n = 2 * mm, k = coefs.length, len = _coefLen(coefs, m);
-    final inp = _upload(coefs, len);
-    final ev = calloc<ffi.Uint32>(k * n);
-    final treeLen = FlatMerkleTree.byteLength(mm);
-    final tree = calloc<ffi.Uint8>(treeLen);
+  /// One Poseidon2 permutation (for tests of the native port).
+  List<int> poseidon2(List<int> state) {
+    if (state.length != 16) throw ArgumentError('16 lanes');
+    final sp = _upload1(Uint32List.fromList(state));
+    final rc = _upload1(_rc);
     try {
-      _commit(inp, k, len, m, ev, tree);
-      return (_download(ev, k, n), FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), mm));
+      _permuteP2(sp, rc);
+      return _download1(sp, 16);
     } finally {
-      calloc.free(inp);
-      calloc.free(ev);
-      calloc.free(tree);
+      calloc.free(sp);
+      calloc.free(rc);
     }
+  }
+
+  @override
+  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
+    final mm = 1 << m, n = 2 * mm, k = coefs.length, len = _coefLen(coefs, m);
+    if (hash is Sha256ProofHash) {
+      final inp = _upload(coefs, len);
+      final ev = calloc<ffi.Uint32>(k * n);
+      final treeLen = FlatMerkleTree.byteLength(mm);
+      final tree = calloc<ffi.Uint8>(treeLen);
+      try {
+        _commit(inp, k, len, m, ev, tree);
+        return (_download(ev, k, n), FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), mm));
+      } finally {
+        calloc.free(inp);
+        calloc.free(ev);
+        calloc.free(tree);
+      }
+    }
+    if (hash is Poseidon2ProofHash) {
+      final inp = _upload(coefs, len);
+      final rc = _upload1(_rc);
+      final ev = calloc<ffi.Uint32>(k * n);
+      final treeLen = FlatMerkleTree.laneLength(mm);
+      final tree = calloc<ffi.Uint32>(treeLen);
+      try {
+        _commitP2(inp, k, len, m, rc, ev, tree);
+        return (_download(ev, k, n), FlatMerkleTree(Uint32List.fromList(tree.asTypedList(treeLen)), mm, unit: 8));
+      } finally {
+        calloc.free(inp);
+        calloc.free(rc);
+        calloc.free(ev);
+        calloc.free(tree);
+      }
+    }
+    return _fallback.commitColumns(coefs, m, hash);
   }
 
   @override
@@ -513,18 +565,35 @@ class StarkKernels implements ProverKernels {
   }
 
   @override
-  MerkleCommitment merklePairs(Uint32List cur, int logLen) {
+  MerkleCommitment merklePairs(Uint32List cur, int logLen, ProofHash hash) {
     final len = 1 << logLen, h = len >> 1;
     if (cur.length != 4 * len) throw ArgumentError('layer length');
-    final cp = _upload1(cur);
-    final treeLen = FlatMerkleTree.byteLength(h);
-    final tree = calloc<ffi.Uint8>(treeLen);
-    try {
-      _merklePairs(cp, logLen, tree);
-      return FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), h);
-    } finally {
-      calloc.free(cp);
-      calloc.free(tree);
+    if (hash is Sha256ProofHash) {
+      final cp = _upload1(cur);
+      final treeLen = FlatMerkleTree.byteLength(h);
+      final tree = calloc<ffi.Uint8>(treeLen);
+      try {
+        _merklePairs(cp, logLen, tree);
+        return FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), h);
+      } finally {
+        calloc.free(cp);
+        calloc.free(tree);
+      }
     }
+    if (hash is Poseidon2ProofHash) {
+      final cp = _upload1(cur);
+      final rc = _upload1(_rc);
+      final treeLen = FlatMerkleTree.laneLength(h);
+      final tree = calloc<ffi.Uint32>(treeLen);
+      try {
+        _merklePairsP2(cp, logLen, rc, tree);
+        return FlatMerkleTree(Uint32List.fromList(tree.asTypedList(treeLen)), h, unit: 8);
+      } finally {
+        calloc.free(cp);
+        calloc.free(rc);
+        calloc.free(tree);
+      }
+    }
+    return _fallback.merklePairs(cur, logLen, hash);
   }
 }

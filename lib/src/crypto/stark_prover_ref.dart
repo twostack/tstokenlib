@@ -18,8 +18,8 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
 import 'm31.dart';
-import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef, DeepConstants;
-import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
+import 'proof_hash.dart';
+import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef;
 import '../script_gen/air.dart' show Air;
 
 /// PROTOTYPE reference prover for the Circle-STARK verified by
@@ -90,10 +90,10 @@ Uint8List serM31s(List<int> vals) {
 
 class MerkleTreeRef {
   final List<List<List<int>>> levels;
-  MerkleTreeRef(List<List<int>> leaves) : levels = [leaves] {
+  MerkleTreeRef(List<List<int>> leaves, {ProofHash hash = const Sha256ProofHash()}) : levels = [leaves] {
     while (levels.last.length > 1) {
       final prev = levels.last;
-      levels.add([for (int i = 0; i < prev.length; i += 2) sha([...prev[i], ...prev[i + 1]])]);
+      levels.add([for (int i = 0; i < prev.length; i += 2) hash.node(prev[i], prev[i + 1])]);
     }
   }
   List<int> get root => levels.last[0];
@@ -212,13 +212,16 @@ class QueryProof {
   /// Aux-round opening at the same index (empty without an aux round).
   final List<int> auxLeaf;
   final List<List<int>> auxPath;
+  /// Preprocessed-column opening at the same index (empty without any).
+  final List<int> preLeaf;
+  final List<List<int>> prePath;
   final int yBInv;
   final QM31 dBInvP, dBInvC, dCInvP, dCInvC;
   QueryProof({
     required this.index, required this.compLeaf, required this.compPath, required this.yAInv,
     required this.dAInvP, required this.dAInvC, required this.lineF0, required this.lineF1,
     required this.linePaths, required this.lineXInv, required this.traceLeaf, required this.tracePath,
-    this.auxLeaf = const [], this.auxPath = const [],
+    this.auxLeaf = const [], this.auxPath = const [], this.preLeaf = const [], this.prePath = const [],
     required this.yBInv, required this.dBInvP, required this.dBInvC, required this.dCInvP, required this.dCInvC,
   });
 }
@@ -227,6 +230,9 @@ class StarkProof {
   final List<int> traceRoot, compRoot;
   /// Root of the aux-round commitment (empty without an aux round).
   final List<int> auxRoot;
+  /// Root of the preprocessed-column commitment (empty without any); the
+  /// verifier compares it with the one it computes itself.
+  final List<int> preRoot;
   final QM31 zHint;
   /// Out-of-domain values: trace columns then aux columns.
   final List<QM31> traceAtZ, traceAtZg, compAtZ;
@@ -238,7 +244,7 @@ class StarkProof {
   /// (QM31 or int), for staged debugging.
   final Map<String, Object> debug = {};
   StarkProof({
-    required this.traceRoot, required this.compRoot, this.auxRoot = const [], required this.zHint,
+    required this.traceRoot, required this.compRoot, this.auxRoot = const [], this.preRoot = const [], required this.zHint,
     required this.traceAtZ, required this.traceAtZg, required this.compAtZ, required this.friRoots,
     required this.finalCoefs, required this.nonce, required this.queries,
   });
@@ -248,8 +254,15 @@ class StarkProverRef {
   static QM31 foldPair(QM31 f0, QM31 f1, int twiddle, QM31 alpha) =>
       (f0 + f1) + alpha * (f0 - f1).scale(M31.inv(twiddle));
 
+  /// z = ((1 - t²) h, 2t h), h = (1 + t²)^-1 (the hint the verifier checks).
+  static (QM31, QM31, QM31) circlePoint(QM31 t) {
+    final t2 = t * t;
+    final h = (QM31.one + t2).inv;
+    return ((QM31.one - t2) * h, (t + t) * h, h);
+  }
+
   /// [rows] is the trace: 2^logTrace rows of air.numCols values.
-  static StarkProof prove(StarkParams P, Air air, List<List<int>> rows, {Random? rng}) {
+  static StarkProof prove(StarkParams P, Air air, List<List<int>> rows, {Random? rng, ProofHash hash = const Sha256ProofHash()}) {
     rng ??= Random.secure();
     final t = P.logTrace, n = 1 << t;
     final gT = CirclePoint.subgroupGen(t);
@@ -263,9 +276,9 @@ class StarkProverRef {
 
     /// Interpolate column-major values on D_t and, with zk on, mask each
     /// column as f' = f + v_N * r on the 2N domain.
-    List<CirclePolyRef> polysFor(List<List<int>> cols) {
+    List<CirclePolyRef> polysFor(List<List<int>> cols, {bool mask = true}) {
       var polys = [for (final c in cols) CirclePolyRef.interpolate(dT, [for (int k = 0; k < n; k++) embed(c[k])])];
-      if (P.zk) {
+      if (P.zk && mask) {
         final R = P.zkRandomizers;
         if (R >= n) throw ArgumentError('zkRandomizers must be < trace size');
         polys = [
@@ -285,7 +298,7 @@ class StarkProverRef {
       List<int> valsAt(CirclePoint p) => [for (final q in polys) q.evalP(p).c0.a];
       final atP = [for (int i = 0; i < hB.size; i++) valsAt(hB.at(i))];
       final atC = [for (int i = 0; i < hB.size; i++) valsAt(CirclePoint(hB.at(i).x, M31.neg(hB.at(i).y)))];
-      return (atP, atC, MerkleTreeRef([for (int i = 0; i < hB.size; i++) sha([...serM31s(atP[i]), ...serM31s(atC[i])])]));
+      return (atP, atC, MerkleTreeRef([for (int i = 0; i < hB.size; i++) hash.leaf([...atP[i], ...atC[i]])], hash: hash));
     }
 
     final tracePolys = polysFor([for (int j = 0; j < nCols; j++) [for (int k = 0; k < n; k++) rows[k][j]]]);
@@ -293,8 +306,17 @@ class StarkProverRef {
     assert(tracePolys[0].evalP(dT[3]) == embed(rows[3][0]));
     final (traceAtP, traceAtC, traceTree) = commit(tracePolys);
 
-    final ts = TranscriptRef();
-    if (air.numPublics > 0) ts.absorbLimbs(air.publicValues);
+    // preprocessed columns: public, unmasked, committed on the same domain
+    var prePolys = <CirclePolyRef>[];
+    var preAtP = <List<int>>[], preAtC = <List<int>>[];
+    MerkleTreeRef? preTree;
+    if (air.numPreCols > 0) {
+      prePolys = polysFor([for (final c in air.preColumns()) c.toList()], mask: false);
+      (preAtP, preAtC, preTree) = commit(prePolys);
+    }
+
+    final ts = hash.transcript();
+    ts.absorbStatement(air.publicValues, preTree?.root ?? const []);
     ts.absorb(traceTree.root);
 
     // ---- interaction round: challenges, aux columns, aux commitment ----
@@ -309,9 +331,15 @@ class StarkProverRef {
       (auxAtP, auxAtC, auxTree) = commit(auxPolys);
       ts.absorb(auxTree.root);
     }
-    final allPolys = [...tracePolys, ...auxPolys];
-    final allAtP = [for (int i = 0; i < hB.size; i++) [...traceAtP[i], if (auxTree != null) ...auxAtP[i]]];
-    final allAtC = [for (int i = 0; i < hB.size; i++) [...traceAtC[i], if (auxTree != null) ...auxAtC[i]]];
+    final allPolys = [...tracePolys, ...auxPolys, ...prePolys];
+    final allAtP = [
+      for (int i = 0; i < hB.size; i++)
+        [...traceAtP[i], if (auxTree != null) ...auxAtP[i], if (preTree != null) ...preAtP[i]]
+    ];
+    final allAtC = [
+      for (int i = 0; i < hB.size; i++)
+        [...traceAtC[i], if (auxTree != null) ...auxAtC[i], if (preTree != null) ...preAtC[i]]
+    ];
     final beta = ts.squeezeQM31();
 
     // ---- 2. composition on D_{t+e}, interpolate 4 limb columns ----
@@ -331,11 +359,11 @@ class StarkProverRef {
     List<int> compValsAt(CirclePoint p) => [for (final q in compPolys) q.evalP(p).c0.a];
     final compAtP = [for (int i = 0; i < hA.size; i++) compValsAt(hA.at(i))];
     final compAtCj = [for (int i = 0; i < hA.size; i++) compValsAt(CirclePoint(hA.at(i).x, M31.neg(hA.at(i).y)))];
-    final compTree = MerkleTreeRef([for (int i = 0; i < hA.size; i++) sha([...serM31s(compAtP[i]), ...serM31s(compAtCj[i])])]);
+    final compTree = MerkleTreeRef([for (int i = 0; i < hA.size; i++) hash.leaf([...compAtP[i], ...compAtCj[i]])], hash: hash);
 
     ts.absorb(compTree.root);
     final tch = ts.squeezeQM31();
-    final (zx, zy, zHint) = TranscriptRef.circlePoint(tch);
+    final (zx, zy, zHint) = circlePoint(tch);
 
     // ---- 3. OODS values ----
     final zgx = zx.scale(gT.x) - zy.scale(gT.y);
@@ -389,7 +417,7 @@ class StarkProverRef {
     for (int l = 0; l < P.numLineFolds; l++) {
       final cur = layers[l];
       final half = cur.length ~/ 2;
-      final tree = MerkleTreeRef([for (int i = 0; i < half; i++) sha([...serM31s(cur[i].limbs), ...serM31s(cur[i + half].limbs)])]);
+      final tree = MerkleTreeRef([for (int i = 0; i < half; i++) hash.leaf([...cur[i].limbs, ...cur[i + half].limbs])], hash: hash);
       trees.add(tree);
       ts.absorb(tree.root);
       final al = ts.squeezeQM31();
@@ -467,6 +495,8 @@ class StarkProverRef {
         tracePath: traceTree.path(iB),
         auxLeaf: auxTree == null ? const [] : [...auxAtP[iB], ...auxAtC[iB]],
         auxPath: auxTree == null ? const [] : auxTree.path(iB),
+        preLeaf: preTree == null ? const [] : [...preAtP[iB], ...preAtC[iB]],
+        prePath: preTree == null ? const [] : preTree.path(iB),
         yBInv: M31.inv(pB.y),
         dBInvP: DeepQuotientRef.denominator(kB, pB.x, pB.y).inv,
         dBInvC: DeepQuotientRef.denominator(kB, pB.x, M31.neg(pB.y)).inv,
@@ -475,7 +505,8 @@ class StarkProverRef {
       ));
     }
     final proof = StarkProof(
-      traceRoot: traceTree.root, compRoot: compTree.root, auxRoot: auxTree?.root ?? const [], zHint: zHint,
+      traceRoot: traceTree.root, compRoot: compTree.root, auxRoot: auxTree?.root ?? const [],
+      preRoot: preTree?.root ?? const [], zHint: zHint,
       traceAtZ: traceAtZ, traceAtZg: traceAtZg, compAtZ: compAtZ,
       friRoots: trees.map((t) => t.root).toList(), finalCoefs: finalCoefs, nonce: nonce, queries: queries,
     );
