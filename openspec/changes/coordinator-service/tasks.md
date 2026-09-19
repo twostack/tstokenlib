@@ -12,7 +12,7 @@
 
 ## 3. Idle work and recovery
 
-- [ ] 3.1 Implement the idle refill of the padding stock and the warm-up of level programs and preprocessed commitments; verify with a test that the stock returns to its level after a padded round.
+- [ ] 3.1 Implement the idle refill of the padding stock and the warm-up of the level programs (the preprocessed commitments are deliberately not kept warm: they are 14.5 GB of a round's peak and the levels are proved in sequence, so each rebuilds its own); verify with a test that the stock returns to its level after a padded round and that an idle coordinator holds no preprocessed column set.
 - [ ] 3.2 Implement recovery from genesis plus round transactions through the chain reader with a disagreement check; verify with a test that a coordinator restarted after several rounds has the same ledger.
 
 ## 4. Entry point and documentation

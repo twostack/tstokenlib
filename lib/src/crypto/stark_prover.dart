@@ -542,27 +542,41 @@ class PreCommitment {
   PreCommitment(this.coefs, this.ev, this.tree);
 
   /// The most recent commitments, keyed by the columns' identity (see
-  /// [Air.preColumnsIdentity]) and the domain; an entry at 2^19 rows and
-  /// blowup 32 is about 2 GB, so only a few are kept.
+  /// [Air.preColumnsIdentity]) and the domain. An entry is gigabytes (4.4 GB
+  /// for the narrowing level at 2^20 and blowup 32), and a proof needs one
+  /// at a time, so the cache is deliberately small: a level's nodes share a
+  /// program and therefore a key, so one entry already spares every node
+  /// after the first, and the second is slack across a level boundary.
   static final Map<String, PreCommitment> _cache = {};
-  static const cacheEntries = 8;
+  static const cacheEntries = 2;
+
+  /// The roots alone, by the same key and never evicted. A root is 8 lanes;
+  /// remembering one costs nothing and spares the caller the commitment
+  /// behind it.
+  static final Map<String, List<int>> _roots = {};
 
   static String _key(Air air, StarkParams P, ProofHash hash) =>
       '${identityHashCode(air.preColumnsIdentity)}:${P.logTrace}:${P.logTraceHalf}:${hash.name}';
 
-  static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) {
-    final key = _key(air, P, hash);
-    final hit = _cache.remove(key);
-    if (hit != null) return _cache[key] = hit; // re-insert: most recent last
+  static PreCommitment _build(Air air, StarkParams P, ProofHash hash, ProverKernels? kernels) {
     final k = kernels ?? ProverKernels.best;
     final cols = air.preColumns();
     if (cols.length != air.numPreCols) throw StateError('preColumns returned ${cols.length} columns');
     final coefs = twinCoefs(cols, P.logTrace, k);
     final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
+    return PreCommitment(coefs, ev, tree);
+  }
+
+  static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) {
+    final key = _key(air, P, hash);
+    final hit = _cache.remove(key);
+    if (hit != null) return _cache[key] = hit; // re-insert: most recent last
+    final made = _build(air, P, hash, kernels);
     while (_cache.length >= cacheEntries) {
       _cache.remove(_cache.keys.first)?.ev.release();
     }
-    return _cache[key] = PreCommitment(coefs, ev, tree);
+    _roots[key] = made.tree.root;
+    return _cache[key] = made;
   }
 
   /// Coefficients of columns given in cyclic row order on the trace domain.
@@ -581,5 +595,20 @@ class PreCommitment {
   }
 
   /// The root the verifier expects for [air].
-  static List<int> root(Air air, StarkParams P, ProofHash hash) => of(air, P, hash).tree.root;
+  ///
+  /// Unlike [of] this does not retain the commitment it may have to build.
+  /// An aggregation needs every level's root before it can compile the root
+  /// program, but the levels are proved one after another and no two of
+  /// their column sets are ever live at once; holding all five was 14.5 GB
+  /// of a round's 30.3 GB peak. Each level rebuilds its own when it starts,
+  /// which is one extra pass per level and worth the memory.
+  static List<int> root(Air air, StarkParams P, ProofHash hash) {
+    final key = _key(air, P, hash);
+    final known = _roots[key] ?? _cache[key]?.tree.root;
+    if (known != null) return _roots[key] = known;
+    final made = _build(air, P, hash, null);
+    final r = made.tree.root;
+    made.ev.release();
+    return _roots[key] = r;
+  }
 }

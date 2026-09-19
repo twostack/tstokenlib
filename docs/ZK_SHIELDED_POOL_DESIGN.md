@@ -1848,12 +1848,10 @@ so all five stay resident for the whole round even though the levels are
 proved strictly in sequence and no two are ever needed at once. Only the
 8-lane preprocessed *roots* are needed throughout, for the statement digests;
 the coefficients, evaluations and tree behind each are needed only while that
-level is being proved. Retaining one level's commitment instead of five would
-take about 9 GB off a round's peak, at the price of recomputing each level's
-once when that level starts. That is a decision to make in
-`coordinator-service`, whose idle-work plan currently assumes keeping all
-five warm; on these numbers keeping them warm costs half the machine's
-memory.
+level is being proved. Retaining one level's commitment instead of five should
+take several GB off a round's peak, at the price of recomputing each level's
+once when that level starts. That was done straight away; the next section
+has the result.
 
 **Follow-ons, in the order the numbers argue for.** The composition
 evaluation is now the largest single stage at 2.2 s and is a straight-line
@@ -1866,6 +1864,48 @@ the FFT's real speed visible where it currently is not. A portable backend
 (CUDA for Linux coordinators) is a separate decision, and nothing here is on
 the production path: the feature is off by default and the CPU kernels remain
 what ships.
+
+### The preprocessed cache and a round's peak (fixed)
+
+Measuring the GPU spike turned up something that had nothing to do with the
+GPU: of a round's 30.3 GB peak, 14.5 GB was the five preprocessed
+commitments. `PoolAggregation`'s constructor builds one per level because the
+root program needs every level's preprocessed root as a compile-time
+constant, and the cache then held all eight entries it was allowed, so all
+five stayed resident for the whole round. But a level's coefficients,
+evaluations and tree are needed only while that level is proving, and the
+levels are proved one after another. Only the 8-lane roots are needed
+throughout.
+
+So `PreCommitment` now keeps the two apart. `root()` returns the root without
+retaining the commitment behind it, releasing the columns it had to build,
+and remembers the root in a small map that is never evicted; `of()`, which
+the prover uses and which does need the whole thing, caches as before but
+with capacity 2 instead of 8. A level's nodes share a program and therefore a
+cache key, so one entry already spares every node after the first.
+
+| | before | after |
+| --- | --- | --- |
+| held after the plan is compiled | 14.5 GB | 1.8 GB |
+| peak during setup | 15.1 GB | 9.3 GB |
+| round peak footprint | 30.3 GB | **25.7 GB** |
+| footprint at levels 1 / 2 / 3 | 19.2 / 23.8 / 30.3 GB | 9.3 / 15.4 / 25.7 GB |
+| round | 285.9 s | 284.0 s |
+
+The retained figure falls by 12.7 GB but the peak by 4.6, because the peak
+happens during level 3, whose own commitment is genuinely needed then; what
+was recovered is the four other levels' copies sitting idle beside it. The
+cost is one rebuild per level, visible in the prover's laps as preprocessed
+columns of 0.9, 1.9, 3.0, 1.6 and 3.2 s where the cache used to make them
+free: 10.7 s, about 4% of a round. The two round times above differ by less
+than that, so the cost is inside the run-to-run variation of these
+measurements rather than something the clock can resolve; 10.7 s is the
+honest figure, taken from the laps.
+
+A round now peaks at 25.7 GB against the 18.5 GB level 3 inherently needs.
+Dropping the cache to one entry would recover perhaps 2 GB more of the
+remainder; the rest is level 3's own working set, which only
+`blowup32-node-cost` can change.
 
 ### The key hierarchy (built)
 
