@@ -340,6 +340,37 @@ void main() {
     expect(() => _run(StarkVerifierGen(p, outs).buildUnlock(proof), lock), throwsA(isA<ScriptException>()));
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  test('a token: the asset registers bind both commitments and the public asset lanes', () {
+    final record = AssetRecord(issuerKeyHash: List.filled(20, 3), nonce: List.generate(32, (i) => 7 * i), flags: AssetRecord.flagGated);
+    final x = record.id;
+    final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
+    final oa = OutputNote(pkd: lanes(8), value: 1000, rho: lanes(3), rcm: lanes(4), asset: x);
+    final ob = OutputNote(pkd: lanes(8), value: 25, rho: lanes(3), rcm: lanes(4), asset: x);
+    // a mint: two dummies, 1025 units of x created
+    final wx = PoolSpendAir.witness(da, db, oa, ob, -1025, anchor: lanes(8));
+    expect(wx.publics.asset, x);
+    expect(PoolPublicInputs.fromLanes(wx.publics.toLanes()).asset, x);
+    final airX = PoolSpendAir.air(wx.publics);
+    expect(holdsOn(airX, wx.rows), isTrue);
+    // the dummies carry the transfer's asset in their commitment block
+    expect(wx.rows[Poseidon2ChainAir.inputRow(PoolSpendAir.pCm2)][PoolSpendAir.assetLane], x[0]);
+    // claiming another asset in the publics: the register pin fails
+    expect(holdsOn(PoolSpendAir.air(wx.publics.copyWith(asset: PoolHash.bsvAsset)), wx.rows), isFalse);
+    // an output note of another asset than the registers say
+    var bad = [for (final r in wx.rows) [...r]];
+    bad[Poseidon2ChainAir.inputRow(PoolSpendAir.pOut2)][PoolSpendAir.assetLane + 1] ^= 1;
+    expect(holdsOn(airX, bad), isFalse, reason: 'output asset');
+    // the registers changing between the halves
+    bad = [for (final r in wx.rows) [...r]];
+    for (int r = n >> 1; r < n; r++) {
+      bad[r][PoolSpendAir.regAsset] ^= 1;
+    }
+    expect(holdsOn(airX, bad), isFalse, reason: 'asset register not constant');
+    // a transfer cannot mix assets
+    expect(() => PoolSpendAir.witness(da, db, oa, OutputNote(pkd: lanes(8), value: 25, rho: lanes(3), rcm: lanes(4)), -1025, anchor: lanes(8)),
+        throwsA(isA<ArgumentError>()));
+  });
+
   test('production parameters: locking script size, proof size, timings', () {
     const p = PoolSpendAir.productionParams;
     expect(p.zkSufficient, isTrue);

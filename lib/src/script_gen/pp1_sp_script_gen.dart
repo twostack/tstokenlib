@@ -20,6 +20,7 @@ import 'package:dartsv/dartsv.dart';
 import '../crypto/m31.dart';
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/nullifier_set.dart';
+import '../crypto/rabin.dart';
 import '../crypto/stark_prover_ref.dart';
 import 'check_preimage_ocs.dart';
 import 'm31_script_gen.dart';
@@ -125,7 +126,27 @@ class PP1SpTransfer {
   /// Insertion witnesses; null for a dummy input (`publics.real1/2` off),
   /// whose nullifier the state script does not insert.
   final NullifierInsertion? nf1, nf2;
-  const PP1SpTransfer(this.publics, this.extraOutputs, this.nf1, this.nf2);
+  /// The issuer's authorisation, required for a mint of any non-BSV asset
+  /// and for every transfer of a gated one.
+  final IssuerAuth? auth;
+  const PP1SpTransfer(this.publics, this.extraOutputs, this.nf1, this.nf2, {this.auth});
+}
+
+/// An asset issuer's authorisation of one transfer: the asset record (whose
+/// hash is the asset id and whose first 20 bytes are hash160 of the Rabin
+/// key) and a Rabin signature over SHA256 of the transfer's public lanes.
+/// The nullifiers make every message unique, so a signature cannot be
+/// replayed.
+class IssuerAuth {
+  final Uint8List record;
+  final BigInt n;
+  final RabinSignature sig;
+  IssuerAuth(this.record, this.n, this.sig) {
+    if (record.length != AssetRecord.length) throw ArgumentError('asset record');
+  }
+  static BigInt message(PoolPublicInputs publics) => Rabin.sha256ToScriptInt(SlotScript.lanesBytes(publics.toLanes()));
+  static IssuerAuth sign(AssetRecord record, PoolPublicInputs publics, {required BigInt p, required BigInt q}) =>
+      IssuerAuth(Uint8List.fromList(record.bytes), p * q, Rabin.sign(message(publics), p, q));
 }
 
 /// The PP1_SP state script: header, then a two-way dispatch on the selector
@@ -211,6 +232,10 @@ class PP1SpScriptGen {
   static String newBit(int i, int k) => 'nb${i}_$k';
   static const depth = NullifierSet.depth;
 
+  /// A transfer's issuer authorisation: record, Rabin n, s, padding (empty
+  /// pushes when none is needed).
+  static List<String> authNames(int t) => ['ar$t', 'an$t', 'as$t', 'ap$t'];
+
   static List<String> nullifierNames(int i) => [
         'nv$i', 'nn$i',
         for (int j = depth - 1; j >= 0; j--) ...[newSib(i, j), newBit(i, j)],
@@ -225,6 +250,7 @@ class PP1SpScriptGen {
             for (int j = 0; j < laneChunk; j++) pub(t, j),
             ...nullifierNames(2 * t),
             ...nullifierNames(2 * t + 1),
+            ...authNames(t),
           ],
           for (int j = 0; j < roundLanes; j++) rc(j),
           ...headerNames,
@@ -237,6 +263,7 @@ class PP1SpScriptGen {
           for (int j = 0; j < PoolPublicInputs.count; j++) pub(t, j),
           ...nullifierNames(2 * t),
           ...nullifierNames(2 * t + 1),
+          ...authNames(t),
         ],
         ...headerNames,
       ];
@@ -430,6 +457,9 @@ class PP1SpScriptGen {
     _canonical(e, p, PoolPublicInputs.idxNf1, 16);
     _canonical(e, p, PoolPublicInputs.idxPubLo, 2);
     _canonical(e, p, PoolPublicInputs.idxReal1, 2);
+    _canonical(e, p, PoolPublicInputs.idxAsset, PoolHash.assetLanes);
+    // the public lanes as bytes: the issuer's message, then the statement / result
+    SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'tb');
     // anchor in the ring
     SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) p(PoolPublicInputs.idxAnchor + j)], as: 'anchorB');
     for (int r = 0; r < ringSize; r++) {
@@ -440,15 +470,44 @@ class PP1SpScriptGen {
     }
     _verify(e);
     e.dropNamed('anchorB');
-    // vault: vout -= lo + 2^28 hi (signed)
+    // the value leaving, signed: lo + 2^28 hi
     _signedLane(e, p(PoolPublicInputs.idxPubHi));
     e.pushConst(1 << PoolHash.limbBits);
     _op(e, OpCodes.OP_MUL);
     _signedLane(e, p(PoolPublicInputs.idxPubLo));
-    _op(e, OpCodes.OP_ADD);
+    _op(e, OpCodes.OP_ADD, as: 'delta');
+    // only BSV (the constant (1,0,0,0)) moves the vault: vout -= isBsv * delta
+    for (int i = 0; i < PoolHash.assetLanes; i++) {
+      e.pick(p(PoolPublicInputs.idxAsset + i));
+      e.pushConst(PoolHash.bsvAsset[i]);
+      _op(e, OpCodes.OP_NUMEQUAL);
+      if (i > 0) _op(e, OpCodes.OP_BOOLAND);
+    }
+    e.nameTop('isBsv');
+    e.pick('delta');
+    e.pick('isBsv');
+    _op(e, OpCodes.OP_MUL);
     e.roll('vout');
     e.swap();
     _op(e, OpCodes.OP_SUB, as: 'vout');
+    // the issuer's authorisation: a token that is minted (delta < 0) or gated
+    e.pick('delta');
+    e.pushConst(0);
+    _op(e, OpCodes.OP_LESSTHAN);
+    e.pick(p(PoolPublicInputs.idxAsset + 3));
+    e.pushConst(PoolHash.gatedBit);
+    _op(e, OpCodes.OP_GREATERTHANOREQUAL);
+    _op(e, OpCodes.OP_BOOLOR);
+    e.roll('isBsv');
+    _op(e, OpCodes.OP_NOT, pops: 1, pushes: 1);
+    _op(e, OpCodes.OP_BOOLAND);
+    e.ifBegin();
+    _issuerCheck(e, t, p);
+    e.ifEnd();
+    e.dropNamed('delta');
+    for (final nm in authNames(t)) {
+      e.dropNamed(nm);
+    }
     // nullifiers: inserted for a real input note, skipped for a dummy (the
     // flag is a public the proof pinned to the circuit's flag register)
     _insertIfReal(e, 2 * t, p, PoolPublicInputs.idxNf1, PoolPublicInputs.idxReal1, 'nfRoot');
@@ -470,7 +529,7 @@ class PP1SpScriptGen {
     if (aggregated) {
       // the transfer's lanes into the statement bytes (the one result output)
       e.roll('pb');
-      SlotScript.lanesToBytes(e, [for (int j = 0; j < laneChunk; j++) p(j)], as: 'tb');
+      e.roll('tb');
       _cat(e, as: 'pb');
     } else {
       // the two commitments into the subtree
@@ -479,7 +538,7 @@ class PP1SpScriptGen {
       _cat(e, as: 'cmsB');
       // the result output: OP_RETURN SHA256(publics)
       e.roll('outs');
-      SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'pb');
+      e.roll('tb');
       _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
       e.pushData([...List.filled(8, 0), 34, OpCodes.OP_RETURN, 32]);
       e.swap();
@@ -548,6 +607,58 @@ class PP1SpScriptGen {
   }
 
   /// Transfer [t], unused: no extras, an empty result, empty leaves.
+  /// Inside an IF, picks only: the record hashes to the asset id (lanes 0..2
+  /// masked to 31 bits, lane 3 to 30 bits plus the record's gated flag),
+  /// the Rabin key hashes to the record's issuer key, and the signature
+  /// covers SHA256 of the transfer's lane bytes.
+  void _issuerCheck(StackEmitter e, int t, String Function(int) p) {
+    e.pick('ar$t');
+    _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
+    for (int j = 0; j < PoolHash.assetLanes; j++) {
+      SlotScript.split(e, 4);
+      e.swap();
+      e.pushData(j < 3 ? const [0xff, 0xff, 0xff, 0x7f] : const [0xff, 0xff, 0xff, 0x3f]);
+      _op(e, OpCodes.OP_AND);
+      _op(e, OpCodes.OP_BIN2NUM, pops: 1, pushes: 1);
+      if (j == 3) {
+        // + gated * 2^30, the gated bit of the record's flags byte
+        e.pick('ar$t');
+        SlotScript.split(e, AssetRecord.flagsOffset);
+        _op(e, OpCodes.OP_NIP);
+        SlotScript.split(e, 1);
+        _op(e, OpCodes.OP_DROP, pops: 1, pushes: 0);
+        _op(e, OpCodes.OP_BIN2NUM, pops: 1, pushes: 1);
+        e.pushConst(2);
+        _op(e, OpCodes.OP_MOD);
+        e.pushConst(PoolHash.gatedBit);
+        _op(e, OpCodes.OP_MUL);
+        _op(e, OpCodes.OP_ADD);
+      }
+      e.pick(p(PoolPublicInputs.idxAsset + j));
+      e.numEqualVerify();
+    }
+    _op(e, OpCodes.OP_DROP, pops: 1, pushes: 0); // the hash's remaining 16 bytes
+    // the issuer's key
+    e.pick('an$t');
+    _op(e, OpCodes.OP_HASH160, pops: 1, pushes: 1);
+    e.pick('ar$t');
+    SlotScript.split(e, 20);
+    _op(e, OpCodes.OP_DROP, pops: 1, pushes: 0);
+    _equalVerify(e);
+    // the signature: s^2 mod n == SHA256(lane bytes) + padding
+    e.pick('tb');
+    _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
+    _unsigned(e);
+    e.pick('ap$t');
+    _op(e, OpCodes.OP_ADD);
+    e.pick('as$t');
+    e.dup();
+    _op(e, OpCodes.OP_MUL);
+    e.pick('an$t');
+    _op(e, OpCodes.OP_MOD);
+    e.numEqualVerify();
+  }
+
   void _skipTransfer(StackEmitter e, int t) {
     e.roll('x$t');
     _op(e, OpCodes.OP_SIZE, pops: 1, pushes: 2);
@@ -557,7 +668,7 @@ class PP1SpScriptGen {
     for (int j = 0; j < PoolPublicInputs.count; j++) {
       e.dropNamed(pub(t, j));
     }
-    for (final n in [...nullifierNames(2 * t), ...nullifierNames(2 * t + 1)]) {
+    for (final n in [...nullifierNames(2 * t), ...nullifierNames(2 * t + 1), ...authNames(t)]) {
       e.dropNamed(n);
     }
     e.roll('cmsB');
@@ -972,6 +1083,7 @@ class PP1SpScriptGen {
         }
         _pushInsertion(b, tr.nf1 ?? dummyInsertion());
         _pushInsertion(b, tr.nf2 ?? dummyInsertion());
+        _pushAuth(b, tr.auth);
       }
       for (final v in roundLanes) {
         _pushNum(b, v);
@@ -998,9 +1110,17 @@ class PP1SpScriptGen {
       }
       _pushInsertion(b, tr?.nf1 ?? dummyInsertion());
       _pushInsertion(b, tr?.nf2 ?? dummyInsertion());
+      _pushAuth(b, tr?.auth);
     }
     b.opCode(OpCodes.OP_1);
     return b.build();
+  }
+
+  static void _pushAuth(ScriptBuilder b, IssuerAuth? a) {
+    b.addData(a?.record ?? Uint8List(0));
+    b.addData(a == null ? Uint8List(0) : Rabin.bigIntToScriptNum(a.n));
+    b.addData(a == null ? Uint8List(0) : Rabin.bigIntToScriptNum(a.sig.s));
+    b.smallNum(a?.sig.padding ?? 0);
   }
 
   SVScript createUnlock({

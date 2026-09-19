@@ -140,4 +140,55 @@ void main() {
     // spending it again: the wallet model refuses (the nullifier is in the set)
     expect(() => tool.createRoundTxn(ledger, [PoolTransfer(w.publics, proof, payee), null]), throwsA(isA<StateError>()));
   }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test("round 3: a gated asset is minted with the issuer's signature, then transferred under the gate; a wrong key is refused", () {
+    final issuer = Rabin.generateKeyPair(1024);
+    final issuerN = Rabin.bigIntToScriptNum(issuer.n).toList();
+    final record = AssetRecord(issuerKeyHash: hash160(issuerN), nonce: List.generate(32, (i) => 3 * i + 1), flags: AssetRecord.flagGated);
+    final x = record.id;
+    expect(PoolHash.isGated(x), isTrue);
+    expect(PoolHash.isBsv(x), isFalse);
+    // mint 1000 units of x to skA's address
+    final minted = OutputNote(pkd: PoolHash.pkd(skA, dA), value: 1000, rho: lanes(3), rcm: lanes(4), asset: x);
+    final nb = OutputNote(pkd: lanes(8), value: 0, rho: lanes(3), rcm: lanes(4), asset: x);
+    final w = PoolSpendAir.witness(SpendNote.dummy(sk: lanes(5), rho: lanes(3)), SpendNote.dummy(sk: lanes(5), rho: lanes(3)), minted, nb, -1000,
+        anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    expect(w.publics.asset, x);
+    final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(3));
+    // without the issuer the tool refuses; with the signature the round verifies and the vault does not move
+    expect(() => tool.createRoundTxn(ledger, [PoolTransfer(w.publics, proof, Uint8List(0)), null]), throwsA(isA<ArgumentError>()));
+    final vaultBefore = ledger.vault;
+    final mintedAt = ledger.tree.size;
+    var spent = tool.spentByRound(ledger);
+    final mintTx = tool.createRoundTxn(ledger,
+        [PoolTransfer(w.publics, proof, Uint8List(0), auth: IssuerAuth.sign(record, w.publics, p: issuer.p, q: issuer.q)), null]);
+    expect(ledger.vault, vaultBefore);
+    verifyAll(mintTx, spent, label: 'mint');
+
+    // transfer 600 of it: a gated asset, so the issuer signs this transfer too
+    final path = ledger.tree.path(mintedAt);
+    final a = SpendNote(sk: skA, d: dA, value: 1000, rho: minted.rho, rcm: minted.rcm, siblings: path.siblings, position: mintedAt, asset: x);
+    expect(a.root, ledger.tree.root);
+    final oa = OutputNote(pkd: lanes(8), value: 600, rho: lanes(3), rcm: lanes(4), asset: x);
+    final ob = OutputNote(pkd: PoolHash.pkd(skA, dA), value: 400, rho: lanes(3), rcm: lanes(4), asset: x);
+    final w2 = PoolSpendAir.witness(a, SpendNote.dummy(sk: lanes(5), rho: lanes(3)), oa, ob, 0, outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    final proof2 = StarkProver.prove(p, PoolSpendAir.air(w2.publics), w2.rows, rng: Random(4));
+    spent = tool.spentByRound(ledger);
+    final tx2 = tool.createRoundTxn(ledger,
+        [PoolTransfer(w2.publics, proof2, Uint8List(0), auth: IssuerAuth.sign(record, w2.publics, p: issuer.p, q: issuer.q)), null]);
+    expect(ledger.vault, vaultBefore);
+    verifyAll(tx2, spent, label: 'gated transfer');
+
+    // a mint signed by another key (the record names the issuer): the state script refuses it
+    final other = Rabin.generateKeyPair(512);
+    final w3 = PoolSpendAir.witness(SpendNote.dummy(sk: lanes(5), rho: lanes(3)), SpendNote.dummy(sk: lanes(5), rho: lanes(3)),
+        OutputNote(pkd: lanes(8), value: 5, rho: lanes(3), rcm: lanes(4), asset: x),
+        OutputNote(pkd: lanes(8), value: 0, rho: lanes(3), rcm: lanes(4), asset: x), -5,
+        anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    final proof3 = StarkProver.prove(p, PoolSpendAir.air(w3.publics), w3.rows, rng: Random(5));
+    final forged = IssuerAuth(Uint8List.fromList(record.bytes), other.n, Rabin.sign(IssuerAuth.message(w3.publics), other.p, other.q));
+    spent = tool.spentByRound(ledger);
+    final tx3 = tool.createRoundTxn(ledger, [PoolTransfer(w3.publics, proof3, Uint8List(0), auth: forged), null]);
+    expect(() => verifyAll(tx3, spent, label: 'forged mint'), throwsA(isA<ScriptException>()));
+  }, timeout: const Timeout(Duration(minutes: 5)));
 }

@@ -37,7 +37,12 @@ class PoolTransfer {
   final PoolPublicInputs publics;
   final StarkProof proof;
   final Uint8List extraOutputs;
-  PoolTransfer(this.publics, this.proof, this.extraOutputs);
+  /// The issuer's authorisation: a mint of a non-BSV asset or a transfer
+  /// of a gated one needs it (the state script checks it).
+  final IssuerAuth? auth;
+  PoolTransfer(this.publics, this.proof, this.extraOutputs, {this.auth});
+
+  bool get needsAuth => !PoolHash.isBsv(publics.asset) && (publics.publicOut < 0 || PoolHash.isGated(publics.asset));
 }
 
 /// A signed transparent input added to a round (a deposit's funding).
@@ -167,11 +172,13 @@ class ShieldedPoolTool {
       for (int j = 0; j < 8; j++) {
         if (transfers[i].publics.outHash[j] != want[j]) throw ArgumentError('transfer $i: its publics do not commit to its extra outputs');
       }
+      if (transfers[i].needsAuth && transfers[i].auth == null) throw ArgumentError('transfer $i needs the issuer\'s authorisation');
     }
     final full = <PP1SpTransfer>[
       for (final t in transfers)
         PP1SpTransfer(t.publics, t.extraOutputs, t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null,
-            t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null)
+            t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null,
+            auth: t.auth)
     ];
     // the tree: whole subtrees of the transfers' commitments, in order
     final rootBefore = ledger.anchor;
@@ -186,7 +193,7 @@ class ShieldedPoolTool {
     if (agg.tree.leavesAppended != gen.leavesAppended) throw StateError('the aggregation and the generator disagree on the leaves per round');
     var vault = ledger.vault;
     for (final t in transfers) {
-      vault -= t.publics.publicOut;
+      if (PoolHash.isBsv(t.publics.asset)) vault -= t.publics.publicOut;
     }
     if (vault < 0) throw ArgumentError('the round would overdraw the vault');
     final next = h.afterRound(rootAfter, ledger.nullifiers.root, leaves: gen.leavesAppended);
@@ -229,6 +236,7 @@ class ShieldedPoolTool {
       for (int j = 0; j < 8; j++) {
         if (t.publics.outHash[j] != want[j]) throw ArgumentError('transfer $i: its publics do not commit to its extra outputs');
       }
+      if (t.needsAuth && t.auth == null) throw ArgumentError('transfer $i needs the issuer\'s authorisation');
     }
     // apply to the wallet model first: nullifier witnesses, subtree, roots
     final full = <PP1SpTransfer?>[];
@@ -240,7 +248,7 @@ class ShieldedPoolTool {
       // a dummy input's nullifier is not inserted (the proof's real flags say which)
       final nf1 = t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null;
       final nf2 = t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null;
-      full.add(PP1SpTransfer(t.publics, t.extraOutputs, nf1, nf2));
+      full.add(PP1SpTransfer(t.publics, t.extraOutputs, nf1, nf2, auth: t.auth));
     }
     final rootBefore = ledger.anchor;
     final j = ledger.tree.nextSubtree;
@@ -254,7 +262,7 @@ class ShieldedPoolTool {
     ];
     var vault = ledger.vault;
     for (final t in transfers) {
-      if (t != null) vault -= t.publics.publicOut;
+      if (t != null && PoolHash.isBsv(t.publics.asset)) vault -= t.publics.publicOut;
     }
     if (vault < 0) throw ArgumentError('the round would overdraw the vault');
     final next = h.afterRound(rootAfter, ledger.nullifiers.root);

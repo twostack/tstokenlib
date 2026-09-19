@@ -1494,6 +1494,25 @@ trial decryption. Tested end to end in `test/note_encryption_test.dart` and the
 chain-reader test (a round carrying a bundle, opened by the recipient's viewing
 key and the sender's outgoing key).
 
+*Step 2 built.* The circuit has four asset registers (columns 27..30, constant
+over the trace) pinned to the asset lanes of both commitments and both output
+notes, and to four new public lanes (`PoolPublicInputs.asset`, 52..55; 56 lanes,
+still seven chunks). One asset per transfer; dummies carry it; `witness` rejects
+a mix. The asset id's lane 3 holds the record's gated flag in bit 30 above 30
+hash bits (123 hash bits in all), so the state script reads gated-ness off the
+id. The state script now: applies `publicOut` to the vault only for BSV
+(`vout -= isBsv * delta`); for a token that is minted (`delta < 0`) or gated it
+requires, per transfer, the asset record and the issuer's Rabin signature over
+SHA256 of the transfer's 56 lane bytes, and checks that the record hashes to the
+asset id, that hash160 of the Rabin key is the record's first 20 bytes, and the
+signature; burns pass freely. `IssuerAuth.sign(record, publics, p:, q:)` builds
+the authorisation, `PoolTransfer(auth:)` carries it, the tool refuses a transfer
+that needs one without it, and the chain reader moves the vault only for BSV.
+Tested: a token mint trace with register and public-lane cheats
+(`test/pool_spend_air_test.dart`) and, on chain, a gated mint, a gated transfer
+and a mint signed by the wrong key that the state script refuses
+(`test/shielded_pool_tool_test.dart`).
+
 ## Open Items
 
 - ~~**Deposits bloat the nullifier set.**~~ Done: the public `real1`/`real2` flags

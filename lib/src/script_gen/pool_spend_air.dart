@@ -80,14 +80,31 @@ class PoolHash {
   /// registry.
   static const assetLanes = 4;
   static const bsvAsset = [1, 0, 0, 0];
+
+  /// Lane 3 carries the record's gated flag in its bit 30 (above 30 hash
+  /// bits), so the state script tells a gated asset from its id alone.
+  static const gatedBit = 1 << 30;
+
+  /// The id of the asset [recordBytes] describes: the SHA256 of the record
+  /// as 4-byte little-endian words, lanes 0..2 masked to 31 bits, lane 3 to
+  /// 30 bits plus the gated bit (123 bits of hash).
   static List<int> assetIdOf(List<int> recordBytes) {
-    final h = crypto.sha256.convert(recordBytes).bytes;
-    var acc = BigInt.zero;
-    for (int i = 31; i >= 0; i--) {
-      acc = (acc << 8) | BigInt.from(h[i]);
+    final h = Uint8List.fromList(crypto.sha256.convert(recordBytes).bytes);
+    final bd = ByteData.view(h.buffer);
+    final gated = recordBytes.length > AssetRecord.flagsOffset && recordBytes[AssetRecord.flagsOffset] & AssetRecord.flagGated != 0;
+    return [
+      for (int k = 0; k < 3; k++) bd.getUint32(4 * k, Endian.little) & 0x7fffffff,
+      (bd.getUint32(12, Endian.little) & 0x3fffffff) | (gated ? gatedBit : 0),
+    ];
+  }
+
+  static bool isBsv(List<int> asset) => sameAsset(asset, bsvAsset);
+  static bool isGated(List<int> asset) => asset[3] >= gatedBit;
+  static bool sameAsset(List<int> a, List<int> b) {
+    for (int i = 0; i < assetLanes; i++) {
+      if (a[i] != b[i]) return false;
     }
-    final mask = (BigInt.one << 31) - BigInt.one;
-    return [for (int k = 0; k < assetLanes; k++) ((acc >> (31 * k)) & mask).toInt()];
+    return true;
   }
 
   /// pk_d = H(ivk, d): the diversified address.
@@ -125,6 +142,7 @@ class PoolHash {
 /// SHA256 of these bytes.
 class AssetRecord {
   static const flagGated = 1;
+  static const flagsOffset = 52, length = 54;
   final List<int> issuerKeyHash; // hash160 of the issuer's Rabin key
   final List<int> nonce; // 32 bytes
   final int flags;
@@ -210,14 +228,21 @@ class PoolPublicInputs {
   /// protects nothing, and inserting it would grow the set by two leaves per
   /// deposit and one per one-input spend.
   final bool real1, real2;
+
+  /// The one asset the transfer moves (pinned to the circuit's asset
+  /// registers, which both commitments and both output notes carry).
+  /// [publicOut] is in that asset; only BSV's moves the vault.
+  final List<int> asset;
   PoolPublicInputs(this.anchor, this.nf1, this.nf2, this.cmOut1, this.cmOut2, this.publicOut,
-      {List<int>? outHash, this.real1 = true, this.real2 = true})
-      : outHash = outHash ?? List.filled(8, 0);
+      {List<int>? outHash, this.real1 = true, this.real2 = true, this.asset = PoolHash.bsvAsset})
+      : outHash = outHash ?? List.filled(8, 0) {
+    if (asset.length != PoolHash.assetLanes) throw ArgumentError('asset lanes');
+  }
 
   /// All-zero publics: the verifier script does not depend on the values.
   static PoolPublicInputs zero() {
     final z = List.filled(8, 0);
-    return PoolPublicInputs(z, z, z, z, z, 0);
+    return PoolPublicInputs(z, z, z, z, z, 0, asset: List.filled(PoolHash.assetLanes, 0));
   }
 
   /// The [outHash] lanes of serialised extra outputs.
@@ -231,12 +256,13 @@ class PoolPublicInputs {
   static const idxAnchor = 0, idxNf1 = 8, idxNf2 = 16, idxCm1 = 24, idxCm2 = 32, idxPubLo = 40, idxPubHi = 41;
   static const idxOutHash = 42;
   static const idxReal1 = 50, idxReal2 = 51;
-  static const count = 52;
+  static const idxAsset = 52;
+  static const count = idxAsset + PoolHash.assetLanes; // 56
 
   List<int> toLanes() {
     final (lo, hiSigned) = PoolHash.signedLimbs(publicOut);
     final hi = PoolHash.laneOf(hiSigned);
-    return [...anchor, ...nf1, ...nf2, ...cmOut1, ...cmOut2, lo, hi, ...outHash, real1 ? 1 : 0, real2 ? 1 : 0];
+    return [...anchor, ...nf1, ...nf2, ...cmOut1, ...cmOut2, lo, hi, ...outHash, real1 ? 1 : 0, real2 ? 1 : 0, ...asset];
   }
 
   /// The inverse of [toLanes]: decode the 50 lanes a verifier slot was
@@ -253,12 +279,14 @@ class PoolPublicInputs {
     if (hiSigned.abs() >= 1 << PoolHash.limbBits) throw ArgumentError('high limb out of range');
     if (lanes[idxReal1] > 1 || lanes[idxReal2] > 1) throw ArgumentError('real flags are not boolean');
     return PoolPublicInputs(at(idxAnchor), at(idxNf1), at(idxNf2), at(idxCm1), at(idxCm2), lo + (hiSigned << PoolHash.limbBits),
-        outHash: at(idxOutHash), real1: lanes[idxReal1] == 1, real2: lanes[idxReal2] == 1);
+        outHash: at(idxOutHash), real1: lanes[idxReal1] == 1, real2: lanes[idxReal2] == 1,
+        asset: lanes.sublist(idxAsset, idxAsset + PoolHash.assetLanes));
   }
 
-  PoolPublicInputs copyWith({List<int>? anchor, List<int>? nf1, int? publicOut, List<int>? outHash, bool? real1, bool? real2}) =>
+  PoolPublicInputs copyWith(
+          {List<int>? anchor, List<int>? nf1, int? publicOut, List<int>? outHash, bool? real1, bool? real2, List<int>? asset}) =>
       PoolPublicInputs(anchor ?? this.anchor, nf1 ?? this.nf1, nf2, cmOut1, cmOut2, publicOut ?? this.publicOut,
-          outHash: outHash ?? this.outHash, real1: real1 ?? this.real1, real2: real2 ?? this.real2);
+          outHash: outHash ?? this.outHash, real1: real1 ?? this.real1, real2: real2 ?? this.real2, asset: asset ?? this.asset);
 }
 
 /// The prover's side: the full trace for [PoolSpendAir.air] of [publics].
@@ -274,7 +302,7 @@ class PoolSpendWitness {
 ///   0        P(sk, tagIvk || 0)       -> ivk           break; register = sk, tag and padding pinned
 ///   1        P(ivk || d, 0)           -> pk_d          padding pinned
 ///   2        P(pk_d || value, rho)    -> s             register = rho; balance += value
-///   3        P(s || rcm, asset)       -> cm            asset pinned (BSV until the asset lanes go public)
+///   3        P(s || rcm, asset)       -> cm            asset = the asset registers = public asset lanes
 ///   4..35    32 Merkle steps          -> root          pinned = anchor, gated by the flag
 ///   36       P(sk, tagNk || 0)        -> nk            break; register = sk, tag and padding pinned
 ///   37       P(nk || rho, 0)          -> nf            register = rho, padding pinned; nf public
@@ -335,8 +363,9 @@ class PoolSpendAir {
   static const regSk = 16, regRho = regSk + PoolHash.skLanes; // 16..20, 21..23
   static const regBalLo = regRho + PoolHash.rhoLanes, regBalHi = regBalLo + 1; // 24, 25
   static const regFlag = regBalHi + 1; // 26: 1 for a real note, 0 for a dummy
-  static const accLo = 27, accHi = 28;
-  static const numCols = 29;
+  static const regAsset = regFlag + 1; // 27..30: the transfer's asset
+  static const accLo = regAsset + PoolHash.assetLanes, accHi = accLo + 1; // 31, 32
+  static const numCols = accHi + 1;
 
   // lanes inside the rows the register is tied to
   static const valueLo = 8, valueHi = 9;
@@ -404,6 +433,7 @@ class PoolSpendAir {
         const [inValueRow, outValueRow, closeRow],
         const [inValueRow, outValueRow, closeRow],
         const [n - 1],
+        for (int i = 0; i < PoolHash.assetLanes; i++) const [n - 1],
       ],
       accumulators: [_acc(24), _acc(28)],
       publics: pub.toLanes(),
@@ -424,12 +454,16 @@ class PoolSpendAir {
           BoundaryExpr.zeroUnless(valueLo, regFlag),
           BoundaryExpr.zeroUnless(valueHi, regFlag),
         ]),
-        // the asset lanes of both commitments: BSV, until step 2 of the corporate
-        // design makes them registers pinned to public lanes
-        BoundaryGroup(Poseidon2ChainAir.inputRow(pCm2),
-            [for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.public(assetLane + i, PoolHash.bsvAsset[i], PoolHash.bsvAsset[i])]),
+        // one asset per transfer: the asset registers (constant over the trace)
+        // are what both commitments and both output notes carry, and what the
+        // public asset lanes say
+        BoundaryGroup(Poseidon2ChainAir.inputRow(pCm2), [
+          for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.equal(regAsset + i, assetLane + i),
+          for (int i = 0; i < PoolHash.assetLanes; i++)
+            BoundaryExpr.publicAt(regAsset + i, PoolPublicInputs.idxAsset + i, PoolPublicInputs.idxAsset + i),
+        ]),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pOut2),
-            [for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.public(assetLane + i, PoolHash.bsvAsset[i], PoolHash.bsvAsset[i])]),
+            [for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.equal(regAsset + i, assetLane + i)]),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pNk), derive(PoolHash.tagNk)),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pNf), [
           for (int i = 0; i < PoolHash.rhoLanes; i++) BoundaryExpr.equal(regRho + i, nfRhoLane + i),
@@ -450,14 +484,14 @@ class PoolSpendAir {
 
   static List<int> _pad(List<int> v, int n) => [...v, ...List.filled(n - v.length, 0)];
 
-  static List<ChainStep> _halfProgram(SpendNote sn, OutputNote on) {
+  static List<ChainStep> _halfProgram(SpendNote sn, OutputNote on, List<int> asset) {
     final (lo, hi) = PoolHash.limbs(sn.value);
     final (olo, ohi) = PoolHash.limbs(on.value);
     return [
       ChainStep.fresh(_pad([...sn.sk, PoolHash.tagIvk], 16)),
       ChainStep.chained(_pad(sn.d, 8)),
       ChainStep.chained(_pad([lo, hi, ...sn.rho], 8)),
-      ChainStep.chained([...sn.rcm, ...sn.asset]),
+      ChainStep.chained([...sn.rcm, ...asset]), // a dummy carries the transfer's asset
       for (int i = 0; i < depth; i++) ChainStep.chained(sn.siblings[i], swap: (sn.position >> i) & 1 == 1),
       ChainStep.fresh(_pad([...sn.sk, PoolHash.tagNk], 16)),
       ChainStep.chained(_pad(sn.rho, 8)),
@@ -497,16 +531,16 @@ class PoolSpendAir {
       }
     }
     if (a.value + b.value != oa.value + ob.value + publicOut) throw ArgumentError('values do not balance');
-    for (final asset in [a.asset, b.asset, oa.asset, ob.asset]) {
-      for (int i = 0; i < PoolHash.assetLanes; i++) {
-        if (asset[i] != PoolHash.bsvAsset[i]) throw ArgumentError('only BSV notes until the asset lanes are public');
-      }
+    // one asset: the real inputs' and both outputs' (a mint or deposit has no real input)
+    final asset = oa.asset;
+    for (final other in [ob.asset, for (final s in real) s.asset]) {
+      if (!PoolHash.sameAsset(other, asset)) throw ArgumentError('a transfer moves one asset');
     }
 
     final pub = PoolPublicInputs(anchor, a.nullifier, b.nullifier, oa.cm, ob.cm, publicOut,
-        outHash: outHash, real1: !a.dummy, real2: !b.dummy);
+        outHash: outHash, real1: !a.dummy, real2: !b.dummy, asset: asset);
     final chain = air(pub);
-    final rows = chain.generateChain([..._halfProgram(a, oa), ..._halfProgram(b, ob)]);
+    final rows = chain.generateChain([..._halfProgram(a, oa, asset), ..._halfProgram(b, ob, asset)]);
 
     // key registers, per half
     for (int r = 0; r < n; r++) {
@@ -518,6 +552,9 @@ class PoolSpendAir {
         rows[r][regRho + i] = note.rho[i];
       }
       rows[r][regFlag] = note.dummy ? 0 : 1;
+      for (int i = 0; i < PoolHash.assetLanes; i++) {
+        rows[r][regAsset + i] = asset[i];
+      }
     }
 
     // output value bits in the period before out1 of each half, then the accumulators

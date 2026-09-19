@@ -112,7 +112,7 @@ class PoolChainReader {
       if (t == null) continue;
       if (t.real1) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf1));
       if (t.real2) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf2));
-      vault -= t.publicOut;
+      if (PoolHash.isBsv(t.asset)) vault -= t.publicOut;
     }
     final cms = ShieldedPoolTool.roundLeaves(transfers);
     ledger.tree.appendSubtree(cms);
@@ -175,7 +175,7 @@ class PoolChainReader {
     for (final t in transfers) {
       if (t!.real1) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf1));
       if (t.real2) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf2));
-      vault -= t.publicOut;
+      if (PoolHash.isBsv(t.asset)) vault -= t.publicOut;
       cms.addAll([t.cmOut1, t.cmOut2]);
     }
     for (int s = 0; s < gen.leavesAppended ~/ NoteCommitmentTree.subtreeLeaves; s++) {
