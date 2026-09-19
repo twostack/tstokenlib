@@ -10,7 +10,7 @@ An aggregation SHALL be a list of levels, each with its arity, trace size and pa
 
 #### Scenario: Throughput plan
 - **WHEN** the production plan is compiled
-- **THEN** it is 16 x 4 x 2 x 2 = 256 transfers: level 1 on 2^20 at blowup 8, level 2 on 2^21 at blowup 8, then 2^20 and 2^19 at blowup 32, the root on 2^19 at blowup 32 with 18 queries
+- **THEN** it is 16 x 4 x 2 x 2 = 256 transfers: level 1 on 2^20 at blowup 8, level 2 on 2^21 at blowup 8, then the narrowing levels 2^20 and 2^19 at blowup 16 with 23 queries, the root on 2^19 at blowup 32 with 18 queries (only the root is verified by a script, which is what prices queries)
 
 ### Requirement: Fit
 Every level's program SHALL fit its trace (periods used at most periods available) and the root SHALL fit beside the wide publics; a dry run SHALL check the fit without computing the multi-gigabyte preprocessed commitments.
@@ -24,7 +24,7 @@ A 256-transfer round SHALL be provable on one 12-core machine in under 10 minute
 
 #### Scenario: Measured round
 - **WHEN** the plan is proved end to end at production parameters
-- **THEN** the levels and root take about 356 s, the root script is under 1,000,000 ops and the interpreter accepts it
+- **THEN** the levels and root take about 240 s and peak under 16 GB, the root script is under 1,000,000 ops and the interpreter accepts it
 
 ### Requirement: Short rounds are padded
 A round with fewer transfers than the plan SHALL be filled with padding transfers from the coordinator's supply, which MAY be proved ahead of time and never expire.

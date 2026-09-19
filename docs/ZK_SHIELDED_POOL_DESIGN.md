@@ -1907,6 +1907,87 @@ Dropping the cache to one entry would recover perhaps 2 GB more of the
 remainder; the rest is level 3's own working set, which only
 `blowup32-node-cost` can change.
 
+### Blowup 16 at the narrowing levels (built)
+
+The cache fix left a round peaking at 25.7 GB, and the section above put the
+rest down to level 3's own working set. That was right about where the memory
+was and wrong about what could be done with it. Level 3 proves a 2^20 trace
+at blowup 32, which commits on 2^25; every one of its 111 columns is 128 MB
+there. Nothing about level 3 requires blowup 32. It is the root's parameter,
+chosen because the root is the only proof a script verifies and the on-chain
+verifier is priced per query and per FRI fold, and levels 3 and 4 had taken
+it by inheritance.
+
+What the narrowing levels actually owe is to the level above them, which
+verifies them in-circuit and pays per query. So the question is whether a
+lower blowup with more queries still fits, and the plan can be compiled
+without proving anything to find out.
+
+One node at level 3's exact shape (2^20, 79 trace and aux and preprocessed
+columns plus 32 composition columns, GPU on, `tool/scratch/node_prove.dart`):
+
+| parameters | prover | peak footprint | proof | soundness |
+| --- | --- | --- | --- | --- |
+| blowup 32, 18 queries, final 2^10 | 20.3 s | 22.4 GB | 218,812 B | 90 + 16 bits |
+| blowup 16, 23 queries, final 2^10 | 13.1 s | 11.6 GB | 258,212 B | 92 + 16 |
+| blowup 16, 23 queries, final 2^11 | 13.5 s | **11.5 GB** | 251,016 B | 92 + 16 |
+
+Half the memory, a third off the time, and two bits more soundness. The
+larger final layer is what makes it fit: the level above verifies one fewer
+FRI fold per query for each step the final layer grows, and that is what pays
+for the five extra queries.
+
+| level 3's parameters | level 4 needs | root needs |
+| --- | --- | --- |
+| blowup 32, 18 queries, final 2^10 | 13,642 of 16,384 | 10,473 of 16,384 |
+| blowup 16, 23 queries, final 2^9 | 16,514, over | |
+| blowup 16, 23 queries, final 2^10 | 16,082 | |
+| blowup 16, 23 queries, final 2^11 | **15,636** | |
+
+Level 4 moves with it, to blowup 16 with 23 queries and a 2^10 final layer,
+which takes the root from 10,473 periods to 11,576 and level 4's own node
+from a 2^24 domain to 2^23. The root keeps blowup 32 with 18 queries, so the
+root script is byte for byte what it was.
+
+The round, 256 transfers on one machine, GPU on, against the same run after
+the cache fix:
+
+| stage | before | after |
+| --- | --- | --- |
+| level 1, 16 nodes | 129.1 s | 132.0 s |
+| level 2, 4 nodes | 61.7 s | 60.8 s |
+| level 3, 2 nodes | 40.6 s | **24.5 s** |
+| level 4, 1 node | 8.5 s | 6.7 s |
+| root | 14.9 s | 15.3 s |
+| **round** | **255.3 s** | **239.7 s** |
+| serial tail (levels 2 to 4 and the root) | 125.7 s | 107.3 s |
+| preprocessed roots, once before the round | 8.6 s | 6.4 s |
+| **peak physical footprint** | **25.7 GB** | **15.4 GB** |
+| footprint at levels 1 / 2 / 3 | 9.3 / 15.4 / 25.7 GB | 7.4 / 15.3 / 15.4 GB |
+
+Levels 1 and 2 and the root are untouched and their times move only by
+run-to-run variation. The setup is faster because two of the five
+preprocessed commitments it builds are now on a domain half the size. What
+the levels pay is proof size: level 3 goes from 218,812 to 251,016 bytes and
+level 4 from 202,580 to 238,216, which is more bytes in a node job and in the
+level above's witness, and is already counted in the times above. The root
+proof stays 259,988 bytes and the root script 2,208,106 bytes and 882,775
+ops, and the interpreter still accepts it.
+
+The peak is now level 2, at 15.3 GB, where it was level 3 at 25.7. Level 2
+proves a 2^21 trace at blowup 8, so its commitment domain is 2^24 and there
+is no parameter left to take: a lower blowup would need so many queries that
+level 3's program would not hold them. Going below 15 GB means holding less
+per column rather than fewer columns, and the candidates, in the order their
+size deserves, are the preprocessed cache down to one entry with eviction
+before the rebuild rather than after (about 1.4 GB), Merkle trees kept only
+above a cut with the opened subtrees rehashed from the evaluations (about 1.5
+GB, and it also removes the full copy of each tree out of native memory into
+the Dart heap), a packed witness (about 0.2 GB), and streaming the commitment
+domain one column at a time (about 6 GB, but it needs a second extension pass
+because the DEEP weights are not known until the composition root is
+absorbed, and it fights the GPU's shared buffers).
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the

@@ -44,8 +44,10 @@ class AggregationLevel {
 /// Inner proofs never reach the chain, so their parameters follow prover
 /// throughput (see [throughput]): low blowup with more queries costs the
 /// prover little and the next circuit more periods, and the trade-off is
-/// won by wide, low-blowup nodes. Only the top proof must fit the root's
-/// budget, so the last levels narrow back to the root's parameters.
+/// won by wide, low-blowup nodes. Only the root is verified by a script, so
+/// only its parameters answer to the on-chain price per query; the levels
+/// below it narrow the trace back toward the root's size while keeping the
+/// prover's blowup low.
 class PoolAggregation {
   final StarkParams spendP;
   final List<AggregationLevel> levelSpec;
@@ -112,25 +114,43 @@ class PoolAggregation {
   static const innerParams20 = StarkParams(logTrace: 20, logBlowup: 3, logExpand: 3, logFinal: 8, numQueries: 30, grindBytes: 2);
   static const innerParams21 = StarkParams(logTrace: 21, logBlowup: 3, logExpand: 3, logFinal: 8, numQueries: 30, grindBytes: 2);
 
-  /// The root's parameters, and those of the narrowing levels below it:
-  /// blowup 32 with 18 queries (the on-chain verifier is priced per query).
-  static const chainParams19 = StarkParams(logTrace: 19, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
-  static const chainParams20 = StarkParams(logTrace: 20, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
+  /// The root's parameters: blowup 32 with 18 queries, because the root is
+  /// the proof a script verifies and the on-chain verifier is priced per
+  /// query and per FRI fold.
+  static const rootParams19 = StarkParams(logTrace: 19, logBlowup: 5, logExpand: 3, logFinal: 10, numQueries: 18, grindBytes: 2);
+
+  /// The narrowing levels below the root: blowup 16 with 23 queries.
+  ///
+  /// These levels are never verified by a script, only by the level above,
+  /// so nothing here is priced per query; they took the root's blowup 32
+  /// by inheritance and paid for it in memory. A 2^20 trace at blowup 32
+  /// commits on 2^25 and one node peaks at 22.4 GB; at blowup 16 it commits
+  /// on 2^24 and peaks at 11.5 GB, proves in 13.5 s instead of 20.3 s and
+  /// is two bits sounder (92 + 16 against 90 + 16). What it costs is paid
+  /// by the level above, which verifies 23 queries instead of 18: level 4
+  /// needs 15,636 of its 16,384 periods and the root 11,576.
+  ///
+  /// The final layer is larger than the blowup-32 levels' (2^7 and 2^6
+  /// coefficients) because the level above verifies one fewer FRI fold per
+  /// query for every step the final layer grows, which is what buys the
+  /// room for the extra queries.
+  static const narrowParams20 = StarkParams(logTrace: 20, logBlowup: 4, logExpand: 3, logFinal: 11, numQueries: 23, grindBytes: 2);
+  static const narrowParams19 = StarkParams(logTrace: 19, logBlowup: 4, logExpand: 3, logFinal: 10, numQueries: 23, grindBytes: 2);
 
   /// The 256-transfer plan (16 × 4 × 2 × 2): level 1 on 2^20 folds 16
   /// spends (34 s for 13 measured), level 2 on 2^21 folds 4 level-1 proofs,
-  /// then two narrowing levels at the root's parameters (2^20 verifying two
-  /// level-2 proofs, 2^19 verifying two of those) so the root on 2^19 can
-  /// verify the top proof beside the 256 statements. 24 nodes.
+  /// then two narrowing levels (2^20 verifying two level-2 proofs, 2^19
+  /// verifying two of those) so the root on 2^19 can verify the top proof
+  /// beside the 256 statements. 24 nodes.
   static const throughputLevels = [
     AggregationLevel(params: innerParams20, logTrace: 20, arity: 16),
     AggregationLevel(params: innerParams21, logTrace: 21, arity: 4),
-    AggregationLevel(params: chainParams20, logTrace: 20, arity: 2),
-    AggregationLevel(params: chainParams19, logTrace: 19, arity: 2),
+    AggregationLevel(params: narrowParams20, logTrace: 20, arity: 2),
+    AggregationLevel(params: narrowParams19, logTrace: 19, arity: 2),
   ];
 
   static PoolAggregation throughput({bool dryRun = false}) => PoolAggregation(
-      spendP: spendThroughputParams, levelSpec: throughputLevels, rootP: chainParams19, rootLog: 19, dryRun: dryRun);
+      spendP: spendThroughputParams, levelSpec: throughputLevels, rootP: rootParams19, rootLog: 19, dryRun: dryRun);
 
   int get transfers => tree.transfers;
   int get depth => levelSpec.length;
