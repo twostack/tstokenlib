@@ -74,6 +74,38 @@ dependencies:
       url: https://github.com/twostack/tstokenlib
 ```
 
+## The dartsv dependency
+
+This library needs `dartsv` 3.1.0 or later. The shielded pool's scripts do not
+run on earlier versions, which is why the constraint is not `^3.0.0`:
+
+| Fixed in 3.1.0 | Behaviour before it |
+| --- | --- |
+| `SVScript.removeAllInstancesOf` (FindAndDelete) is a single linear pass | Allocated a script-sized buffer per opcode, exhausting the heap on scripts of a few hundred KB |
+| The 1,000-element stack limit applies only before Genesis | Rejected every pool script with `SCRIPT_ERR_STACK_SIZE`; after Genesis BSV bounds stack memory by policy instead |
+
+Two further behaviours the pool relies on, `ScriptException.toString` and the
+`OP_EQUALVERIFY` hex diagnostic, arrived in earlier versions.
+`test/dartsv_patches_test.dart` covers all four, so a dartsv that lacks any of
+them fails this repository's suite rather than failing at run time.
+
+No `pubspec_overrides.yaml` is needed. If you do point the build at a local
+dartsv checkout, that file is gitignored, so nothing records which checkout a
+build used; prefer the published version unless you are working on dartsv
+itself.
+
+### Why those tests live here
+
+dartsv's own test runner cannot load any test file on this machine. The Dart SDK
+bundled with the Flutter install no longer ships
+`frontend_server.dart.snapshot`, which the runner asks for when it compiles that
+package, and every attempt to move dartsv off that path leaves the failure
+unchanged: raising its SDK constraint to 3.4, raising its `test` constraint
+across 1.24.6, 1.25.2, 1.31.1 and the exact 1.30.0 this repository runs on, and
+clearing its kernel cache. A trivial one-expectation test fails the same way, so
+it is the toolchain and not the package. Repairing that Flutter install is out of
+scope here, so the patched behaviour is covered from this repository instead.
+
 ## NFT Tokens
 
 The primary API is the `TokenTool` class. For a full working example, see

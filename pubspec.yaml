@@ -8,7 +8,7 @@ environment:
 
 dependencies:
   ffi: ^2.1.3
-  dartsv: ^3.0.0
+  dartsv: ^3.1.0
 
   crypto: ^3.0.6
   convert: ^3.1.2

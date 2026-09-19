@@ -1799,9 +1799,16 @@ hybrid bundle.
   Lagrange-form periodic evaluation (~20 KB), QM31-coefficient zero pins (~3 KB).
 - **Prover performance.** 95 s in Dart at a 2²⁴ composition domain, single-threaded;
   FFTs and Merkle dominate now that grinding is short. Isolates, Uint32List QM31.
-- **dartsv.** The FindAndDelete fix and the earlier interpreter changes are
-  uncommitted in the local checkout; its own test runner is broken by an SDK/tooling
-  mismatch, so it is validated through this repository's suite.
+- ~~**dartsv.**~~ Done: the FindAndDelete fix and the post-Genesis stack-limit change
+  are committed to dartsv's `master` and published as dartsv 3.1.0, which
+  `pubspec.yaml` now requires, so no path override is needed and a checkout that
+  resolves an older dartsv fails this repository's suite rather than at run time.
+  dartsv's own test runner still cannot load any test file here (the Flutter
+  install's Dart SDK no longer ships `frontend_server.dart.snapshot`, and neither
+  its SDK constraint, its `test` constraint nor its kernel cache changes that), so
+  the four patched behaviours are covered by `test/dartsv_patches_test.dart` in this
+  repository, verified to fail against unpatched dartsv. See the dartsv section of
+  the README.
 - **Shielding TSL1 fungible tokens.** FT tokens are locked to a `recipientPKH` and
   spent via `ModP2PKH`. A covenant cannot hold a key, so a pool cannot own an FT
   UTXO. Phase 1 shields satoshis; shielding FTs needs owner-as-script-hash support
