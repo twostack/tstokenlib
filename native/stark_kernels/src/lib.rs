@@ -1080,6 +1080,154 @@ pub unsafe extern "C" fn sk_composition(
 }
 
 // ---------------------------------------------------------------------------
+// Out-of-domain evaluation: coefficient columns at a QM31 point.
+// ---------------------------------------------------------------------------
+
+/// The value at (x, y) of the coefficient vector `c` (circle basis: pairs
+/// combined with y at the first level, then with x, 2x^2-1, ...).
+fn eval_at(c: &[u32], x: &Q, y: &Q) -> Q {
+    if c.len() == 1 {
+        return [c[0], 0, 0, 0];
+    }
+    let mut v: Vec<Q> = (0..c.len() / 2)
+        .map(|j| qadd(&[c[2 * j], 0, 0, 0], &qscale(y, c[2 * j + 1])))
+        .collect();
+    let mut tw = *x;
+    while v.len() > 1 {
+        let half = v.len() / 2;
+        for j in 0..half {
+            v[j] = qadd(&v[2 * j], &qmul(&tw, &v[2 * j + 1]));
+        }
+        v.truncate(half);
+        let t2 = qmul(&tw, &tw);
+        tw = qsub(&qadd(&t2, &t2), &Q_ONE);
+    }
+    v[0]
+}
+
+/// `out` (4k words) = each of the k coefficient columns of `len` words
+/// evaluated at (x, y).
+#[no_mangle]
+pub unsafe extern "C" fn sk_eval_at(coefs: *const u32, k: usize, len: usize, x: *const u32, y: *const u32, out: *mut u32) {
+    let coefs = std::slice::from_raw_parts(coefs, k * len);
+    let x = q_at(std::slice::from_raw_parts(x, 4), 0);
+    let y = q_at(std::slice::from_raw_parts(y, 4), 0);
+    let out = std::slice::from_raw_parts_mut(out, 4 * k);
+    par_fill_u32(out, 4, 1, |j, item| item.copy_from_slice(&eval_at(&coefs[j * len..(j + 1) * len], &x, &y)));
+}
+
+// ---------------------------------------------------------------------------
+// LogUp aux columns from a recorded bus program.
+//
+// Per row the program (over QM31; inputs are main-row cells, preprocessed
+// cells, constants and challenges) yields, per helper i, (en_i, v_i, tag_i,
+// mult_i). Helper H_i = en_i / (gamma + v_i + delta tag_i), or 0 when en_i
+// is 0; the accumulator column holds the prefix sums of sum_i mult_i H_i
+// (ACC[0] = 0), and the total is returned for the caller's balance check.
+//
+//   desc: [log_n, n_main, n_pre, n_inputs, n_ops, n_helpers, n_chal, gamma_idx, delta_idx]
+//   src kinds: 0 main column j of the row, 1 preprocessed column c, 4 const, 5 chal
+//   rows: n x n_main row-major; pre: n_pre x n column-major
+//   out: (4 n_helpers + 4) columns x n, column-major: H_0.., then ACC; total: 4 words
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub unsafe extern "C" fn sk_logup_columns(
+    desc: *const u32,
+    ops: *const u32,
+    src: *const u32,
+    outs: *const u32,
+    chal: *const u32,
+    rows: *const u32,
+    pre: *const u32,
+    out: *mut u32,
+    total: *mut u32,
+) {
+    let d = std::slice::from_raw_parts(desc, 9);
+    let n = 1usize << d[0];
+    let (n_main, n_pre, n_inputs, n_ops, n_h, n_chal) =
+        (d[1] as usize, d[2] as usize, d[3] as usize, d[4] as usize, d[5] as usize, d[6] as usize);
+    let (gi, di) = (d[7] as usize, d[8] as usize);
+    let prog = Prog {
+        n_inputs,
+        ops: std::slice::from_raw_parts(ops, 7 * n_ops),
+        src: std::slice::from_raw_parts(src, 2 * n_inputs),
+        outs: std::slice::from_raw_parts(outs, 4 * n_h),
+    };
+    let chal = std::slice::from_raw_parts(chal, 4 * n_chal);
+    let rows = std::slice::from_raw_parts(rows, n * n_main);
+    let pre = std::slice::from_raw_parts(pre, n_pre * n);
+    let gamma = q_at(chal, gi);
+    let delta = q_at(chal, di);
+    // helpers and the row term, row-major: n x (4 n_h + 4)
+    let w = 4 * n_h + 4;
+    let mut tmp = vec![0u32; n * w];
+    par_rows(&mut tmp, w, |range, block| {
+        let mut vals = vec![Q_ZERO; prog.n_nodes()];
+        let rows_in = range.len();
+        let mut en = vec![Q_ZERO; rows_in * n_h];
+        let mut den = vec![Q_ZERO; rows_in * n_h];
+        let mut mult = vec![Q_ZERO; rows_in * n_h];
+        for (r, q) in range.clone().enumerate() {
+            for i in 0..n_inputs {
+                let (kind, idx) = (prog.src[2 * i], prog.src[2 * i + 1] as usize);
+                vals[i] = match kind {
+                    0 => [rows[q * n_main + idx], 0, 0, 0],
+                    1 => [pre[idx * n + q], 0, 0, 0],
+                    4 => [idx as u32, 0, 0, 0],
+                    _ => q_at(chal, idx),
+                };
+            }
+            let mut m = n_inputs;
+            for op in prog.ops.chunks_exact(7) {
+                let (a, b) = (op[1] as usize, op[2] as usize);
+                vals[m] = match op[0] {
+                    0 => qadd(&vals[a], &vals[b]),
+                    1 => qsub(&vals[a], &vals[b]),
+                    2 => qmul(&vals[a], &vals[b]),
+                    3 => qscale(&vals[a], op[3]),
+                    _ => [op[3], op[4], op[5], op[6]],
+                };
+                m += 1;
+            }
+            for h in 0..n_h {
+                let o = &prog.outs[4 * h..4 * h + 4];
+                let e = vals[o[0] as usize];
+                let v = vals[o[1] as usize];
+                let tag = vals[o[2] as usize];
+                en[r * n_h + h] = e;
+                den[r * n_h + h] = if e == Q_ZERO { Q_ONE } else { qadd(&qadd(&gamma, &v), &qmul(&delta, &tag)) };
+                mult[r * n_h + h] = vals[o[3] as usize];
+            }
+        }
+        let inv = qbatch_inv(&den);
+        for r in 0..rows_in {
+            let mut term = Q_ZERO;
+            for h in 0..n_h {
+                let e = en[r * n_h + h];
+                let hv = if e == Q_ZERO { Q_ZERO } else { qmul(&e, &inv[r * n_h + h]) };
+                block[r * w + 4 * h..r * w + 4 * h + 4].copy_from_slice(&hv);
+                term = qadd(&term, &qmul(&mult[r * n_h + h], &hv));
+            }
+            block[r * w + 4 * n_h..r * w + 4 * n_h + 4].copy_from_slice(&term);
+        }
+    });
+    // the accumulator (prefix sums of the terms) and the transpose to columns
+    let out = std::slice::from_raw_parts_mut(out, w * n);
+    let mut acc = Q_ZERO;
+    for q in 0..n {
+        for c in 0..4 * n_h {
+            out[c * n + q] = tmp[q * w + c];
+        }
+        for k in 0..4 {
+            out[(4 * n_h + k) * n + q] = acc[k];
+        }
+        acc = qadd(&acc, &q_at(&tmp[q * w..q * w + w], n_h));
+    }
+    std::slice::from_raw_parts_mut(total, 4).copy_from_slice(&acc);
+}
+
+// ---------------------------------------------------------------------------
 // ML-KEM-768 (FIPS 203) for the note-encryption KEM, via the `ml-kem` crate.
 // Keys are never stored: both halves are regenerated from a 64-byte seed
 // (d ‖ z) the wallet derives from its viewing key, so the Dart side only

@@ -44,6 +44,24 @@ class LinearForm {
 }
 
 /// A run of consecutive constraints sharing a divisor.
+/// The LogUp shape of an AIR's aux columns: per row, [program] (over
+/// `cur{j}` for the main columns, `pre{c}` for the preprocessed columns and
+/// `chal{k}`) outputs, per helper i, (en_i, v_i, tag_i, mult_i); helper i
+/// is en_i / (gamma + v_i + delta tag_i), or 0 when en_i is 0, stored as 4
+/// limbs at aux column [helperOffsets][i]; the accumulator at [accOffset]
+/// holds the prefix sums of sum_i mult_i H_i, and the total over the trace
+/// must be zero. Gamma and delta are challenges [gammaIndex], [deltaIndex].
+class LogUpSpec {
+  final Program program;
+  final List<int> helperOffsets;
+  final int accOffset;
+  final int gammaIndex, deltaIndex;
+  LogUpSpec(this.program, {required this.helperOffsets, required this.accOffset, this.gammaIndex = 0, this.deltaIndex = 1}) {
+    if (program.outputs.length != 4 * helperOffsets.length) throw ArgumentError('four outputs per helper');
+  }
+  int get helpers => helperOffsets.length;
+}
+
 class ConstraintGroup {
   final int count;
 
@@ -128,6 +146,11 @@ abstract class Air {
       return null;
     }
   }
+
+  /// For an AIR whose aux columns are LogUp helpers and their accumulator:
+  /// how to build them from a recorded program, so the native kernels can
+  /// (see [LogUpSpec]). Null when the AIR builds its aux columns itself.
+  LogUpSpec? logUpSpec() => null;
 
   /// The aux constraints as a [Program] over the same inputs plus
   /// `chal{k}`; null without aux constraints or generic aux constraints.

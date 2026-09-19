@@ -489,6 +489,25 @@ class VerifierAir extends Poseidon2Air {
     return cols;
   }
 
+  /// The bus as a [LogUpSpec]: the four helpers' (enable, value, tag,
+  /// multiplicity) from the main row, the program row and the challenges
+  /// (gamma, delta, eta), exactly as [auxColumns] computes them.
+  @override
+  LogUpSpec logUpSpec() {
+    final r = ExprRing();
+    final cur = r.inputs('cur', numCols), pre = r.inputs('pre', VerifierProgramColumns.count), chal = r.inputs('chal', numChallenges);
+    final bv = _busValues(r, cur, pre, chal[2]);
+    final rowid = pre[VerifierProgramColumns.rowid];
+    final minusOne = r.neg(r.one);
+    final prog = r.program([
+      bv.en1, bv.v1, rowid, pre[VerifierProgramColumns.mult1],
+      pre[VerifierProgramColumns.p2en], bv.vB, r.addConst(rowid, tagP2Offset), pre[VerifierProgramColumns.mult2],
+      bv.enA, bv.vA, pre[VerifierProgramColumns.tagA], minusOne,
+      pre[VerifierProgramColumns.ben], bv.vB, pre[VerifierProgramColumns.tagB], minusOne,
+    ]);
+    return LogUpSpec(prog, helperOffsets: const [auxH1, auxH2, auxHA, auxHB], accOffset: auxAcc);
+  }
+
   // ---------------------------------------------------------------- script
 
   /// The main constraints recorded as a [Program] over the inputs cur{j},

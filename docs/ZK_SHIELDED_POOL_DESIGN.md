@@ -1420,6 +1420,20 @@ dominate a node (out-of-domain evaluation 13 s, aux round 8 s, composition
 upload 6 s of the 67), so their native ports are now the next lever and would
 take a node to roughly 40 s, the round to about 25 minutes on one machine.
 
+*Native ports built.* The out-of-domain evaluation runs in the crate
+(`sk_eval_at`, every coefficient column at a point), and so do the LogUp aux
+columns: the verifier AIR describes its bus as a recorded program (per helper,
+the enable, value, tag and multiplicity; `Air.logUpSpec`) and `sk_logup_columns`
+runs it per row, batch-inverts the denominators and accumulates. Proofs stay
+byte-identical to the Dart path. The 2^20 level-1 node over 13 spends went
+from 67 s to 49 s: the out-of-domain stage from 13.3 s to 0.3 s, the aux round
+from 7.8 s to 4.0 s (what remains is its interpolation and commitment). Of the
+49 s, the composition's extension and Merkle tree take 11.6, FRI 8.4, the
+composition kernel 6.4 (mostly copying 2.6 GB of column values into native
+memory), the preprocessed commitment 6.1 (cached across a level's nodes in a
+real round), the trace extension 4.1 and the aux round 4.0. Per transfer at
+level 1 that is 3.8 s.
+
 *Wired.* `PoolAggregation` takes one `AggregationLevel` (parameters, trace
 size, arity) per level and `AggregationTree` one arity per level;
 `PoolAggregation.throughput()` is the plan above as a 260-transfer tree

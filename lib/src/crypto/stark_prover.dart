@@ -136,7 +136,7 @@ class StarkProver {
     var auxEv = <Uint32List>[];
     MerkleCommitment? auxTree;
     if (air.numAuxCols > 0) {
-      final auxCols = air.auxColumns(rows, chal);
+      final auxCols = _auxColumns(rows, chal, preEv.isEmpty ? const [] : air.preColumns());
       if (auxCols.length != air.numAuxCols) throw StateError('auxColumns returned ${auxCols.length} columns');
       auxCoefs = coefsFor(auxCols);
       (auxEv, auxTree) = commit(auxCoefs);
@@ -215,9 +215,9 @@ class StarkProver {
     // ---- 3. OODS values ----
     final zgx = zx.scale(gT.x) - zy.scale(gT.y);
     final zgy = zx.scale(gT.y) + zy.scale(gT.x);
-    final traceAtZ = [for (final c in allCoefs) CircleFft.evalAt(c, zx, zy)];
-    final traceAtZg = [for (final c in allCoefs) CircleFft.evalAt(c, zgx, zgy)];
-    final compAtZ = [for (final c in compCoefs) CircleFft.evalAt(c, zx, zy)];
+    final traceAtZ = kernels.evalAt(allCoefs, zx, zy);
+    final traceAtZg = kernels.evalAt(allCoefs, zgx, zgy);
+    final compAtZ = kernels.evalAt(compCoefs, zx, zy);
     final rhs = air.compositionAt(
         traceAtZ, traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
     if (composeColumns(compAtZ) != rhs) throw StateError('composition relation fails at z');
@@ -357,6 +357,21 @@ class StarkProver {
     );
     proof.debug.addAll(dbg);
     return proof;
+  }
+
+  /// The aux columns: from the AIR's LogUp program on the native kernels
+  /// when it has one, else the AIR's own [Air.auxColumns].
+  List<Uint32List> _auxColumns(List<List<int>> rows, List<QM31> chal, List<Uint32List> pre) {
+    final spec = air.logUpSpec();
+    if (spec != null && kernels is! DartKernels) {
+      final r = kernels.logUpColumns(spec, rows, pre, chal, air.numAuxCols);
+      if (r != null) {
+        final (cols, total) = r;
+        if (total != QM31.zero) throw StateError('bus does not balance: $total');
+        return cols;
+      }
+    }
+    return air.auxColumns(rows, chal);
   }
 
   /// The composition values row by row in Dart: the AIR's base-field

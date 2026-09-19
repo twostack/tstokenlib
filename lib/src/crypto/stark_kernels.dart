@@ -22,6 +22,7 @@ import 'package:ffi/ffi.dart';
 import 'circle_fft.dart';
 import 'm31.dart';
 import 'proof_hash.dart';
+import '../script_gen/air.dart' show LogUpSpec;
 import '../script_gen/air_ring.dart' show Program, ProgKind;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepConstants;
 
@@ -70,6 +71,15 @@ abstract class ProverKernels {
   /// null when this implementation has no such path (the prover then runs
   /// the AIR's constraints row by row in Dart).
   List<Uint32List>? composition(CompositionJob job) => null;
+
+  /// Each coefficient column evaluated at the point (x, y).
+  List<QM31> evalAt(List<Uint32List> coefs, QM31 x, QM31 y);
+
+  /// The LogUp aux columns of [spec] over the main [rows] (n x numCols),
+  /// the preprocessed columns [pre] and the challenges [chal]: the aux
+  /// columns in the AIR's order and the accumulator's total, or null when
+  /// this implementation has no such path.
+  (List<Uint32List>, QM31)? logUpColumns(LogUpSpec spec, List<List<int>> rows, List<Uint32List> pre, List<QM31> chal, int numAuxCols) => null;
 
   /// The default: the native kernels when the library is built, else Dart.
   static ProverKernels get best => StarkKernels.tryLoad() ?? DartKernels();
@@ -275,6 +285,12 @@ class DartKernels implements ProverKernels {
   @override
   List<Uint32List>? composition(CompositionJob job) => null;
 
+  @override
+  List<QM31> evalAt(List<Uint32List> coefs, QM31 x, QM31 y) => [for (final c in coefs) CircleFft.evalAt(c, x, y)];
+
+  @override
+  (List<Uint32List>, QM31)? logUpColumns(LogUpSpec spec, List<List<int>> rows, List<Uint32List> pre, List<QM31> chal, int numAuxCols) => null;
+
   static QM31 foldPair(QM31 f0, QM31 f1, int twiddleInv, QM31 alpha) => (f0 + f1) + alpha * (f0 - f1).scale(twiddleInv);
 
   static List<QM31> batchInvQ(List<QM31> xs) {
@@ -408,6 +424,10 @@ typedef _CompC = ffi.Void Function(
     _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
 typedef _CompD = void Function(
     _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
+typedef _EvalAtC = ffi.Void Function(_U32P, ffi.Size, ffi.Size, _U32P, _U32P, _U32P);
+typedef _EvalAtD = void Function(_U32P, int, int, _U32P, _U32P, _U32P);
+typedef _LogUpC = ffi.Void Function(_U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
+typedef _LogUpD = void Function(_U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
 typedef _KemPkC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
 typedef _KemPkD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
 typedef _KemEncapsC = ffi.Uint32 Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
@@ -440,6 +460,8 @@ class StarkKernels implements ProverKernels {
   late final _MerklePairsP2D _merklePairsP2 = _lib.lookupFunction<_MerklePairsP2C, _MerklePairsP2D>('sk_merkle_pairs_p2');
   late final _PermuteP2D _permuteP2 = _lib.lookupFunction<_PermuteP2C, _PermuteP2D>('sk_poseidon2_permute');
   late final _CompD _comp = _lib.lookupFunction<_CompC, _CompD>('sk_composition');
+  late final _EvalAtD _evalAt = _lib.lookupFunction<_EvalAtC, _EvalAtD>('sk_eval_at');
+  late final _LogUpD _logUp = _lib.lookupFunction<_LogUpC, _LogUpD>('sk_logup_columns');
   late final _KemPkD _kemPk = _lib.lookupFunction<_KemPkC, _KemPkD>('sk_mlkem768_public_key');
   late final _KemEncapsD _kemEncaps = _lib.lookupFunction<_KemEncapsC, _KemEncapsD>('sk_mlkem768_encaps');
   late final _KemDecapsD _kemDecaps = _lib.lookupFunction<_KemDecapsC, _KemDecapsD>('sk_mlkem768_decaps');
@@ -563,6 +585,69 @@ class StarkKernels implements ProverKernels {
       return limbs;
     } finally {
       for (final p in [desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, per, lin, divs, idxNext, idxPer, weights, divSel, out]) {
+        calloc.free(p);
+      }
+    }
+  }
+
+  @override
+  List<QM31> evalAt(List<Uint32List> coefs, QM31 x, QM31 y) {
+    if (coefs.isEmpty) return const [];
+    final k = coefs.length, len = coefs[0].length;
+    final c = _upload(coefs, len), px = _upload1(Uint32List.fromList(x.limbs)), py = _upload1(Uint32List.fromList(y.limbs));
+    final out = calloc<ffi.Uint32>(4 * k);
+    try {
+      _evalAt(c, k, len, px, py, out);
+      final v = out.asTypedList(4 * k);
+      return [for (int j = 0; j < k; j++) QM31.fromLimbs(v[4 * j], v[4 * j + 1], v[4 * j + 2], v[4 * j + 3])];
+    } finally {
+      calloc.free(c);
+      calloc.free(px);
+      calloc.free(py);
+      calloc.free(out);
+    }
+  }
+
+  @override
+  (List<Uint32List>, QM31)? logUpColumns(LogUpSpec spec, List<List<int>> rows, List<Uint32List> pre, List<QM31> chal, int numAuxCols) {
+    final n = rows.length, nMain = rows[0].length, logN = CircleFft.log2(n);
+    final prog = spec.program;
+    // inputs: cur{j} (main cell), pre{c}, chal{k}; constants otherwise
+    final src = Uint32List(2 * prog.numInputs);
+    for (int i = 0; i < prog.numInputs; i++) {
+      final m = RegExp(r'^(cur|pre|chal)(\d+)$').firstMatch(prog.inputNames[i]);
+      if (m == null) return null;
+      final k = int.parse(m.group(2)!);
+      src[2 * i] = switch (m.group(1)) { 'cur' => 0, 'pre' => 1, _ => 5 };
+      src[2 * i + 1] = k;
+    }
+    final flat = Uint32List(n * nMain);
+    for (int r = 0; r < n; r++) {
+      flat.setRange(r * nMain, (r + 1) * nMain, rows[r]);
+    }
+    final w = 4 * spec.helpers + 4;
+    if (numAuxCols < w) throw ArgumentError('aux columns');
+    final desc = _upload1(Uint32List.fromList([logN, nMain, pre.length, prog.numInputs, prog.ops.length, spec.helpers, chal.length, spec.gammaIndex, spec.deltaIndex]));
+    final ops = _upload1(CompositionJob.encode(prog)), srcP = _upload1(src), outs = _upload1(Uint32List.fromList(prog.outputs));
+    final ch = _upload1(Uint32List.fromList([for (final c in chal) ...c.limbs]));
+    final rowsP = _upload1(flat), preP = _upload(pre, n);
+    final out = calloc<ffi.Uint32>(w * n), total = calloc<ffi.Uint32>(4);
+    try {
+      _logUp(desc, ops, srcP, outs, ch, rowsP, preP, out, total);
+      final v = out.asTypedList(w * n);
+      final cols = List.generate(numAuxCols, (_) => Uint32List(n));
+      for (int h = 0; h < spec.helpers; h++) {
+        for (int k = 0; k < 4; k++) {
+          cols[spec.helperOffsets[h] + k].setAll(0, v.sublist((4 * h + k) * n, (4 * h + k + 1) * n));
+        }
+      }
+      for (int k = 0; k < 4; k++) {
+        cols[spec.accOffset + k].setAll(0, v.sublist((4 * spec.helpers + k) * n, (4 * spec.helpers + k + 1) * n));
+      }
+      final t = total.asTypedList(4);
+      return (cols, QM31.fromLimbs(t[0], t[1], t[2], t[3]));
+    } finally {
+      for (final p in [desc, ops, srcP, outs, ch, rowsP, preP, out, total]) {
         calloc.free(p);
       }
     }
