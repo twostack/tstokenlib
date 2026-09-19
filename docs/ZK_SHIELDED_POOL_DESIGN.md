@@ -1127,9 +1127,9 @@ spends (v2, the route to hundreds per transaction).
    with a signed depositor input and change, a spend round with an unshield, every
    input of every transaction verified in the interpreter, a foreign identity's
    signature rejected, the wallet refusing a re-spend. Templates in `templates/sp/`
-   (`pp1_sp_k8.json`, `pp1_sp_verifier.json`, `pp1_sp_append.json`, exported by
-   `tool/export_sp_templates.dart`, checked by `pp1_sp_template_sync_test`); kept
-   apart from `export_templates.dart` while the pool is private.
+   (`pp1_sp_k8.json`, `pp1_sp_verifier.json`, `pp1_sp_append.json`), exported by
+   `tool/export_templates.dart` as category `sp` and checked by
+   `test/template_sync_test.dart` (folded in on 2026-09-19).
 
    One layout fix found by the tool: a slot signs SIGHASH_SINGLE over the output at
    its own input index, so the K + 1 results occupy vouts 1..K+1 and the fresh slots

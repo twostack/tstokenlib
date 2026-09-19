@@ -26,6 +26,8 @@ import 'package:test/test.dart';
 import 'package:tstokenlib/src/script_gen/pp1_nft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
+import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
 
 void main() {
   group('Template sync guard', () {
@@ -193,6 +195,43 @@ void main() {
       expect(templateAsm, isNot(contains('<lockHeight>')));
     });
 
+    test('PP1_SP templates round-trip correctly', () {
+      var state = jsonDecode(File('templates/sp/pp1_sp_k8.json').readAsStringSync());
+      var st = state['stark'];
+      var p = StarkParams(
+          logTrace: st['logTrace'], logBlowup: st['logBlowup'], logExpand: st['logExpand'], logFinal: st['logFinal'],
+          numQueries: st['numQueries'], grindBytes: st['grindBytes'], zkRandomizers: st['zkRandomizers']);
+      var gen = PP1SpScriptGen(p, k: state['k']);
+      var h = PP1SpHeader(
+        tokenId: List.generate(32, (i) => i + 1),
+        rabinPubKeyHash: List.generate(20, (i) => i + 0x40),
+        phase: 1,
+        ring: [for (int r = 0; r < 4; r++) List.generate(32, (i) => (i * 7 + r) & 0xff)],
+        size: 96,
+        nfRoot: List.generate(32, (i) => 0xff - i),
+      );
+      var substituted = (state['hex'] as String)
+          .replaceFirst('{{tokenId}}', hex.encode(h.tokenId))
+          .replaceFirst('{{rabinPubKeyHash}}', hex.encode(h.rabinPubKeyHash))
+          .replaceFirst('{{phase}}', '01')
+          .replaceFirst('{{size}}', hex.encode([96, 0, 0, 0]))
+          .replaceFirst('{{nfRoot}}', hex.encode(h.nfRoot));
+      for (int r = 0; r < 4; r++) {
+        substituted = substituted.replaceFirst('{{ring$r}}', hex.encode(h.ring[r]));
+      }
+      expect(substituted, equals(hex.encode(gen.lock(h).buffer)),
+          reason: 'PP1_SP template output must match PP1SpScriptGen.lock() output');
+      expect(state['verifierSlotHash'], equals(hex.encode(gen.verifierHash)));
+      expect(state['appendSlotHash'], equals(hex.encode(gen.appendHash)));
+
+      var verifier = jsonDecode(File('templates/sp/pp1_sp_verifier.json').readAsStringSync());
+      expect(verifier['hex'], equals(hex.encode(gen.verifierBytes)),
+          reason: 'verifier slot template must match VerifierSlotGen.lock() output');
+      var append = jsonDecode(File('templates/sp/pp1_sp_append.json').readAsStringSync());
+      expect(append['hex'], equals(hex.encode(gen.appendBytes)),
+          reason: 'append slot template must match SubtreeAppendSlotGen.lock() output');
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
     test('All template files exist', () {
       var expectedFiles = [
         'templates/nft/pp1_nft.json',
@@ -203,6 +242,9 @@ void main() {
         'templates/ft/pp3_ft_witness.json',
         'templates/utility/mod_p2pkh.json',
         'templates/utility/hodl.json',
+        'templates/sp/pp1_sp_k8.json',
+        'templates/sp/pp1_sp_verifier.json',
+        'templates/sp/pp1_sp_append.json',
       ];
 
       for (var path in expectedFiles) {

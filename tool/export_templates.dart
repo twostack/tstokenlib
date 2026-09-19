@@ -31,8 +31,15 @@ import 'package:tstokenlib/src/script_gen/pp1_rft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_at_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sm_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
+import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
+import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
 
 const String version = '1.3.0';
+
+/// The STARK parameters and round size the PP1_SP templates are generated for.
+const StarkParams spParams = PoolSpendAir.productionParams;
+const int spK = 8;
 
 void main() {
   final baseDir = Directory('templates');
@@ -54,6 +61,7 @@ void main() {
   exportPP2();
   exportPP2FT();
   exportHODL();
+  exportPP1Sp(spK);
 
   print('Done. Templates written to templates/');
 }
@@ -969,6 +977,102 @@ void exportHODL() {
     'metadata': {
       'sourceFile': 'lib/src/builder/hodl_lockbuilder.dart',
       'note': 'This template is in ASM format. Parse with SVScript.fromASM() or equivalent. Parameters must be ASM-encoded (e.g., "14aabbcc..." for pushdata, "03e80300" for script number).',
+    },
+  });
+}
+
+// ==========================================================================
+// Category C: Shielded pool (PP1_SP)
+// ==========================================================================
+
+Map<String, dynamic> _spStarkParams() => {
+      'logTrace': spParams.logTrace,
+      'logBlowup': spParams.logBlowup,
+      'logExpand': spParams.logExpand,
+      'logFinal': spParams.logFinal,
+      'numQueries': spParams.numQueries,
+      'grindBytes': spParams.grindBytes,
+      'zkRandomizers': spParams.zkRandomizers,
+    };
+
+/// The PP1_SP state script for rounds of up to [k] transfers, plus the two
+/// parameter-free slot scripts its body bakes the hashes of. The header is
+/// 226 bytes of pushes at fixed offsets (see [PP1SpHeader.bytes]).
+void exportPP1Sp(int k) {
+  final gen = PP1SpScriptGen(spParams, k: k);
+  final header = PP1SpHeader(
+    tokenId: List.filled(32, 0xBB),
+    rabinPubKeyHash: List.filled(20, 0xCC),
+    phase: 1,
+    ring: [for (int r = 0; r < PP1SpHeader.ringSize; r++) List.filled(32, 0xA0 + r)],
+    size: 0x44444444,
+    nfRoot: List.filled(32, 0xEE),
+  );
+  var fullHex = hex.encode(gen.lock(header).buffer);
+
+  // offsets of the field data inside the header: each field follows its push prefix
+  const tokenIdStart = 1, rabinStart = 34, phaseStart = 55, ring0Start = 57, sizeStart = 189, nfRootStart = 194;
+  var templateHex = templatizeHex(fullHex, {
+    'tokenId': _SentinelRegion(tokenIdStart, 32, 0xBB),
+    'rabinPubKeyHash': _SentinelRegion(rabinStart, 20, 0xCC),
+    'phase': _SentinelRegion(phaseStart, 1, 0x01),
+    for (int r = 0; r < PP1SpHeader.ringSize; r++) 'ring$r': _SentinelRegion(ring0Start + 33 * r, 32, 0xA0 + r),
+    'size': _SentinelRegion(sizeStart, 4, 0x44),
+    'nfRoot': _SentinelRegion(nfRootStart, 32, 0xEE),
+  });
+
+  writeTemplate('templates/sp/pp1_sp_k$k.json', {
+    'name': 'PP1_SP',
+    'version': version,
+    'description': 'Shielded pool state script for rounds of up to $k transfers. 226-byte header with 9 fields; '
+        'the body bakes in the SHA256 of the verifier and append slot scripts.',
+    'category': 'sp',
+    'k': k,
+    'stark': _spStarkParams(),
+    'verifierSlotHash': hex.encode(gen.verifierHash),
+    'appendSlotHash': hex.encode(gen.appendHash),
+    'parameters': [
+      {'name': 'tokenId', 'size': 32, 'encoding': 'hex', 'description': 'txid whose output 0 the genesis spends (immutable)'},
+      {'name': 'rabinPubKeyHash', 'size': 20, 'encoding': 'hex', 'description': "hash160 of the operator's Rabin n (immutable)"},
+      {'name': 'phase', 'size': 1, 'encoding': 'hex_byte', 'description': '00 issued, 01 live (mutable)'},
+      for (int r = 0; r < PP1SpHeader.ringSize; r++)
+        {'name': 'ring$r', 'size': 32, 'encoding': 'hex', 'description': 'commitment root; ring0 is the current one (mutable)'},
+      {'name': 'size', 'size': 4, 'encoding': 'le_uint32', 'description': 'leaves in the commitment tree (mutable)'},
+      {'name': 'nfRoot', 'size': 32, 'encoding': 'hex', 'description': 'nullifier set root (mutable)'},
+    ],
+    'hex': templateHex,
+    'metadata': {
+      'generatedBy': 'PP1SpScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_sp_script_gen.dart',
+      'note': 'Pushdata prefixes (0x20, 0x14, 0x01, 0x04) are part of the static hex. A round spends this output '
+          'together with the K verifier slots and the append slot minted by the same transaction.',
+    },
+  });
+
+  writeTemplate('templates/sp/pp1_sp_verifier.json', {
+    'name': 'PP1_SP_VERIFIER',
+    'version': version,
+    'description': 'Verifier slot: verifies one spend proof (selector 1) or skips (selector 0); SIGHASH_SINGLE result output.',
+    'category': 'sp',
+    'stark': _spStarkParams(),
+    'parameters': [],
+    'hex': hex.encode(gen.verifierBytes),
+    'metadata': {
+      'generatedBy': 'VerifierSlotGen',
+      'sourceFile': 'lib/src/script_gen/verifier_slot_gen.dart',
+    },
+  });
+
+  writeTemplate('templates/sp/pp1_sp_append.json', {
+    'name': 'PP1_SP_APPEND',
+    'version': version,
+    'description': 'Subtree-append slot: Poseidon2 subtree of 32 commitments appended over 27 main levels; SIGHASH_SINGLE result output.',
+    'category': 'sp',
+    'parameters': [],
+    'hex': hex.encode(gen.appendBytes),
+    'metadata': {
+      'generatedBy': 'SubtreeAppendSlotGen',
+      'sourceFile': 'lib/src/script_gen/subtree_append_slot_gen.dart',
     },
   });
 }
