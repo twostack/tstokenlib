@@ -491,6 +491,10 @@ class DartKernels implements ProverKernels {
 // ---- FFI signatures of native/stark_kernels/src/lib.rs ----
 typedef _VersionC = ffi.Uint32 Function();
 typedef _VersionD = int Function();
+typedef _GpuAvailC = ffi.Uint32 Function();
+typedef _GpuAvailD = int Function();
+typedef _GpuEnableC = ffi.Uint32 Function(ffi.Uint32);
+typedef _GpuEnableD = int Function(int);
 typedef _InterpC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
 typedef _InterpD = void Function(ffi.Pointer<ffi.Uint32>, int, int, ffi.Pointer<ffi.Uint32>);
 typedef _EvalC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
@@ -549,8 +553,13 @@ typedef _KemDecapsD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint
 /// opening steps. Every kernel is exact, so [tryLoad] returning null
 /// (library not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 4;
+  static const abiVersion = 5;
   static const envVar = 'STARK_KERNELS_LIB';
+
+  /// Set this to 1 (or true) to run the kernels that have a GPU path on the
+  /// GPU. It is off unless asked for, and a machine that cannot run it says
+  /// so in [gpuStatus] and proves on the CPU instead.
+  static const gpuEnvVar = 'STARK_KERNELS_GPU';
 
   final ffi.DynamicLibrary _lib;
   final String path;
@@ -575,13 +584,39 @@ class StarkKernels implements ProverKernels {
   late final _KemPkD _kemPk = _lib.lookupFunction<_KemPkC, _KemPkD>('sk_mlkem768_public_key');
   late final _KemEncapsD _kemEncaps = _lib.lookupFunction<_KemEncapsC, _KemEncapsD>('sk_mlkem768_encaps');
   late final _KemDecapsD _kemDecaps = _lib.lookupFunction<_KemDecapsC, _KemDecapsD>('sk_mlkem768_decaps');
+  late final _GpuAvailD _gpuAvail = _lib.lookupFunction<_GpuAvailC, _GpuAvailD>('sk_gpu_available');
+  late final _GpuEnableD _gpuEnable = _lib.lookupFunction<_GpuEnableC, _GpuEnableD>('sk_gpu_enable');
   late final Uint32List _rc = Poseidon2ProofHash.roundConstants;
   final DartKernels _fallback = DartKernels();
 
   StarkKernels._(this._lib, this.path);
 
+  bool _gpu = false;
+
+  /// Whether the GPU backend is running.
+  bool get gpuEnabled => _gpu;
+
+  /// Why the GPU backend is or is not running, for a caller to print.
+  String get gpuStatus {
+    if (_gpu) return 'on';
+    switch (_gpuAvail()) {
+      case 1:
+        return 'off (available; set $gpuEnvVar=1)';
+      case 2:
+        return 'unavailable: no Metal device';
+      case 3:
+        return 'unavailable: the shaders did not compile';
+      default:
+        return 'unavailable: built without the GPU backend';
+    }
+  }
+
+  /// Asks the library to run the kernels that have a GPU path on the GPU.
+  /// Returns whether it took; [gpuStatus] says why when it did not.
+  bool enableGpu(bool on) => _gpu = _gpuEnable(on ? 1 : 0) == 1;
+
   @override
-  String get name => 'native';
+  String get name => _gpu ? 'native+metal' : 'native';
 
   static StarkKernels? _loaded;
   static bool _tried = false;
@@ -615,6 +650,8 @@ class StarkKernels implements ProverKernels {
         final version = lib.lookupFunction<_VersionC, _VersionD>('sk_version')();
         if (version != abiVersion) continue;
         found = StarkKernels._(lib, c);
+        final want = Platform.environment[gpuEnvVar];
+        if (want == '1' || want == 'true') found.enableGpu(true);
         break;
       } catch (_) {
         continue;

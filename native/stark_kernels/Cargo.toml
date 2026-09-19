@@ -14,5 +14,14 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
+[features]
+default = []
+# Experimental GPU backend (Apple Silicon only; see README). Off by default:
+# without it the crate has no Metal symbol and builds unchanged everywhere.
+metal = ["dep:metal"]
+
 [dependencies]
 ml-kem = { version = "0.2.1", features = ["deterministic"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { version = "0.33", optional = true }

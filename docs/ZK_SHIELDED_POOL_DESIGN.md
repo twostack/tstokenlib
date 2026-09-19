@@ -1675,6 +1675,198 @@ reproduces the round proof for proof (`test/pool_aggregation_test.dart`).
 Whether to ask two members for the same node and take the first verified
 answer is left until a transport exists to measure it against.
 
+### GPU kernels on Apple Silicon (measured)
+
+A spike: two of the prover's stages on the GPU, to find out whether Metal
+kernels are byte-identical and materially faster before planning anything
+larger. The prover pool shortens level 1 by adding machines, but levels 2 to
+4 and the root are sequential and only shorten by making one prover faster,
+which is what a GPU could do.
+
+**What runs there.** The Poseidon2 Merkle commitment (leaves over the twin
+layout and every level above) and the circle FFT (interpolation, evaluation
+and the low-degree extension), in `native/stark_kernels/src/kernels.metal`,
+behind a cargo feature that is off by default:
+
+    cargo build --release --features metal --manifest-path native/stark_kernels/Cargo.toml
+
+Even then the backend stays off until `STARK_KERNELS_GPU=1` is set before the
+Dart side loads the library. Asking for it where it cannot run is refused
+rather than ignored: `StarkKernels.gpuStatus` says whether the library was
+built without it, the machine has no device, or the shaders did not compile,
+and proving continues on the CPU. The field arithmetic is transcribed from
+the Rust reductions term for term (the 62-bit product is folded through
+`mulhi` with no 64-bit arithmetic), because a different but equivalent
+reduction that disagreed on one boundary case would change a digest and not
+a test. Evaluations committed on the GPU stay in the shared buffer they were
+computed in and become the column store's backing, so the composition, DEEP
+and opening kernels read GPU output in place and a node never holds two
+copies.
+
+**Byte-identity holds.** The crate's own tests compare each kernel against
+its CPU port (field operations over 2^20 operand pairs, the permutation over
+4,096 states, whole commitments at 2^10 to 2^16 leaves with 1, 3 and 79
+columns, both transforms at m = 8 to 20 with 1, 5 and 79 columns plus a round
+trip), and `test/stark_kernels_test.dart` with the switch on proves the
+verifier AIR three ways: the GPU proof, the CPU-native proof and the Dart
+proof agree on every root, coefficient and nonce.
+
+**The kernels alone**, 79 columns of 2^20 coefficients on 2^23 (m = 22),
+`dart run tool/scratch/kernel_bench.dart 20 3 79 gpu`:
+
+| kernel | CPU | GPU | ratio |
+| --- | --- | --- | --- |
+| evaluate (the LDE), result copied to Dart | 2.00 s | 1.94 s | 1.03x |
+| Poseidon2 commitment, result kept native | 4.40 s | 1.53 s | 2.88x |
+| interpolate, result copied to Dart | 3.25 s | 2.97 s | 1.10x |
+
+The first and third rows are not measuring what they appear to. Each returns
+2.65 GB across the FFI boundary into the Dart heap, a copy both backends pay
+and which dominates the transform; the proof is that the commitment, which
+does an evaluation *and* hashes the result but keeps it in native memory, is
+faster than a bare evaluation. Only the middle row reflects what the GPU
+contributes, and the node measurement below is where it shows.
+
+**A level-1 node**, 16 spend proofs folded at 2^20, blowup 8, 30 queries,
+`dart run tool/scratch/node_prove.dart 20 3 30 16 8 11` with and without the
+switch:
+
+| prover stage | CPU | GPU |
+| --- | --- | --- |
+| trace interpolation | 0.82 s | 0.82 s |
+| trace LDE + Merkle | 1.57 s | 0.63 s |
+| preprocessed columns | 2.19 s | 0.95 s |
+| aux round | 1.68 s | 0.98 s |
+| composition values | 1.95 s | 2.22 s |
+| composition LDE + Merkle | 2.14 s | 0.90 s |
+| OODS, DEEP, FRI, openings | 1.31 s | 1.38 s |
+| **node** | **11.7 s** | **7.9 s** |
+| peak RSS | 8.86 GB | 8.42 GB |
+| peak physical footprint | 6.3 GB | 6.8 GB |
+
+A spend proof also fell from 1.33 s to 0.87 s, which is the wallets' time
+rather than the coordinator's.
+
+**Two memory figures, and why.** Resident set size does not see memory held
+in Metal buffers. Committing 79 columns on 2^23 shows 5.31 GB of RSS with the
+backend off and 1.92 GB with it on, for the same 2.47 GB of evaluations,
+while the physical footprint is 2.9 GB and 3.0 GB respectively: the data is
+there either way, but under `StorageModeShared` the pages are not charged to
+RSS. Every memory number in this section is therefore given as footprint as
+well, which is what Activity Monitor shows and the only figure comparable
+across the two backends. Read that way the GPU costs a little more memory
+rather than less, 6.8 GB against 6.3 GB for a level-1 node, from the
+coefficient buffer staged for each transform.
+
+**Against the bar.** The spike asked for the three named stages (trace
+interpolation, trace LDE + Merkle, composition LDE + Merkle) under 1.5 s
+together, a node of about 7.5 s, and peak memory within 1 GB of the CPU's.
+The stages went from 4.52 s to 2.34 s, so that bar is missed; the node went
+from 11.7 s to 7.9 s, a 1.48x improvement, which meets the node target within
+a rounding error; memory grew by 0.5 GB of footprint, inside its 1 GB budget
+but in the opposite direction to the one first reported here.
+
+The two results point the same way once the stage table is read properly.
+The gains are wherever Poseidon2 hashing happens, and hashing is not confined
+to the three named stages: the preprocessed commitment (2.3x) and the aux
+round (1.7x) improved as much as the two commitments that were named. The
+stages that did not move are the ones dominated by the copy back to Dart
+(trace interpolation, unchanged at 0.82 s) or that never touch the GPU at
+all. Two things got slightly slower and are worth watching rather than
+explaining away: the composition evaluation (1.95 s to 2.22 s), which is CPU
+work now reading evaluations out of a shared GPU buffer, and DEEP plus OODS
+by about the same margin, which read those buffers too. That may be the
+shared allocation's cost on the CPU side or it may be noise; a follow-on that
+moves those stages onto the GPU would settle it either way.
+
+**The whole round**, 256 transfers on the throughput plan, everything on this
+one machine (`dart run tool/scratch/round_throughput.dart 16`). The node's
+1.48x fell just short of the 1.5x the plan set as the condition for
+re-measuring the round, so this was run on request rather than automatically:
+
+| stage | CPU | GPU |
+| --- | --- | --- |
+| level 1, 16 nodes | 170.0 s | 129.1 s |
+| level 2, 4 nodes | 80.3 s | 61.7 s |
+| level 3, 2 nodes | 61.8 s | 40.6 s |
+| level 4, 1 node | 13.9 s | 8.5 s |
+| root | 15.2 s | 14.9 s |
+| **round** | **341.8 s** | **255.3 s** |
+| serial tail (levels 2 to 4 and the root) | 171.2 s | 125.7 s |
+| preprocessed roots, once before the round | 20.6 s | 8.6 s |
+| peak RSS (not comparable, see above) | 24.83 GB | 20.45 GB |
+| peak physical footprint | not measured | 30.3 GB |
+
+A round is 1.34x faster and the serial tail, the part no number of machines
+in the prover pool can shorten, 1.36x. Both are a little behind the 4 minutes
+and 120 s the node measurement projected, which is what one would expect: the
+larger levels spend proportionally more of their time in the stages the GPU
+does not touch. The root is the clearest case, essentially unchanged at 14.9 s
+against 15.2 s, because it commits with SHA256 and only the Poseidon2
+commitment was ported; that the one stage deliberately left out of scope is
+also the one stage that did not move is a good sign that the timings above
+are measuring what they claim to. The two RSS figures are not a comparison:
+the GPU round's 20.45 GB excludes whatever it held in Metal buffers. Re-run
+with footprint reporting, the GPU round peaks at **30.3 GB**, climbing 19.2
+GB at level 1, 23.8 GB at level 2 and 30.3 GB at level 3, where it stays. On
+a 36 GB machine that is closer to the edge than the RSS figure suggested.
+Timings and memory should be taken from different runs: `vmmap` walks the VM
+map of a 20 GB process on every lap, and the instrumented round took 285.9 s
+against the 255.3 s above.
+
+Put beside the prover pool: a round costs 5.7 minutes on one CPU machine,
+4.3 minutes on one machine with this backend, and with level 1 spread over a
+pool the coordinator's own share is 2.9 minutes on CPUs or about 2.1 with the
+GPU. The two levers compose, and the GPU is the only one of them that touches
+the serial tail.
+
+**Where a round's memory actually goes**, from the column counts and
+parameters alone (`tool/scratch/mem_breakdown.dart`), per node:
+
+| level | trace | committed domain | evaluations | trees | total |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 2^20 b8 | 2^23 | 3.47 GB | 1.00 GB | 5.12 GB |
+| 2 | 2^21 b8 | 2^24 | 6.94 GB | 2.00 GB | 10.24 GB |
+| 3 | 2^20 b32 | 2^25 | 13.88 GB | 4.00 GB | 18.53 GB |
+| 4 | 2^19 b32 | 2^24 | 6.94 GB | 2.00 GB | 9.26 GB |
+| root | 2^19 b32 | 2^24 | 6.94 GB | 2.00 GB | 9.26 GB |
+
+Every level carries the same 111 columns (24 trace, 20 aux, 35 preprocessed,
+32 composition blocks), so the domain sets the cost, and blowup 32 at 2^20
+puts level 3 on a 2^25 domain: one level-3 node needs 18.5 GB before any
+overhead, which is what sets a round's peak. That is inherent to the
+parameters rather than to any implementation, and it is the strongest
+argument for the `blowup32-node-cost` change: the narrowing levels are the
+expensive ones in memory as well as in time.
+
+The gap between that 18.5 GB and the measured 30.3 GB is almost all one
+thing, and it is not allocation slack. Compiling the plan's five programs
+costs 0.6 GB; computing their preprocessed commitments takes it to 15.1 GB
+(`tool/scratch/mem_setup.dart`, dry run against full). Those commitments are
+built in `PoolAggregation`'s constructor and the cache holds eight entries,
+so all five stay resident for the whole round even though the levels are
+proved strictly in sequence and no two are ever needed at once. Only the
+8-lane preprocessed *roots* are needed throughout, for the statement digests;
+the coefficients, evaluations and tree behind each are needed only while that
+level is being proved. Retaining one level's commitment instead of five would
+take about 9 GB off a round's peak, at the price of recomputing each level's
+once when that level starts. That is a decision to make in
+`coordinator-service`, whose idle-work plan currently assumes keeping all
+five warm; on these numbers keeping them warm costs half the machine's
+memory.
+
+**Follow-ons, in the order the numbers argue for.** The composition
+evaluation is now the largest single stage at 2.2 s and is a straight-line
+program run per row, which is the most GPU-shaped work left. Then DEEP
+quotients and the LogUp aux columns; then FRI folds and the SHA256
+commitment of the root, both small. Keeping the coefficient columns in shared
+buffers as well would remove the upload before each transform, and returning
+interpolation results into the store rather than to the Dart heap would make
+the FFT's real speed visible where it currently is not. A portable backend
+(CUDA for Linux coordinators) is a separate decision, and nothing here is on
+the production path: the feature is off by default and the CPU kernels remain
+what ships.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
@@ -20,6 +21,19 @@ void main() {
       ? 'native kernels not built: cargo build --release --manifest-path native/stark_kernels/Cargo.toml'
       : null;
   if (native != null) print('native kernels: ${native.path}');
+
+  // The GPU backend is asked for by the environment, so every comparison
+  // above runs against the GPU when it is on and against the CPU kernels when
+  // it is not; the two tests at the end pin that it really is on and that a
+  // GPU proof, a CPU-native proof and a Dart proof are the same bytes.
+  final wantGpu = const ['1', 'true'].contains(Platform.environment[StarkKernels.gpuEnvVar]);
+  if (native != null) print('GPU backend: ${native.gpuStatus}');
+  final gpuSkip = skip ??
+      (!wantGpu
+          ? 'GPU backend not asked for: set ${StarkKernels.gpuEnvVar}=1 (build with --features metal)'
+          : native!.gpuEnabled
+              ? null
+              : 'GPU backend ${native.gpuStatus}');
 
   final rng = Random(11);
   int r31() => rng.nextInt(M31.p);
@@ -158,4 +172,41 @@ void main() {
     final gen = StarkVerifierGen(p, air);
     expect(gen.buildUnlock(pn).buffer, gen.buildUnlock(pd).buffer);
   }, skip: skip, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('the kernels under test are the GPU ones', () {
+    expect(native!.gpuEnabled, isTrue);
+    expect(native.name, 'native+metal');
+  }, skip: gpuSkip);
+
+  test('GPU proofs equal the CPU native proofs and the Dart proofs', () {
+    const p2 = Poseidon2ProofHash();
+    const inner = StarkParams(
+        logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
+    const outer = StarkParams(logTrace: 14, logBlowup: 3, logExpand: 3, logFinal: 4, numQueries: 2, grindBytes: 1);
+    final w = witness();
+    final air = PoolSpendAir.air(w.publics);
+    final innerProof = StarkProver.prove(inner, air, w.rows, rng: Random(5), hash: p2);
+    final program = VerifierProgram.compile(InnerShape(inner, air), 14);
+    final rows = program.witness(innerProof);
+    final vAir = program.air(VerifierProgram.nodeDigestOf(air, innerProof.preRoot));
+
+    StarkProof proveWith(bool gpu) {
+      native!.enableGpu(gpu);
+      expect(native.gpuEnabled, gpu);
+      return StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: native, hash: p2);
+    }
+
+    final onGpu = proveWith(true);
+    final onCpu = proveWith(false);
+    native!.enableGpu(true); // leave it as the suite found it
+    final inDart = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: dart, hash: p2);
+    for (final (what, other) in [('the CPU kernels', onCpu), ('the Dart kernels', inDart)]) {
+      expect(onGpu.traceRoot, other.traceRoot, reason: 'trace root against $what');
+      expect(onGpu.preRoot, other.preRoot, reason: 'preprocessed root against $what');
+      expect(onGpu.compRoot, other.compRoot, reason: 'composition root against $what');
+      expect(onGpu.friRoots, other.friRoots, reason: 'FRI roots against $what');
+      expect(onGpu.finalCoefs, other.finalCoefs, reason: 'final coefficients against $what');
+      expect(onGpu.nonce, other.nonce, reason: 'grinding nonce against $what');
+    }
+  }, skip: gpuSkip, timeout: const Timeout(Duration(minutes: 5)));
 }

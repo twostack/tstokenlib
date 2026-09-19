@@ -18,7 +18,7 @@
 //!   then each level above it, the root last.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ------------------------------------------------------------------ M31
@@ -237,14 +237,14 @@ impl Pt {
 }
 
 /// x/y coordinates of HalfCoset(log) in natural order, with inverses.
-struct Tables {
-    x: Vec<u32>,
-    y: Vec<u32>,
-    x_inv: Vec<u32>,
-    y_inv: Vec<u32>,
+pub(crate) struct Tables {
+    pub(crate) x: Vec<u32>,
+    pub(crate) y: Vec<u32>,
+    pub(crate) x_inv: Vec<u32>,
+    pub(crate) y_inv: Vec<u32>,
 }
 
-fn tables(log: u32) -> Arc<Tables> {
+pub(crate) fn tables(log: u32) -> Arc<Tables> {
     static CACHE: OnceLock<Mutex<HashMap<u32, Arc<Tables>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(t) = cache.lock().unwrap().get(&log) {
@@ -754,12 +754,32 @@ fn tree_bytes(leaves: usize) -> usize {
 struct Stored {
     k: usize,
     n: usize,
-    data: Vec<u32>,
+    data: Backing,
+}
+
+/// Where a stored column set's words live. Evaluations committed on the GPU
+/// stay in the shared (unified-memory) buffer they were computed in, so the
+/// composition, DEEP and opening kernels read GPU output in place and a node
+/// never holds two copies of its evaluations.
+enum Backing {
+    Heap(Vec<u32>),
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    Shared(gpu::SharedBuffer),
+}
+
+impl Backing {
+    fn as_slice(&self) -> &[u32] {
+        match self {
+            Backing::Heap(v) => v,
+            #[cfg(all(target_os = "macos", feature = "metal"))]
+            Backing::Shared(b) => b.as_slice(),
+        }
+    }
 }
 
 impl Stored {
     fn column(&self, j: usize) -> &[u32] {
-        &self.data[j * self.n..(j + 1) * self.n]
+        &self.data.as_slice()[j * self.n..(j + 1) * self.n]
     }
 }
 
@@ -769,8 +789,13 @@ fn store() -> &'static Mutex<HashMap<u64, Arc<Stored>>> {
 }
 
 fn store_put(k: usize, n: usize, data: Vec<u32>) -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
     debug_assert_eq!(data.len(), k * n);
+    store_backing(k, n, Backing::Heap(data))
+}
+
+fn store_backing(k: usize, n: usize, data: Backing) -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    debug_assert_eq!(data.as_slice().len(), k * n);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     store().lock().unwrap().insert(id, Arc::new(Stored { k, n, data }));
     id
@@ -807,6 +832,14 @@ pub unsafe extern "C" fn sk_store_put(data: *const u32, k: usize, n: usize) -> u
 pub unsafe extern "C" fn sk_store_evaluate(coefs: *const u32, k: usize, len: usize, m: u32) -> u64 {
     let n = 1usize << (m + 1);
     let coefs = std::slice::from_raw_parts(coefs, k * len);
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    if gpu_on() {
+        if let Ok(g) = gpu::Gpu::get() {
+            let ev = gpu::SharedBuffer::new(g, k * n);
+            gpu::evaluate_columns(g, coefs, k, len, m, &ev).expect("GPU evaluation failed");
+            return store_backing(k, n, Backing::Shared(ev));
+        }
+    }
     let mut ev = vec![0u32; k * n];
     par_fill_u32(&mut ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
     store_put(k, n, ev)
@@ -836,7 +869,53 @@ pub unsafe extern "C" fn sk_store_read(id: u64, col: usize, start: usize, count:
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    4
+    5
+}
+
+// ------------------------------------------------------------------ GPU backend
+
+#[cfg(all(target_os = "macos", feature = "metal"))]
+mod gpu;
+
+/// Whether the kernels that have a GPU path should take it. Off until
+/// [sk_gpu_enable] turns it on, so a library built with the backend behaves
+/// exactly as one built without it unless the caller asks.
+static GPU_ON: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the GPU backend can run, and if not why: 0 the library was built
+/// without it (or is not on macOS), 1 available, 2 no Metal device, 3 the
+/// shaders did not compile. The Dart side turns the code into a message, so
+/// a refusal is never silent.
+#[no_mangle]
+pub extern "C" fn sk_gpu_available() -> u32 {
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    {
+        match gpu::Gpu::get() {
+            Ok(_) => 1,
+            Err(gpu::GpuError::NoDevice) => 2,
+            Err(_) => 3,
+        }
+    }
+    #[cfg(not(all(target_os = "macos", feature = "metal")))]
+    {
+        0
+    }
+}
+
+/// Turns the GPU backend on (`on` != 0) or off, and returns the state in
+/// effect afterwards: asking for it on a machine that cannot run it leaves it
+/// off and returns 0, which is the refusal the caller reports.
+#[no_mangle]
+pub extern "C" fn sk_gpu_enable(on: u32) -> u32 {
+    let want = on != 0 && sk_gpu_available() == 1;
+    GPU_ON.store(want as u32, Ordering::Relaxed);
+    want as u32
+}
+
+/// Whether a kernel with a GPU path should take it.
+#[inline]
+fn gpu_on() -> bool {
+    GPU_ON.load(Ordering::Relaxed) != 0
 }
 
 /// One Poseidon2 permutation of 16 lanes in place, with the round constants
@@ -868,6 +947,23 @@ pub unsafe extern "C" fn sk_commit_columns_p2(
     let coefs = std::slice::from_raw_parts(coefs, k * len);
     let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
     let tree = std::slice::from_raw_parts_mut(out_tree, (2 * big_m - 1) * 8);
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    if gpu_on() {
+        if let Ok(g) = gpu::Gpu::get() {
+            // The evaluations are computed straight into a shared buffer, so
+            // the GPU hashes them where they lie and they stay there as the
+            // store's backing.
+            let ev = gpu::SharedBuffer::new(g, k * n);
+            gpu::evaluate_columns(g, coefs, k, len, m, &ev).expect("GPU evaluation failed");
+            match gpu::commit_tree_p2(g, ev.buffer(), k, m, rc) {
+                Ok(t) => {
+                    tree.copy_from_slice(gpu::as_slice(&t, (2 * big_m - 1) * 8));
+                    return store_backing(k, n, Backing::Shared(ev));
+                }
+                Err(e) => panic!("GPU commitment failed: {e}"),
+            }
+        }
+    }
     let mut ev = vec![0u32; k * n];
     par_fill_u32(&mut ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
     {
@@ -898,6 +994,16 @@ pub unsafe extern "C" fn sk_interpolate_columns(vals: *const u32, k: usize, m: u
     let n = 1usize << (m + 1);
     let vals = std::slice::from_raw_parts(vals, k * n);
     let out = std::slice::from_raw_parts_mut(out, k * n);
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    if gpu_on() {
+        if let Ok(g) = gpu::Gpu::get() {
+            let src = gpu::SharedBuffer::from(g, vals);
+            let dst = gpu::SharedBuffer::new(g, k * n);
+            gpu::interpolate_columns(g, &src, k, m, &dst, inv(n as u32)).expect("GPU interpolation failed");
+            out.copy_from_slice(dst.as_slice());
+            return;
+        }
+    }
     par_fill_u32(out, n, 2, |j, col| interpolate(&vals[j * n..(j + 1) * n], m, col));
 }
 
@@ -907,6 +1013,15 @@ pub unsafe extern "C" fn sk_evaluate_columns(coefs: *const u32, k: usize, len: u
     let n = 1usize << (m + 1);
     let coefs = std::slice::from_raw_parts(coefs, k * len);
     let out = std::slice::from_raw_parts_mut(out, k * n);
+    #[cfg(all(target_os = "macos", feature = "metal"))]
+    if gpu_on() {
+        if let Ok(g) = gpu::Gpu::get() {
+            let dst = gpu::SharedBuffer::new(g, k * n);
+            gpu::evaluate_columns(g, coefs, k, len, m, &dst).expect("GPU evaluation failed");
+            out.copy_from_slice(dst.as_slice());
+            return;
+        }
+    }
     par_fill_u32(out, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
 }
 
@@ -1711,5 +1826,189 @@ mod mlkem_tests {
         pk[0] = 0xff;
         pk[1] = 0xff;
         unsafe { assert_eq!(sk_mlkem768_encaps(pk.as_ptr(), m.as_ptr(), ct.as_mut_ptr(), ss.as_mut_ptr()), 1) };
+    }
+}
+
+// ------------------------------------------------------------------ GPU tests
+
+/// The GPU kernels against their CPU counterparts. Every one is skipped with
+/// a message when the machine has no usable device, so the suite still runs
+/// on a build machine without a GPU.
+#[cfg(all(test, target_os = "macos", feature = "metal"))]
+mod gpu_tests {
+    use super::*;
+
+    /// A cheap deterministic stream of canonical M31 values.
+    fn lcg(seed: u64, n: usize) -> Vec<u32> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((x >> 33) as u32) % P
+            })
+            .collect()
+    }
+
+    fn device() -> Option<&'static gpu::Gpu> {
+        match gpu::Gpu::get() {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("skipped: {e}");
+                None
+            }
+        }
+    }
+
+    /// Round constants for the comparison. The crate takes them from the
+    /// caller, so the real ones live on the Dart side; both sides of this
+    /// test get the same arbitrary ones, which is what equality needs.
+    fn rc() -> Vec<u32> {
+        lcg(99, P2_RC_LEN)
+    }
+
+    #[test]
+    fn poseidon2_permutation_matches_the_cpu() {
+        let Some(g) = device() else { return };
+        let n = 4096;
+        let rc = rc();
+        let states = lcg(7, 16 * n);
+        let b = g.buffer_from(&states);
+        let brc = g.buffer_from(&rc);
+        g.run("p2_permute_test", n, &[&b, &brc], &[]).unwrap();
+        let got = gpu::as_slice(&b, 16 * n);
+        for i in 0..n {
+            let mut want = [0u32; 16];
+            want.copy_from_slice(&states[16 * i..16 * i + 16]);
+            p2_permute(&mut want, &rc);
+            assert_eq!(&got[16 * i..16 * i + 16], &want[..], "state {i}");
+        }
+    }
+
+    #[test]
+    fn poseidon2_commitment_matches_the_cpu() {
+        let Some(g) = device() else { return };
+        let rc = rc();
+        for m in [10u32, 14, 16] {
+            for k in [1usize, 3, 79] {
+                let big_m = 1usize << m;
+                let n = 2 * big_m;
+                let ev = lcg(m as u64 * 100 + k as u64, k * n);
+                let mut want = vec![0u32; (2 * big_m - 1) * 8];
+                {
+                    let ev: &[u32] = &ev;
+                    p2_leaves(
+                        big_m,
+                        2 * k,
+                        |i, lane| if lane < k { ev[lane * n + i] } else { ev[(lane - k) * n + big_m + i] },
+                        &rc,
+                        &mut want[..big_m * 8],
+                    );
+                }
+                merkle_above_p2(&mut want, big_m, &rc);
+                let bev = g.buffer_from(&ev);
+                let tree = gpu::commit_tree_p2(g, &bev, k, m, &rc).unwrap();
+                let got = gpu::as_slice(&tree, (2 * big_m - 1) * 8);
+                assert_eq!(got, &want[..], "tree at m={m} k={k}");
+            }
+        }
+    }
+
+    /// Serialises the tests that flip the process-wide GPU switch.
+    fn switch() -> &'static Mutex<()> {
+        static M: OnceLock<Mutex<()>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn commit_columns_p2_gpu_matches_cpu() {
+        let Some(_) = device() else { return };
+        let _guard = switch().lock().unwrap_or_else(|e| e.into_inner());
+        let rc = rc();
+        for (m, k, len) in [(10u32, 3usize, 512usize), (13, 79, 4096)] {
+            let big_m = 1usize << m;
+            let n = 2 * big_m;
+            let coefs = lcg(m as u64 * 31 + k as u64, k * len);
+            let mut tree_cpu = vec![0u32; (2 * big_m - 1) * 8];
+            let mut tree_gpu = vec![0u32; (2 * big_m - 1) * 8];
+            sk_gpu_enable(0);
+            let id_cpu =
+                unsafe { sk_commit_columns_p2(coefs.as_ptr(), k, len, m, rc.as_ptr(), tree_cpu.as_mut_ptr()) };
+            assert_eq!(sk_gpu_enable(1), 1);
+            let id_gpu =
+                unsafe { sk_commit_columns_p2(coefs.as_ptr(), k, len, m, rc.as_ptr(), tree_gpu.as_mut_ptr()) };
+            sk_gpu_enable(0);
+            assert_eq!(tree_cpu, tree_gpu, "tree at m={m} k={k}");
+            let (a, b) = (store_get(id_cpu), store_get(id_gpu));
+            assert_eq!(a.k, b.k);
+            assert_eq!(a.n, b.n);
+            assert_eq!(a.data.as_slice(), b.data.as_slice(), "stored columns at m={m} k={k}");
+            assert_eq!(a.data.as_slice().len(), k * n);
+            sk_store_free(id_cpu);
+            sk_store_free(id_gpu);
+        }
+    }
+
+    #[test]
+    fn evaluate_columns_matches_the_cpu() {
+        let Some(g) = device() else { return };
+        for m in [8u32, 12, 16, 20] {
+            let n = 1usize << (m + 1);
+            for k in [1usize, 5, 79] {
+                // the full width and a low-degree extension (blowup 8)
+                for len in [n, n >> 3] {
+                    let coefs = lcg(m as u64 * 7 + k as u64 * 3 + len as u64, k * len);
+                    let mut want = vec![0u32; k * n];
+                    par_fill_u32(&mut want, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
+                    let out = gpu::SharedBuffer::new(g, k * n);
+                    gpu::evaluate_columns(g, &coefs, k, len, m, &out).unwrap();
+                    assert_eq!(out.as_slice(), &want[..], "evaluate m={m} k={k} len={len}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interpolate_columns_matches_the_cpu() {
+        let Some(g) = device() else { return };
+        for m in [8u32, 12, 16, 20] {
+            let n = 1usize << (m + 1);
+            let n_inv = inv(n as u32);
+            for k in [1usize, 5, 79] {
+                let vals = lcg(m as u64 * 11 + k as u64, k * n);
+                let mut want = vec![0u32; k * n];
+                par_fill_u32(&mut want, n, 2, |j, col| interpolate(&vals[j * n..(j + 1) * n], m, col));
+                let src = gpu::SharedBuffer::from(g, &vals);
+                let out = gpu::SharedBuffer::new(g, k * n);
+                gpu::interpolate_columns(g, &src, k, m, &out, n_inv).unwrap();
+                assert_eq!(out.as_slice(), &want[..], "interpolate m={m} k={k}");
+
+                // and the round trip: coefficients back to the same values
+                let back = gpu::SharedBuffer::new(g, k * n);
+                gpu::evaluate_columns(g, out.as_slice(), k, n, m, &back).unwrap();
+                assert_eq!(back.as_slice(), &vals[..], "round trip m={m} k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn m31_arithmetic_matches_the_cpu() {
+        let Some(g) = device() else { return };
+        let n = 1 << 20;
+        let a = lcg(1, n);
+        let b = lcg(2, n);
+        let sh: Vec<u32> = (0..n).map(|i| 1 + (i as u32 % 30)).collect();
+        let (ba, bb, bs) = (g.buffer_from(&a), g.buffer_from(&b), g.buffer_from(&sh));
+        let out = g.buffer(5 * n);
+        g.run("m31_selftest", n, &[&ba, &bb, &bs, &out], &[]).unwrap();
+        let got = gpu::as_slice(&out, 5 * n);
+        for i in 0..n {
+            assert_eq!(got[5 * i], add(a[i], b[i]), "add at {i}");
+            assert_eq!(got[5 * i + 1], sub(a[i], b[i]), "sub at {i}");
+            assert_eq!(got[5 * i + 2], mul(a[i], b[i]), "mul at {i}");
+            let x2 = mul(a[i], a[i]);
+            assert_eq!(got[5 * i + 3], mul(mul(x2, x2), a[i]), "pow5 at {i}");
+            let v = [a[i]];
+            assert_eq!(got[5 * i + 4], v_shl(&v, sh[i])[0], "shl at {i}");
+        }
     }
 }

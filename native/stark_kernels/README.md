@@ -25,10 +25,34 @@ way. Committed value columns never come back to Dart: `sk_commit_columns*`
 keep them in a column store and return an id (`NativeColumns` on the Dart
 side), and the composition, DEEP-quotient and opening steps read them
 there (`sk_store_get`/`sk_store_read`); the Dart side releases them when
-the proof is done (`sk_store_free`). ABI version 4.
+the proof is done (`sk_store_free`). ABI version 5.
 
 `StarkKernels.tryLoad()` finds `target/release/libstark_kernels.{dylib,so}` /
 `stark_kernels.dll` under the working directory or its parents, or the path
 in `$STARK_KERNELS_LIB`. When it is missing the prover silently falls back
 to Dart (`DartKernels`). `test/stark_kernels_test.dart` checks every kernel
 against the Dart implementation and compares whole proofs.
+
+## The experimental GPU backend
+
+An optional Metal backend (Apple Silicon only) runs two kernels on the GPU:
+the Poseidon2 Merkle commitment and the circle FFT. It is behind a cargo
+feature that is off by default, so an ordinary build contains no Metal symbol
+and behaves exactly as before:
+
+    cargo build --release --features metal --manifest-path native/stark_kernels/Cargo.toml
+
+Even with the feature built the backend stays off until it is asked for, by
+setting `STARK_KERNELS_GPU=1` in the environment before the Dart side loads
+the library. Asking on a machine that cannot run it (no device, shaders that
+do not compile, or a library built without the feature) is refused rather
+than ignored: `StarkKernels.gpuStatus` says which, `name` stays `native`, and
+proving continues on the CPU. When it does take, `name` is `native+metal`.
+
+The shaders live in `src/kernels.metal` and are compiled from source at first
+use, so there is no Xcode project and no `.metallib` to keep in step. They
+are exact ports of the CPU kernels, down to the reduction sequences in the
+field arithmetic, because a different but equivalent reduction that disagreed
+on one boundary case would change a digest and not a test. `cargo test
+--features metal` checks each kernel against its CPU counterpart and skips
+with a message when no device is present.
