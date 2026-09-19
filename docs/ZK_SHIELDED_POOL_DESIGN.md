@@ -1535,6 +1535,28 @@ blowup-32 nodes of levels 3 and 4 are the most expensive per node (their
 extensions run on 2^25 points) and the next thing to look at, together with
 the composition commitment (32 limb columns per node).
 
+### Padding short rounds (built)
+
+An aggregated round is a fixed shape: the state script expects exactly the
+plan's 256 transfers and the root proof folds exactly that many. A round with
+fewer real transfers is filled with padding transfers: a spend of two
+dummies into two zero-value notes to a random address, nothing entering or
+leaving the pool, no extra outputs (`PoolTransfer.padding`,
+`PoolPublicInputs.isPadding`). Such a transfer changes no balance and inserts
+no nullifier (the flags the proof pinned say both inputs are dummies), and
+only its two commitments land in the tree, at 512 leaves per round against
+2^33 of capacity. So padding is proved against the zero anchor and the state
+script waives the ring check for a transfer with no real input (five more
+ops per transfer): the proof then protects nothing an anchor could, and it can
+be proved at any time and used in any round. `PaddingSupply` is the
+coordinator's stock: `fill` proves ahead of time between rounds (1.5 s each at
+production parameters), `take` serves a round from stock and proves any
+shortfall on the spot; `createAggregatedRoundTxn` takes up to the plan's
+transfers and a supply. The chain reader sees padding as ordinary transfers
+and flags them. Tested end to end in `test/pp1_sp_aggregated_test.dart`: a
+round of one deposit and three padding transfers, two from stock, verified in
+the interpreter, the reader agreeing with the ledger.
+
 ### Moving proving to the edge (considered)
 
 The round's work is a tree whose leaves are the transfers, so it distributes

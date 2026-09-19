@@ -130,4 +130,44 @@ void main() {
     expect(reader.ledger.tree.root, ledger.tree.root);
     expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);
   }, timeout: const Timeout(Duration(minutes: 20)));
+
+  test('a short round: one deposit and three padding transfers, two of them from stock', () {
+    final depositFunding = coinbaseLike(depositorAddress, [30000]);
+    final change = ShieldedPoolTool.payout(depositorAddress, 30000 - 20000 - 800);
+    final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
+    final oa = OutputNote(pkd: lanes(8), value: 19990, rho: lanes(3), rcm: lanes(4));
+    final ob = OutputNote(pkd: lanes(8), value: 10, rho: lanes(3), rcm: lanes(4));
+    final w = PoolSpendAir.witness(da, db, oa, ob, -20000, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(change));
+    final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: Random(20), hash: const Poseidon2ProofHash());
+    final deposit = PoolTransfer(w.publics, proof, change);
+    expect(deposit.publics.isPadding, isFalse);
+
+    final sw = Stopwatch()..start();
+    final supply = PaddingSupply(spendP, rng: Random(21))..fill(2);
+    print('  two padding transfers proved ahead in ${sw.elapsedMilliseconds} ms');
+    expect(supply.stock, 2);
+    // a short round without a supply is refused
+    expect(() => tool.createAggregatedRoundTxn(ledger, [deposit], agg), throwsArgumentError);
+
+    final spent = tool.spentByRound(ledger);
+    final vaultBefore = ledger.vault, sizeBefore = ledger.tree.size, nfBefore = ledger.nullifiers.root;
+    sw.reset();
+    final tx = tool.createAggregatedRoundTxn(ledger, [deposit], agg,
+        funding: [FundingInput(depositFunding, 0, depositorSigner, depositorPub)], padding: supply, rng: Random(4));
+    print('  short round built in ${sw.elapsedMilliseconds} ms (one padding transfer proved on the spot)');
+    expect(supply.stock, 0);
+    expect(ledger.vault, vaultBefore + 20000);
+    expect(ledger.tree.size, sizeBefore + 32);
+    expect(ledger.nullifiers.root, nfBefore); // dummies insert nothing
+    verifyAll(tx, [...spent, depositFunding.outputs[0]], label: 'padded round');
+
+    final reader = PoolChainReader.fromGenesis(gen, genesisTx);
+    reader.apply(roundTx);
+    final round = reader.apply(tx);
+    expect(round.transfers.length, 4);
+    expect(round.transfers.where((t) => t!.isPadding).length, 3);
+    expect(reader.ledger.header.bytes(), ledger.header.bytes());
+    expect(reader.ledger.tree.root, ledger.tree.root);
+    expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);
+  }, timeout: const Timeout(Duration(minutes: 20)));
 }

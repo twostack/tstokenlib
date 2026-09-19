@@ -239,6 +239,12 @@ class PoolPublicInputs {
     if (asset.length != PoolHash.assetLanes) throw ArgumentError('asset lanes');
   }
 
+  /// A padding transfer: no real input and nothing leaving or entering the
+  /// pool, so it changes no balance and inserts no nullifier; only its two
+  /// (zero-value) commitments land in the tree. The coordinator fills a
+  /// short round with them (see `PaddingSupply`).
+  bool get isPadding => !real1 && !real2 && publicOut == 0;
+
   /// All-zero publics: the verifier script does not depend on the values.
   static PoolPublicInputs zero() {
     final z = List.filled(8, 0);

@@ -460,7 +460,10 @@ class PP1SpScriptGen {
     _canonical(e, p, PoolPublicInputs.idxAsset, PoolHash.assetLanes);
     // the public lanes as bytes: the issuer's message, then the statement / result
     SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'tb');
-    // anchor in the ring
+    // anchor in the ring, unless neither input is real: the proof then
+    // pinned both notes as dummies, the anchor protects nothing, and the
+    // transfer (a deposit, a mint or the coordinator's padding) can be
+    // proved against any anchor, long before the round it lands in
     SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) p(PoolPublicInputs.idxAnchor + j)], as: 'anchorB');
     for (int r = 0; r < ringSize; r++) {
       e.pick('anchorB');
@@ -468,6 +471,11 @@ class PP1SpScriptGen {
       _op(e, OpCodes.OP_EQUAL);
       if (r > 0) _op(e, OpCodes.OP_BOOLOR);
     }
+    e.pick(p(PoolPublicInputs.idxReal1));
+    e.pick(p(PoolPublicInputs.idxReal2));
+    _op(e, OpCodes.OP_BOOLOR);
+    _op(e, OpCodes.OP_NOT, pops: 1, pushes: 1);
+    _op(e, OpCodes.OP_BOOLOR);
     _verify(e);
     e.dropNamed('anchorB');
     // the value leaving, signed: lo + 2^28 hi

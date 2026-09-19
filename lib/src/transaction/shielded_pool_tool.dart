@@ -22,7 +22,9 @@ import '../builder/pp1_sp_lock_builder.dart';
 import '../builder/pp1_sp_unlock_builder.dart';
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/note_encryption.dart';
+import '../crypto/m31.dart';
 import '../crypto/nullifier_set.dart';
+import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../script_gen/pool_spend_air.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
@@ -43,6 +45,58 @@ class PoolTransfer {
   PoolTransfer(this.publics, this.proof, this.extraOutputs, {this.auth});
 
   bool get needsAuth => !PoolHash.isBsv(publics.asset) && (publics.publicOut < 0 || PoolHash.isGated(publics.asset));
+
+  /// A padding transfer for an aggregated round: a spend of two dummies
+  /// (fresh random keys and rho) into two zero-value notes to a random
+  /// address, nothing leaving the pool, no extra outputs. It is proved
+  /// against the zero anchor: the state script waives the ring check when
+  /// neither input is real, so it can be proved at any time and used in any
+  /// round. Proving one costs a spend proof (about 1.5 s at production
+  /// parameters).
+  static PoolTransfer padding(StarkParams spendP, {Random? rng}) {
+    final r = rng ?? Random.secure();
+    List<int> lanes(int n) => List.generate(n, (_) => r.nextInt(M31.p));
+    final a = SpendNote.dummy(sk: lanes(PoolHash.skLanes), rho: lanes(PoolHash.rhoLanes));
+    final b = SpendNote.dummy(sk: lanes(PoolHash.skLanes), rho: lanes(PoolHash.rhoLanes));
+    final oa = OutputNote(pkd: lanes(PoolHash.digestLanes), value: 0, rho: lanes(PoolHash.rhoLanes), rcm: lanes(PoolHash.rcmLanes));
+    final ob = OutputNote(pkd: lanes(PoolHash.digestLanes), value: 0, rho: lanes(PoolHash.rhoLanes), rcm: lanes(PoolHash.rcmLanes));
+    final w = PoolSpendAir.witness(a, b, oa, ob, 0, anchor: List.filled(8, 0), outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    assert(w.publics.isPadding);
+    final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: r, hash: const Poseidon2ProofHash());
+    return PoolTransfer(w.publics, proof, Uint8List(0));
+  }
+}
+
+/// The coordinator's stock of padding transfers. An aggregated round has a
+/// fixed number of transfers, so a round with fewer real ones is filled from
+/// here; [fill] proves ahead of time (between rounds) and [take] proves any
+/// shortfall on the spot.
+class PaddingSupply {
+  final StarkParams spendP;
+  final Random _rng;
+  final List<PoolTransfer> _stock = [];
+  PaddingSupply(this.spendP, {Random? rng}) : _rng = rng ?? Random.secure();
+
+  int get stock => _stock.length;
+
+  /// Proves until [target] padding transfers are in stock.
+  void fill(int target) {
+    while (_stock.length < target) {
+      _stock.add(PoolTransfer.padding(spendP, rng: _rng));
+    }
+  }
+
+  /// [n] padding transfers, from stock first.
+  List<PoolTransfer> take(int n) {
+    final out = <PoolTransfer>[];
+    while (out.length < n && _stock.isNotEmpty) {
+      out.add(_stock.removeLast());
+    }
+    while (out.length < n) {
+      out.add(PoolTransfer.padding(spendP, rng: _rng));
+    }
+    return out;
+  }
 }
 
 /// A signed transparent input added to a round (a deposit's funding).
@@ -157,14 +211,20 @@ class ShieldedPoolTool {
   List<TransactionOutput> spentByRound(PoolLedger ledger) =>
       [ledger.tx.outputs[stateVout], for (final v in gen.slotVouts) ledger.tx.outputs[v]];
 
-  /// An aggregated round (the generator's aggregated mode): exactly
-  /// [agg].transfers transfers, all present, folded by [agg] into one root
-  /// proof for the single verifier slot; the round transaction is input 0
-  /// the state, input 1 the slot, then the deposit [funding] inputs.
+  /// An aggregated round (the generator's aggregated mode): up to
+  /// [agg].transfers transfers, a short round filled from [padding], folded
+  /// by [agg] into one root proof for the single verifier slot; the round
+  /// transaction is input 0 the state, input 1 the slot, then the deposit
+  /// [funding] inputs.
   Transaction createAggregatedRoundTxn(PoolLedger ledger, List<PoolTransfer> transfers, PoolAggregation agg,
-      {List<FundingInput> funding = const [], Random? rng, bool verbose = false}) {
+      {List<FundingInput> funding = const [], PaddingSupply? padding, Random? rng, bool verbose = false}) {
     if (!gen.aggregated) throw StateError('the generator is not in aggregated mode');
-    if (transfers.length != gen.n || agg.transfers != gen.n) throw ArgumentError('a round has ${gen.n} transfers');
+    if (agg.transfers != gen.n) throw StateError('the aggregation folds ${agg.transfers} transfers, the round holds ${gen.n}');
+    if (transfers.length > gen.n) throw ArgumentError('a round holds at most ${gen.n} transfers');
+    if (transfers.length < gen.n) {
+      if (padding == null) throw ArgumentError('${transfers.length} of ${gen.n} transfers: a short round needs a padding supply');
+      transfers = [...transfers, ...padding.take(gen.n - transfers.length)];
+    }
     final parent = ledger.tx;
     final h = ledger.header;
     for (int i = 0; i < transfers.length; i++) {
