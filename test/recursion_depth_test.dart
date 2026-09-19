@@ -45,7 +45,7 @@ void main() {
       sw.reset();
       final rows = program.witness(proof);
       final witnessMs = sw.elapsedMilliseconds;
-      final vAir = program.air(VerifierProgram.statementDigest(shape.air, proof.preRoot));
+      final vAir = program.air(VerifierProgram.nodeDigestOf(shape.air, proof.preRoot));
       sw.reset();
       final vProof = StarkProver.prove(vP, vAir, rows, rng: Random(level), hash: p2);
       final proveMs = sw.elapsedMilliseconds;

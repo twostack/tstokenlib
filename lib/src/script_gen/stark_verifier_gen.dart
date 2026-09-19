@@ -17,7 +17,10 @@
 import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import '../crypto/m31.dart';
+import '../crypto/proof_hash.dart' show Sha256ProofHash;
+import '../crypto/stark_prover.dart' show PreCommitment;
 import '../crypto/stark_prover_ref.dart';
+import '../crypto/stark_verifier_ref.dart' show StarkVerifierRef;
 import 'm31_script_gen.dart';
 import 'fri_fold_script_gen.dart';
 import 'deep_quotient_script_gen.dart';
@@ -47,14 +50,19 @@ class StarkVerifierGen {
   int get C => air.numCols;
   int get A => air.numAuxCols;
   int get CT => air.totalCols;
+  /// Preprocessed columns (a verifier AIR's program): committed once, their
+  /// root is a constant of this script.
+  int get R => air.numPreCols;
+  List<int>? _preRoot;
+  List<int> get preRoot => _preRoot ??= PreCommitment.root(air, P, const Sha256ProofHash());
 
   static List<String> L(String b) => limbNames(b);
 
   // ---- unlocking-script layout (bottom to top) ----
   List<String> layout() {
-    if (air.numPreCols > 0) throw UnimplementedError('the script verifier does not open preprocessed columns yet');
     final names = <String>[
       for (int k = 0; k < air.numPublics; k++) Air.publicName(k),
+      for (int c = 0; c < air.numPubHints; c++) ...L('pkh$c'),
       'troot',
       if (A > 0) 'aroot',
       'croot',
@@ -96,6 +104,10 @@ class StarkVerifierGen {
         names.addAll(List.generate(2 * A, (i) => 'axl${q}_$i'));
         names.addAll(List.generate(P.logTraceHalf, (i) => 'axs${q}_$i'));
       }
+      if (R > 0) {
+        names.addAll(List.generate(2 * R, (i) => 'prl${q}_$i'));
+        names.addAll(List.generate(P.logTraceHalf, (i) => 'prs${q}_$i'));
+      }
       names.add('ybi$q');
       names.addAll(L('dbp$q'));
       names.addAll(L('dbc$q'));
@@ -117,6 +129,12 @@ class StarkVerifierGen {
     if (air.publicValues.length != air.numPublics) throw StateError('public inputs: values do not match count');
     for (final v in air.publicValues) {
       _pushNum(b, v);
+    }
+    if (air.numPubHints > 0) {
+      final (zx, zy) = StarkVerifierRef(P, air, hash: const Sha256ProofHash()).oodPoint(pf);
+      for (final h in air.pubHints(zx, zy)) {
+        _pushQ(b, h);
+      }
     }
     b.addData(Uint8List.fromList(pf.traceRoot));
     if (A > 0) {
@@ -170,6 +188,15 @@ class StarkVerifierGen {
           _pushNum(b, v);
         }
         for (final s in q.auxPath) {
+          b.addData(Uint8List.fromList(s));
+        }
+      }
+      if (R > 0) {
+        if (q.preLeaf.length != 2 * R) throw StateError('query preprocessed leaf has ${q.preLeaf.length} lanes');
+        for (final v in q.preLeaf) {
+          _pushNum(b, v);
+        }
+        for (final s in q.prePath) {
           b.addData(Uint8List.fromList(s));
         }
       }
@@ -312,6 +339,11 @@ class StarkVerifierGen {
     FiatShamirScriptGen.emitInit(e);
     if (air.numPublics > 0) {
       FiatShamirScriptGen.emitAbsorbLimbs(e, [for (int k = 0; k < air.numPublics; k++) Air.publicName(k)]);
+    }
+    if (R > 0) {
+      // the statement ends with the preprocessed root, a constant here
+      e.pushData(preRoot, as: 'proot');
+      FiatShamirScriptGen.emitAbsorb(e, 'proot');
     }
     FiatShamirScriptGen.emitAbsorb(e, 'troot');
     // interaction round: challenges from the trace root, then the aux root
@@ -461,9 +493,24 @@ class StarkVerifierGen {
             FriFoldScriptGen.emitMerklePath(e, 'aleaf', List.generate(P.logTraceHalf, (i) => 'axs${q}_$i'), 'aic', as: 'aroot2');
             _equalVerifyNamed(e, 'aroot2', 'aroot');
           }
-          // column openings at p: trace then aux; likewise at conj p
-          final atP = [for (int i = 0; i < C; i++) 'tl${q}_$i', for (int i = 0; i < A; i++) 'axl${q}_$i'];
-          final atC = [for (int i = 0; i < C; i++) 'tl${q}_${C + i}', for (int i = 0; i < A; i++) 'axl${q}_${A + i}'];
+          if (R > 0) {
+            // preprocessed opening at the same index, against the baked root
+            e.pick('idx', as: 'pic');
+            FriFoldScriptGen.emitLeafHashN(e, List.generate(2 * R, (i) => 'prl${q}_$i'), as: 'pleaf');
+            FriFoldScriptGen.emitMerklePath(e, 'pleaf', List.generate(P.logTraceHalf, (i) => 'prs${q}_$i'), 'pic', as: 'proot2');
+            _equalVerifyNamed(e, 'proot2', 'proot');
+          }
+          // column openings at p: trace, aux, preprocessed; likewise at conj p
+          final atP = [
+            for (int i = 0; i < C; i++) 'tl${q}_$i',
+            for (int i = 0; i < A; i++) 'axl${q}_$i',
+            for (int i = 0; i < R; i++) 'prl${q}_$i'
+          ];
+          final atC = [
+            for (int i = 0; i < C; i++) 'tl${q}_${C + i}',
+            for (int i = 0; i < A; i++) 'axl${q}_${A + i}',
+            for (int i = 0; i < R; i++) 'prl${q}_${R + i}'
+          ];
           for (int i = 0; i < CT; i++) {
             e.pick(atP[i], as: 'tlb_$i');
           }

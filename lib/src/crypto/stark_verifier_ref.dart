@@ -82,6 +82,24 @@ class StarkVerifierRef {
 
   static int _double(int x) => M31.sub(M31.mul(2, M31.mul(x, x)), 1);
 
+  /// The out-of-domain point of [pf]: its transcript replayed to z, taking
+  /// the proof's z hint as is (the verifier proper checks it). What the
+  /// unlocking script's public-column hints are computed at.
+  (QM31, QM31) oodPoint(StarkProof pf) {
+    final ts = hash.transcript();
+    ts.absorbStatement(air.publicValues, pf.preRoot);
+    ts.absorb(pf.traceRoot);
+    for (int k = 0; k < air.numChallenges; k++) {
+      ts.squeezeQM31();
+    }
+    if (air.numAuxCols > 0) ts.absorb(pf.auxRoot);
+    ts.squeezeQM31();
+    ts.absorb(pf.compRoot);
+    final tch = ts.squeezeQM31();
+    final t2 = tch * tch;
+    return ((QM31.one - t2) * pf.zHint, (tch + tch) * pf.zHint);
+  }
+
   void _verify(StarkProof pf) {
     final a = P.logCompHalf;
     final CT = air.totalCols, C = air.numCols, A = air.numAuxCols, R = air.numPreCols;
@@ -114,7 +132,7 @@ class StarkVerifierRef {
     final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
 
     // ---- out-of-domain constraint check ----
-    final rhs = air.compositionAt(pf.traceAtZ, pf.traceAtZg, air.periodicAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
+    final rhs = air.compositionAt(pf.traceAtZ, pf.traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
     _need(composeColumns(pf.compAtZ) == rhs, 'composition relation at z');
 
     // ---- z*g and the DEEP constants ----

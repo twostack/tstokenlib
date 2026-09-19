@@ -18,8 +18,10 @@ import 'dart:typed_data';
 import '../crypto/m31.dart';
 import '../script_gen/air.dart';
 import '../script_gen/air_ring.dart';
+import '../script_gen/deep_quotient_script_gen.dart' show limbNames;
 import '../script_gen/m31_script_gen.dart';
 import '../script_gen/poseidon2_air.dart';
+import '../script_gen/program_script_gen.dart';
 
 /// The machine that verifies a Poseidon2-flavour STARK proof inside a STARK.
 ///
@@ -45,10 +47,15 @@ import '../script_gen/poseidon2_air.dart';
 ///   LogUp helper inverses of the producer ports P1, P2 and consumer ports
 ///   A, B.
 /// Preprocessed columns: the program, [VerifierProgramColumns.names].
-/// Public inputs: 8 lanes, the inner proof's *statement digest* (its
-/// transcript state after absorbing its publics and preprocessed root, see
-/// `Poseidon2Transcript.absorbStatement`), pinned by the program to the
-/// digest of the period that replays that absorption.
+/// Public inputs, two modes:
+///   * digest ([wide] false): 8 lanes, the digest the program computes over
+///     the inner proofs' *statement digests* (see `VerifierProgram`), pinned
+///     by `pinPub` to lanes 0..7 of a period's digest row.
+///   * wide ([wide] true, the root of an aggregation): 8 lanes per pinned
+///     period, the raw public inputs of every transfer; `pinPub` pins lanes
+///     8..15 of the hash-input row of each such period to *public columns*
+///     (see `Air.pubColumns`), which the verifier evaluates out of domain
+///     with the trace domain's Lagrange kernel.
 class VerifierAir extends Poseidon2Air {
   static const colA = 16, colB = 20;
   static const numMainCols = 24;
@@ -60,21 +67,33 @@ class VerifierAir extends Poseidon2Air {
 
   final VerifierProgramColumns prog;
   final List<int> publics;
+  final bool wide;
 
   /// Program-recorded constraints take the publics as ring inputs when set.
   List<Object>? publicsOverride;
 
-  VerifierAir(super.logTrace, this.prog, this.publics) {
-    if (publics.length != numPublicLanes) throw ArgumentError('$numPublicLanes public lanes');
+  VerifierAir(super.logTrace, this.prog, this.publics, {this.wide = false}) {
     if (prog.rows != 1 << logTrace) throw ArgumentError('program has ${prog.rows} rows, trace ${1 << logTrace}');
+    if (!wide && publics.length != numPublicLanes) throw ArgumentError('$numPublicLanes public lanes');
+    if (wide && publics.length != 8 * pinnedRows.length) {
+      throw ArgumentError('wide statement: ${8 * pinnedRows.length} public lanes for ${pinnedRows.length} pinned periods');
+    }
   }
 
   int get periods => 1 << (logTrace - logPeriod);
 
+  /// The rows the program pins (ascending): digest rows in digest mode,
+  /// hash-input rows in wide mode, one public chunk each.
+  List<int>? _pinned;
+  List<int> get pinnedRows => _pinned ??= [
+        for (int r = 0; r < prog.rows; r++)
+          if (prog.columns[VerifierProgramColumns.pinPub][r] == 1) r
+      ];
+
   @override
   int get numCols => numMainCols;
   @override
-  int get numPublics => numPublicLanes;
+  int get numPublics => publics.length;
   @override
   List<int> get publicValues => publics;
   @override
@@ -89,7 +108,7 @@ class VerifierAir extends Poseidon2Air {
   List<Uint32List> preColumns() => prog.columns;
   int get auxCol0 => numMainCols;
 
-  static const _mainCount = 69;
+  static const _mainCount = 77;
   @override
   int get numConstraints => _mainCount + numPublicLanes;
 
@@ -176,19 +195,176 @@ class VerifierAir extends Poseidon2Air {
     for (int j = 0; j < 8; j++) {
       out.add(f.mul(P(VerifierProgramColumns.digAB), f.sub(cur[j], ab[j]))); // 57..64
     }
+    // lanes 8..15 pinned to the NEXT row's operand columns (a second bus
+    // value into one hash input: Merkle nodes of two wires)
+    final nextAb = [...next.sublist(colA, colA + 4), ...next.sublist(colB, colB + 4)];
+    for (int j = 0; j < 8; j++) {
+      out.add(f.mul(P(VerifierProgramColumns.inHiNext), f.sub(cur[8 + j], nextAb[j]))); // 65..72
+    }
     // the VM result asserted zero
     final res = vmResultG(f, cur, pre);
     for (int k = 0; k < 4; k++) {
-      out.add(f.mul(P(VerifierProgramColumns.assertZero), res[k])); // 65..68
+      out.add(f.mul(P(VerifierProgramColumns.assertZero), res[k])); // 73..76
     }
     if (out.length != _mainCount) throw StateError('main constraint count ${out.length}');
-    // the statement digest: the program pins a period's digest lanes to the public inputs
+    // the statement: the program pins a period's digest lanes to the public
+    // inputs (digest mode) or its hash-input lanes to the public columns (wide)
     final pubs = publicsOverride?.cast<T>();
     for (int j = 0; j < 8; j++) {
-      final T pv = pubs == null ? f.constM31(publics[j]) : pubs[j];
-      out.add(f.mul(P(VerifierProgramColumns.pinPub), f.sub(cur[j], pv))); // 78..85
+      final T pv = wide ? per[numPeriodic + j] : (pubs == null ? f.constM31(publics[j]) : pubs[j]);
+      out.add(f.mul(P(VerifierProgramColumns.pinPub), f.sub(cur[(wide ? 8 : 0) + j], pv))); // 77..84
     }
     return out;
+  }
+
+  // ---------------------------------------------------------------- the wide statement's public columns
+  //
+  // Column j holds publics[8c + j] at the c-th pinned row and 0 elsewhere.
+  // Its interpolant at an out-of-domain point z on the circle is
+  //   v(z) * sum_c publics[8c + j] * s_c * (1 + <z, h_c>) / (z x h_c),
+  // with h_c the row's point, <,> the dot and x the cross product, v the
+  // trace vanishing polynomial and s_c = (-1)^{r_c} / 2^logTrace (the
+  // circle Lagrange kernel; checked against the FFT interpolant).
+
+  @override
+  int get numPubCols => wide ? 8 : 0;
+
+  @override
+  List<Uint32List> pubColumns() {
+    if (!wide) return const [];
+    final cols = List.generate(8, (_) => Uint32List(prog.rows));
+    final rows = pinnedRows;
+    for (int c = 0; c < rows.length; c++) {
+      for (int j = 0; j < 8; j++) {
+        cols[j][rows[c]] = publics[8 * c + j];
+      }
+    }
+    return cols;
+  }
+
+  /// s_c, s_c h_x, s_c h_y for the c-th pinned row.
+  (int, int, int) _kernelConsts(int c) {
+    final r = pinnedRows[c];
+    final h = rowPoint(r);
+    final nInv = M31.inv(1 << logTrace);
+    final s = r.isEven ? nInv : M31.p - nInv;
+    return (s, M31.mul(s, h.x), M31.mul(s, h.y));
+  }
+
+  /// The per-chunk kernel factors s_c (1 + <z,h_c>) / (z x h_c).
+  List<QM31> _kernels(QM31 zx, QM31 zy) {
+    final out = <QM31>[];
+    for (int c = 0; c < pinnedRows.length; c++) {
+      final h = rowPoint(pinnedRows[c]);
+      final (s, shx, shy) = _kernelConsts(c);
+      final num = QM31.fromLimbs(s, 0, 0, 0) + zx.scale(shx) + zy.scale(shy);
+      final den = zy.scale(h.x) - zx.scale(h.y);
+      out.add(num * den.inv);
+    }
+    return out;
+  }
+
+  @override
+  List<QM31> pubColumnsAt(QM31 zx, QM31 zy) {
+    if (!wide) return const [];
+    final ks = _kernels(zx, zy);
+    final v = vanishing(zx);
+    return [
+      for (int j = 0; j < 8; j++)
+        () {
+          var acc = QM31.zero;
+          for (int c = 0; c < ks.length; c++) {
+            acc = acc + ks[c].scale(publics[8 * c + j]);
+          }
+          return acc * v;
+        }()
+    ];
+  }
+
+  @override
+  List<T> pubColumnsAtG<T>(Ring<T> f, T zx, T zy) {
+    if (!wide) return const [];
+    if (f is QM31Ring) return pubColumnsAt(zx as QM31, zy as QM31).cast<T>();
+    throw UnsupportedError('a wide statement is verified by the reference verifier and in script only');
+  }
+
+  @override
+  int get numPubHints => wide ? pinnedRows.length : 0;
+
+  @override
+  List<QM31> pubHints(QM31 zx, QM31 zy) => wide ? _kernels(zx, zy) : const [];
+
+  /// Script: per chunk c, check hint_c * (zy h_x - zx h_y) == s_c + s_c h_x zx + s_c h_y zy,
+  /// accumulate publics[8c + j] * hint_c per lane j (lazily), then scale by v.
+  @override
+  void emitPubColumns(StackEmitter e, List<String> zx, List<String> zy, List<String> v, List<List<String>> hints,
+      List<List<String>> out) {
+    if (!wide) return;
+    final n = pinnedRows.length;
+    for (int c = 0; c < n; c++) {
+      final h = rowPoint(pinnedRows[c]);
+      final (s, shx, shy) = _kernelConsts(c);
+      // den = zy h_x - zx h_y (lazy)
+      for (int k = 0; k < 4; k++) {
+        e.pick(zy[k]);
+        e.mulConst(h.x);
+        e.pick(zx[k]);
+        e.mulConst(h.y);
+        e.sub();
+        e.nameTop('_pd_$k');
+      }
+      // num = s + s h_x zx + s h_y zy (canonical)
+      for (int k = 0; k < 4; k++) {
+        e.pick(zx[k]);
+        e.mulConst(shx);
+        e.pick(zy[k]);
+        e.mulConst(shy);
+        e.add();
+        if (k == 0) {
+          e.pushConst(s);
+          e.add();
+        }
+        e.reduce();
+        e.nameTop('_pn_$k');
+      }
+      for (int k = 0; k < 4; k++) {
+        e.pick(hints[c][k], as: '_ph_$k');
+      }
+      M31Ops.qm31Mul(e, limbNames('_pd'), limbNames('_ph'), limbNames('_pp'));
+      for (int k = 0; k < 4; k++) {
+        e.roll('_pp_$k');
+        e.roll('_pn_$k');
+        e.numEqualVerify();
+      }
+      // acc_j += pub_{8c+j} * hint_c, limbwise
+      for (int j = 0; j < 8; j++) {
+        final pub = Air.publicName(8 * c + j);
+        for (int k = 0; k < 4; k++) {
+          e.pick(pub);
+          e.pick(hints[c][k]);
+          e.mul();
+          if (c > 0) {
+            e.roll('_pa${j}_$k');
+            e.add();
+          }
+          e.nameTop('_pa${j}_$k');
+        }
+      }
+      for (final l in hints[c]) {
+        e.dropNamed(l);
+      }
+    }
+    for (int j = 0; j < 8; j++) {
+      for (int k = 0; k < 4; k++) {
+        e.roll('_pa${j}_$k');
+        e.reduce();
+        e.nameTop('_pa${j}_$k');
+      }
+      for (int k = 0; k < 4; k++) {
+        e.pick(v[k], as: '_pv_$k');
+      }
+      M31Ops.qm31Mul(e, limbNames('_pa$j'), limbNames('_pv'), out[j]);
+    }
   }
 
   final M31Ring _m31 = const M31Ring();
@@ -311,10 +487,75 @@ class VerifierAir extends Poseidon2Air {
     return cols;
   }
 
+  // ---------------------------------------------------------------- script
+
+  /// The main constraints recorded as a [Program] over the inputs cur{j},
+  /// next{j} (totalCols each), per{k}, lin{k} and pub{j} (the 8 public
+  /// lanes, base-field values).
+  Program mainProgram() {
+    final r = ExprRing();
+    final cur = r.inputs('cur', totalCols), next = r.inputs('next', totalCols);
+    final per = r.inputs('per', numPointCols), lin = r.inputs('lin', numLinear);
+    publicsOverride = wide ? null : r.inputs('pub', numPublicLanes);
+    try {
+      return r.program(constraintsG(r, cur, next, per, lin));
+    } finally {
+      publicsOverride = null;
+    }
+  }
+
+  /// The aux constraints as a [Program] over cur, next, per, lin and
+  /// chal{k} (three QM31 challenges).
+  Program auxProgram() {
+    final r = ExprRing();
+    final cur = r.inputs('cur', totalCols), next = r.inputs('next', totalCols);
+    final per = r.inputs('per', numPointCols), lin = r.inputs('lin', numLinear);
+    final chal = r.inputs('chal', numChallenges);
+    return r.program(auxConstraintsG(r, cur, next, per, lin, chal));
+  }
+
+  static Map<String, List<String>> _inputMap(
+      List<List<String>> cur, List<List<String>> next, List<List<String>> per, List<List<String>> lin) {
+    final m = <String, List<String>>{};
+    for (int j = 0; j < cur.length; j++) {
+      m['cur$j'] = cur[j];
+      m['next$j'] = next[j];
+    }
+    for (int k = 0; k < per.length; k++) {
+      m['per$k'] = per[k];
+    }
+    for (int k = 0; k < lin.length; k++) {
+      m['lin$k'] = lin[k];
+    }
+    return m;
+  }
+
+  /// Script side of the main constraints: the compiled [mainProgram], which
+  /// consumes cur, next, per and lin and picks the publics `pub0..7`.
   @override
   void emitConstraints(StackEmitter e, List<List<String>> cur, List<List<String>> next, List<List<String>> per,
       List<List<String>> lin, List<List<String>> out) {
-    throw UnimplementedError('VerifierAir script emitter (recursion step 5)');
+    final prog = mainProgram();
+    final m = _inputMap(cur, next, per, lin);
+    if (!wide) {
+      for (int j = 0; j < numPublicLanes; j++) {
+        m['pub$j'] = [Air.publicName(j)];
+      }
+    }
+    ProgramScriptGen.emit(e, prog, m, out, consume: {...m.keys.where((k) => !k.startsWith('pub'))});
+  }
+
+  /// Script side of the aux constraints: the compiled [auxProgram], which
+  /// picks cur, next, per and lin and consumes the challenges.
+  @override
+  void emitAuxConstraints(StackEmitter e, List<List<String>> cur, List<List<String>> next, List<List<String>> per,
+      List<List<String>> lin, List<List<String>> chal, List<List<String>> out) {
+    final prog = auxProgram();
+    final m = _inputMap(cur, next, per, lin);
+    for (int k = 0; k < numChallenges; k++) {
+      m['chal$k'] = chal[k];
+    }
+    ProgramScriptGen.emit(e, prog, m, out, consume: {for (int k = 0; k < numChallenges; k++) 'chal$k'});
   }
 }
 
@@ -351,7 +592,7 @@ class VerifierProgramColumns {
     // bus: producer P1 (kinds), P2 (B as K4), consumers A (kinds) and B
     'p1vm', 'p1a4', 'p1ab8', 'p1a1', 'p1swap', 'mult1', 'p2en', 'mult2', 'ak4', 'ak8', 'ak1', 'tagA', 'ben', 'tagB',
     // hash side
-    'chain', 'zeroLo', 'z8', 'zTail', 'inHiAB', 'inLoAB', 'digAB', 'assertZero', 'pinPub',
+    'chain', 'zeroLo', 'z8', 'zTail', 'inHiAB', 'inLoAB', 'inHiNext', 'digAB', 'assertZero', 'pinPub',
     // VM
     'opAdd', 'opSub', 'opMul', 'opMulImm', 'opConst', 'opLimb', 'imm0', 'imm1', 'imm2', 'imm3',
   ];
@@ -362,7 +603,7 @@ class VerifierProgramColumns {
   static final int mult1 = _i('mult1'), p2en = _i('p2en'), mult2 = _i('mult2');
   static final int ak4 = _i('ak4'), ak8 = _i('ak8'), ak1 = _i('ak1'), tagA = _i('tagA'), ben = _i('ben'), tagB = _i('tagB');
   static final int chain = _i('chain'), zeroLo = _i('zeroLo'), z8 = _i('z8'), zTail = _i('zTail');
-  static final int inHiAB = _i('inHiAB'), inLoAB = _i('inLoAB'), digAB = _i('digAB');
+  static final int inHiAB = _i('inHiAB'), inLoAB = _i('inLoAB'), inHiNext = _i('inHiNext'), digAB = _i('digAB');
   static final int assertZero = _i('assertZero'), pinPub = _i('pinPub');
   static final int opAdd = _i('opAdd'), opSub = _i('opSub'), opMul = _i('opMul'), opMulImm = _i('opMulImm');
   static final int opConst = _i('opConst'), opLimb = _i('opLimb'), imm0 = _i('imm0');

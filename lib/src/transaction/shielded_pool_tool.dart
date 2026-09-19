@@ -14,6 +14,7 @@
    limitations under the License.
 */
 
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
@@ -27,6 +28,7 @@ import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/slot_script_common.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
+import '../recursion/pool_aggregator.dart';
 
 /// A transfer submitted to a round: a spend proof with its publics and the
 /// serialised extra outputs (unshield payees, deposit change) it committed to.
@@ -124,10 +126,10 @@ class ShieldedPoolTool {
     if (issued.phase != 0) throw ArgumentError('not an issued pool');
     final live = issued.live();
     final funding = fundingTx.outputs[0].satoshis.toInt();
-    final change = funding + 1 - vault - (k + 1) - fee;
+    final change = funding + 1 - vault - gen.numSlots - fee;
     if (change < 0) throw ArgumentError('funding output 0 does not cover the vault, the slots and the fee');
     final extras = SlotScript.output(P2PKHLockBuilder.fromAddress(changeAddress).getScriptPubkey().buffer, value: change);
-    final outs = gen.roundOutputs(live, vault, [for (int i = 0; i <= k; i++) VerifierSlotGen.emptyResultOutput()], [extras]);
+    final outs = gen.roundOutputs(live, vault, [for (int i = 0; i < gen.numResults; i++) VerifierSlotGen.emptyResultOutput()], [extras]);
     final unlock = PP1SpUnlockBuilder.create(gen,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         vault: vault, extras: extras);
@@ -147,7 +149,74 @@ class ShieldedPoolTool {
 
   /// The outputs of [ledger]'s transaction a round spends, in input order.
   List<TransactionOutput> spentByRound(PoolLedger ledger) =>
-      [ledger.tx.outputs[stateVout], for (int v = gen.slotVout0; v <= gen.appendVout; v++) ledger.tx.outputs[v]];
+      [ledger.tx.outputs[stateVout], for (final v in gen.slotVouts) ledger.tx.outputs[v]];
+
+  /// An aggregated round (the generator's aggregated mode): exactly
+  /// [agg].transfers transfers, all present, folded by [agg] into one root
+  /// proof for the single verifier slot; the round transaction is input 0
+  /// the state, input 1 the slot, then the deposit [funding] inputs.
+  Transaction createAggregatedRoundTxn(PoolLedger ledger, List<PoolTransfer> transfers, PoolAggregation agg,
+      {List<FundingInput> funding = const [], Random? rng, bool verbose = false}) {
+    if (!gen.aggregated) throw StateError('the generator is not in aggregated mode');
+    if (transfers.length != gen.n || agg.transfers != gen.n) throw ArgumentError('a round has ${gen.n} transfers');
+    final parent = ledger.tx;
+    final h = ledger.header;
+    for (int i = 0; i < transfers.length; i++) {
+      final want = PoolPublicInputs.outHashLanes(transfers[i].extraOutputs);
+      for (int j = 0; j < 8; j++) {
+        if (transfers[i].publics.outHash[j] != want[j]) throw ArgumentError('transfer $i: its publics do not commit to its extra outputs');
+      }
+    }
+    final full = <PP1SpTransfer>[
+      for (final t in transfers)
+        PP1SpTransfer(t.publics, t.extraOutputs, t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null,
+            t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null)
+    ];
+    // the tree: whole subtrees of the transfers' commitments, in order
+    final rootBefore = ledger.anchor;
+    final j = ledger.tree.nextSubtree;
+    final spendLanes = [for (final t in transfers) t.publics.toLanes()];
+    final paths = <List<List<int>>>[];
+    for (int s = 0; s < agg.tree.subtrees; s++) {
+      paths.add(ledger.tree.subtreePath(j + s));
+      ledger.tree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendLanes, s)) l ?? MerkleFrontier.emptyLeaf]);
+    }
+    final rootAfter = ledger.tree.root;
+    if (agg.tree.leavesAppended != gen.leavesAppended) throw StateError('the aggregation and the generator disagree on the leaves per round');
+    var vault = ledger.vault;
+    for (final t in transfers) {
+      vault -= t.publics.publicOut;
+    }
+    if (vault < 0) throw ArgumentError('the round would overdraw the vault');
+    final next = h.afterRound(rootAfter, ledger.nullifiers.root, leaves: gen.leavesAppended);
+    final extras = [for (final t in transfers) if (t.extraOutputs.isNotEmpty) t.extraOutputs];
+
+    final (rootProof, wide) = agg.aggregate([for (final t in transfers) t.publics], [for (final t in transfers) t.proof],
+        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, rng: rng, verbose: verbose);
+    final outs = gen.roundOutputs(next, vault, [VerifierSlotGen.resultOutput(wide)], extras);
+    final stateUnlock = PP1SpUnlockBuilder.roundAggregated(gen,
+        extraPrevouts: const [], transfers: full, roundLanes: wide.sublist(agg.tree.roundOffset));
+    final slotUnlock = VerifierSlotUnlockBuilder.proofLanes(gen.verifierSlot, rootProof, wide);
+    final t = _assemble([
+      _input(parent, stateVout, stateUnlock),
+      _input(parent, gen.slotVout0, slotUnlock),
+      for (final f in funding) _input(f.tx, f.vout, P2PKHUnlockBuilder(f.pubKey)),
+    ], outs);
+    for (int i = 0; i < funding.length; i++) {
+      funding[i].signer.sign(t, funding[i].tx.outputs[funding[i].vout], 2 + i);
+    }
+    stateUnlock
+      ..extraPrevouts = prevoutsAfter(t, 2)
+      ..preimage = _preimage(t, 0, parent.outputs[stateVout].script, ledger.vault, sigHashAll);
+    slotUnlock
+      ..prevoutsTail = prevoutsAfter(t, 1)
+      ..preimage = _preimage(t, 1, parent.outputs[gen.slotVout0].script, 1, SlotScript.sighashSingle);
+    ledger
+      ..header = next
+      ..vault = vault
+      ..tx = t;
+    return t;
+  }
   Transaction createRoundTxn(PoolLedger ledger, List<PoolTransfer?> transfers, {List<FundingInput> funding = const []}) {
     if (transfers.length != k) throw ArgumentError('a round has $k transfer slots');
     final parent = ledger.tx;

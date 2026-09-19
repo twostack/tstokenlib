@@ -80,12 +80,12 @@ class PP1SpHeader {
 
   /// After a round: the new root enters the ring, a subtree of leaves is
   /// appended, the nullifier set advances.
-  PP1SpHeader afterRound(List<int> rootAfterLanes, List<int> nfRootAfter) => PP1SpHeader(
+  PP1SpHeader afterRound(List<int> rootAfterLanes, List<int> nfRootAfter, {int leaves = NoteCommitmentTree.subtreeLeaves}) => PP1SpHeader(
         tokenId: tokenId,
         rabinPubKeyHash: rabinPubKeyHash,
         phase: 1,
         ring: [SlotScript.lanesBytes(rootAfterLanes), ...ring.sublist(0, ringSize - 1)],
-        size: size + NoteCommitmentTree.subtreeLeaves,
+        size: size + leaves,
         nfRoot: nfRootAfter,
       );
 
@@ -167,12 +167,39 @@ class PP1SpScriptGen {
   late final Uint8List verifierBytes, appendBytes, verifierHash, appendHash;
   SVScript? _body;
 
-  PP1SpScriptGen(this.P, {this.k = 2}) : verifierSlot = VerifierSlotGen(P) {
+  /// Aggregated mode: [n] transfers per round, all verified by ONE slot
+  /// (the aggregation's root verifier) whose publics are every transfer's
+  /// lanes (padded to [laneChunk]) then the [roundLanes]; the root proof
+  /// also proves the tree update, so there is no append slot and the size
+  /// grows by [leavesAppended]. 0 = slot mode (K slots + append slot).
+  final int n;
+  final int leavesAppended;
+  bool get aggregated => n > 0;
+  static const laneChunk = 8 * ((PoolPublicInputs.count + 7) ~/ 8);
+  static const roundLanes = 24;
+  int get lanesPerTransfer => aggregated ? laneChunk : PoolPublicInputs.count;
+  static String rc(int j) => 'rc$j';
+
+  PP1SpScriptGen(this.P, {this.k = 2})
+      : verifierSlot = VerifierSlotGen(P),
+        n = 0,
+        leavesAppended = 0 {
     if (2 * k > NoteCommitmentTree.subtreeLeaves) throw ArgumentError('at most ${NoteCommitmentTree.subtreeLeaves ~/ 2} transfers');
     verifierBytes = Uint8List.fromList(verifierSlot.lock().buffer);
     appendBytes = Uint8List.fromList(appendSlot.lock().buffer);
     verifierHash = Uint8List.fromList(crypto.sha256.convert(verifierBytes).bytes);
     appendHash = Uint8List.fromList(crypto.sha256.convert(appendBytes).bytes);
+  }
+
+  PP1SpScriptGen.aggregated(this.P, {required this.verifierSlot, required int transfers, required this.leavesAppended})
+      : k = 0,
+        n = transfers {
+    if (n <= 0 || leavesAppended % NoteCommitmentTree.subtreeLeaves != 0 || leavesAppended < 2 * n) throw ArgumentError('transfers / leaves');
+    if (verifierSlot.numPublics != n * laneChunk + roundLanes) throw ArgumentError('the slot must take the wide statement');
+    verifierBytes = Uint8List.fromList(verifierSlot.lock().buffer);
+    appendBytes = Uint8List(0);
+    verifierHash = Uint8List.fromList(crypto.sha256.convert(verifierBytes).bytes);
+    appendHash = Uint8List(0);
   }
 
   // ---- names ----
@@ -190,7 +217,19 @@ class PP1SpScriptGen {
         for (int j = depth - 1; j >= 0; j--) ...[lowSib(i, j), lowBit(i, j)],
       ];
 
-  List<String> spendLayout() => [
+  List<String> spendLayout() => aggregated
+      ? [
+          'preimage', 'vBytes', 'extraPrevouts',
+          for (int t = n - 1; t >= 0; t--) ...[
+            'x$t',
+            for (int j = 0; j < laneChunk; j++) pub(t, j),
+            ...nullifierNames(2 * t),
+            ...nullifierNames(2 * t + 1),
+          ],
+          for (int j = 0; j < roundLanes; j++) rc(j),
+          ...headerNames,
+        ]
+      : [
         'preimage', 'vBytes', 'aBytes', 'extraPrevouts',
         for (int j = 0; j < 8; j++) 'ra$j',
         for (int t = k - 1; t >= 0; t--) ...[
@@ -202,9 +241,9 @@ class PP1SpScriptGen {
         ...headerNames,
       ];
 
-  static const createLayout = [
-    'preimage', 'vBytes', 'aBytes', 'rabinN', 'rabinS', 'rabinPad', 'idTxId', 'ed25519', 'vout', 'extras', ...headerNames
-  ];
+  List<String> get createLayout => [
+        'preimage', 'vBytes', if (!aggregated) 'aBytes', 'rabinN', 'rabinS', 'rabinPad', 'idTxId', 'ed25519', 'vout', 'extras', ...headerNames
+      ];
 
   // ---- script ----
   SVScript lock(PP1SpHeader h) => SVScript.fromByteArray([...h.bytes(), ...body().buffer]);
@@ -376,9 +415,9 @@ class PP1SpScriptGen {
     e.rename('leafD', root);
   }
 
-  static const accumulators = ['vout', 'nfRoot', 'cmsB', 'outs', 'extras'];
+  List<String> get accumulators => aggregated ? const ['vout', 'nfRoot', 'pb', 'extras'] : const ['vout', 'nfRoot', 'cmsB', 'outs', 'extras'];
 
-  static void _rollAccumulators(StackEmitter e) {
+  void _rollAccumulators(StackEmitter e) {
     for (final a in accumulators) {
       e.roll(a);
     }
@@ -428,26 +467,72 @@ class PP1SpScriptGen {
       e.pick(p(PoolPublicInputs.idxOutHash + j));
       e.numEqualVerify();
     }
-    // the two commitments into the subtree
-    e.roll('cmsB');
-    SlotScript.lanesToBytes(e, [for (int j = 0; j < 16; j++) p(PoolPublicInputs.idxCm1 + j)], as: 'cmB');
-    _cat(e, as: 'cmsB');
-    // the result output: OP_RETURN SHA256(publics)
-    e.roll('outs');
-    SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'pb');
-    _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
-    e.pushData([...List.filled(8, 0), 34, OpCodes.OP_RETURN, 32]);
-    e.swap();
-    _cat(e);
-    _cat(e, as: 'outs');
+    if (aggregated) {
+      // the transfer's lanes into the statement bytes (the one result output)
+      e.roll('pb');
+      SlotScript.lanesToBytes(e, [for (int j = 0; j < laneChunk; j++) p(j)], as: 'tb');
+      _cat(e, as: 'pb');
+    } else {
+      // the two commitments into the subtree
+      e.roll('cmsB');
+      SlotScript.lanesToBytes(e, [for (int j = 0; j < 16; j++) p(PoolPublicInputs.idxCm1 + j)], as: 'cmB');
+      _cat(e, as: 'cmsB');
+      // the result output: OP_RETURN SHA256(publics)
+      e.roll('outs');
+      SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'pb');
+      _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
+      e.pushData([...List.filled(8, 0), 34, OpCodes.OP_RETURN, 32]);
+      e.swap();
+      _cat(e);
+      _cat(e, as: 'outs');
+    }
     // the extra outputs
     e.roll('extras');
     e.roll('x$t');
     _cat(e, as: 'extras');
-    for (int j = 0; j < PoolPublicInputs.count; j++) {
+    for (int j = 0; j < lanesPerTransfer; j++) {
       e.dropNamed(p(j));
     }
     _rollAccumulators(e);
+  }
+
+  /// The round lanes of an aggregated round: rootBefore must be ring[0],
+  /// rootAfter becomes `raB`, the index is size / 32, the rest zero; then
+  /// the one result output `OP_RETURN SHA256(all lanes)`.
+  void _roundChunk(StackEmitter e) {
+    _canonical(e, rc, 0, roundLanes);
+    SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) rc(j)], as: 'rbB');
+    e.roll('rbB');
+    e.pick('h_ring0');
+    _equalVerify(e);
+    SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) rc(8 + j)], as: 'raB');
+    e.pick('h_size');
+    _op(e, OpCodes.OP_BIN2NUM, pops: 1, pushes: 1, as: 'sz');
+    e.pick('sz');
+    e.pushConst(NoteCommitmentTree.subtreeLeaves);
+    _op(e, OpCodes.OP_MOD);
+    e.pushConst(0);
+    e.numEqualVerify();
+    e.pick('sz');
+    e.pushConst(NoteCommitmentTree.subtreeLeaves);
+    _op(e, OpCodes.OP_DIV);
+    e.pick(rc(16));
+    e.numEqualVerify();
+    for (int j = 17; j < roundLanes; j++) {
+      e.pick(rc(j));
+      e.pushConst(0);
+      e.numEqualVerify();
+    }
+    e.roll('pb');
+    SlotScript.lanesToBytes(e, [for (int j = 0; j < roundLanes; j++) rc(j)], as: 'rcB');
+    _cat(e);
+    _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
+    e.pushData([...List.filled(8, 0), 34, OpCodes.OP_RETURN, 32]);
+    e.swap();
+    _cat(e, as: 'outs');
+    for (int j = 0; j < roundLanes; j++) {
+      e.dropNamed(rc(j));
+    }
   }
 
   static void _insertIfReal(StackEmitter e, int i, String Function(int) p, int laneIdx, int realIdx, String root) {
@@ -493,6 +578,16 @@ class PP1SpScriptGen {
     // accumulators
     e.pushConst(0, as: 'vout'); // minus the total balance leaving the vault
     e.pick('h_nf', as: 'nfRoot');
+    if (aggregated) {
+      e.pushData(const [], as: 'pb');
+      e.pushData(const [], as: 'extras');
+      for (int t = 0; t < n; t++) {
+        _transfer(e, t);
+      }
+      _roundChunk(e);
+      _emitNewHeaderAndTail(e, bodyLen: bodyLen);
+      return;
+    }
     e.pushData(const [], as: 'cmsB');
     e.pushData(const [], as: 'outs');
     e.pushData(const [], as: 'extras');
@@ -535,6 +630,12 @@ class PP1SpScriptGen {
     e.swap();
     _cat(e);
     _cat(e, as: 'outs');
+    _emitNewHeaderAndTail(e, bodyLen: bodyLen);
+  }
+
+  /// From `raB`, `sz`, `outs`, `vout`, `extras` and the header: the new
+  /// header, the preimage checks, the vault, hashPrevouts and hashOutputs.
+  void _emitNewHeaderAndTail(StackEmitter e, {required int bodyLen}) {
     // the new header
     e.pushData(const [32]);
     e.pick('h_tokenId');
@@ -558,7 +659,7 @@ class PP1SpScriptGen {
     e.pushConst(4); // OP_4 pushes the byte 0x04
     _cat(e);
     e.roll('sz');
-    e.pushConst(NoteCommitmentTree.subtreeLeaves);
+    e.pushConst(aggregated ? leavesAppended : NoteCommitmentTree.subtreeLeaves);
     _op(e, OpCodes.OP_ADD);
     e.pushConst(4);
     _op(e, OpCodes.OP_NUM2BIN);
@@ -583,7 +684,7 @@ class PP1SpScriptGen {
     e.pick('txid');
     e.pushData(const [0, 0, 0, 0]);
     _cat(e);
-    for (int v = k + 2; v <= 2 * k + 2; v++) {
+    for (int v = slotVout0; v <= (aggregated ? slotVout0 : appendVout); v++) {
       e.pick('txid');
       _cat(e);
       e.pushData([v, 0, 0, 0]);
@@ -599,7 +700,11 @@ class PP1SpScriptGen {
     _stateOutput(e, 'vault', 'newHdr');
     e.roll('outs');
     _cat(e);
-    _slotOutputs(e);
+    if (aggregated) {
+      _slotOutputsAgg(e);
+    } else {
+      _slotOutputs(e);
+    }
     e.roll('extras');
     _cat(e);
     _op(e, OpCodes.OP_HASH256, pops: 1, pushes: 1);
@@ -666,6 +771,20 @@ class PP1SpScriptGen {
     _cat(e);
     e.roll('_scr');
     _cat(e);
+  }
+
+  /// Appends the one verifier slot output (aggregated mode).
+  void _slotOutputsAgg(StackEmitter e) {
+    e.nameTop('acc');
+    e.pick('vBytes');
+    _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
+    e.pushData(verifierHash);
+    _equalVerify(e);
+    e.roll('vBytes');
+    _outputOf(e, slotSats, as: 'vOut');
+    e.roll('acc');
+    e.roll('vOut');
+    _cat(e, as: 'acc');
   }
 
   /// Appends K verifier slot outputs and the append slot output to the bytes
@@ -783,9 +902,13 @@ class PP1SpScriptGen {
     // outputs: the live state with the chosen vault, k+1 empty results (so
     // the slots sit at the same vouts as after a round), the slots, extras
     _stateOutput(e, 'vout', 'newHdr');
-    e.pushData([for (int i = 0; i <= k; i++) ...[...List.filled(8, 0), 1, OpCodes.OP_RETURN]]);
+    e.pushData([for (int i = 0; i < numResults; i++) ...[...List.filled(8, 0), 1, OpCodes.OP_RETURN]]);
     _cat(e);
-    _slotOutputs(e);
+    if (aggregated) {
+      _slotOutputsAgg(e);
+    } else {
+      _slotOutputs(e);
+    }
     e.roll('extras');
     _cat(e);
     _op(e, OpCodes.OP_HASH256, pops: 1, pushes: 1);
@@ -831,7 +954,31 @@ class PP1SpScriptGen {
     required List<int> extraPrevouts,
     required List<int> rootAfter,
     required List<PP1SpTransfer?> transfers,
+    List<int>? roundLanes,
   }) {
+    if (aggregated) {
+      if (transfers.length != n || transfers.any((t) => t == null)) throw ArgumentError('$n transfers, all present');
+      if (roundLanes == null || roundLanes.length != PP1SpScriptGen.roundLanes) throw ArgumentError('${PP1SpScriptGen.roundLanes} round lanes');
+      final b = ScriptBuilder();
+      b.addData(preimage);
+      b.addData(verifierBytes);
+      b.addData(Uint8List.fromList(extraPrevouts));
+      for (int t = n - 1; t >= 0; t--) {
+        final tr = transfers[t]!;
+        b.addData(tr.extraOutputs);
+        final lanes = tr.publics.toLanes();
+        for (final v in [...lanes, ...List.filled(laneChunk - lanes.length, 0)]) {
+          _pushNum(b, v);
+        }
+        _pushInsertion(b, tr.nf1 ?? dummyInsertion());
+        _pushInsertion(b, tr.nf2 ?? dummyInsertion());
+      }
+      for (final v in roundLanes) {
+        _pushNum(b, v);
+      }
+      b.opCode(OpCodes.OP_1);
+      return b.build();
+    }
     if (transfers.length != k) throw ArgumentError('$k transfer slots');
     final b = ScriptBuilder();
     b.addData(preimage);
@@ -869,7 +1016,7 @@ class PP1SpScriptGen {
     final b = ScriptBuilder();
     b.addData(preimage);
     b.addData(verifierBytes);
-    b.addData(appendBytes);
+    if (!aggregated) b.addData(appendBytes);
     b.addData(Uint8List.fromList(rabinN));
     b.addData(Uint8List.fromList(rabinS));
     _pushNum(b, rabinPadding);
@@ -886,13 +1033,18 @@ class PP1SpScriptGen {
   /// The full output list of a round (or a create) transaction, serialised:
   /// state, results, slots, extras. [results] are the K + 1 result outputs
   /// (all empty for the create).
-  int get slotVout0 => k + 2;
-  int get appendVout => 2 * k + 2;
+  int get numResults => aggregated ? 1 : k + 1;
+  int get numSlots => aggregated ? 1 : k + 1;
+  int get slotVout0 => numResults + 1;
+  int get appendVout => aggregated ? -1 : 2 * k + 2;
+
+  /// The vouts a round spends after the state: the slots (and append slot).
+  List<int> get slotVouts => [for (int v = slotVout0; v < slotVout0 + numSlots; v++) v];
   List<Uint8List> roundOutputs(PP1SpHeader next, int vault, List<Uint8List> results, List<Uint8List> extras) => [
         _output(vault, lock(next).buffer),
         ...results,
-        for (int i = 0; i < k; i++) _output(slotSats, verifierBytes),
-        _output(slotSats, appendBytes),
+        for (int i = 0; i < (aggregated ? 1 : k); i++) _output(slotSats, verifierBytes),
+        if (!aggregated) _output(slotSats, appendBytes),
         ...extras,
       ];
 

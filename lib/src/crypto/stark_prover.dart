@@ -157,6 +157,10 @@ class StarkProver {
     // periodic columns on D_{logC}: F_k on D_{logPeriod+logExpand}, index mod its size
     final logPC = air.logPeriod + P.logExpand;
     final perOnC = [for (final c in air.periodicCoefs) CircleFft.evaluate(c, logPC - 1)];
+    // public columns on D_logC: extended like trace columns
+    final pubOnC = air.numPubCols == 0
+        ? <Uint32List>[]
+        : kernels.evaluateColumns(PreCommitment.twinCoefs(air.pubColumns(), t, kernels), logC - 1);
     // v_t(x) on the composition domain, batch-inverted
     final vInv = CircleFft.batchInv(Uint32List.fromList([for (int i = 0; i < mC; i++) air.vanishingM31(domC.x[i])]));
     // linear forms on the composition domain; the ones used as group divisors
@@ -189,7 +193,8 @@ class StarkProver {
       }
     }
     final compLimbs = List.generate(4, (_) => Uint32List(nC));
-    final cur = Uint32List(nAll), nxt = Uint32List(nAll), per = Uint32List(air.numPeriodic);
+    final cur = Uint32List(nAll), nxt = Uint32List(nAll), per = Uint32List(air.numPointCols);
+    final nPer = air.numPeriodic;
     final lin = Uint32List(forms.length);
     final nBase = air.numConstraints;
     final cons = Uint32List(nBase);
@@ -202,8 +207,11 @@ class StarkProver {
         cur[j] = traceOnC[j][q];
         nxt[j] = traceOnC[j][qn];
       }
-      for (int k = 0; k < per.length; k++) {
+      for (int k = 0; k < nPer; k++) {
         per[k] = perOnC[k][qp];
+      }
+      for (int j = 0; j < pubOnC.length; j++) {
+        per[nPer + j] = pubOnC[j][q];
       }
       for (int k = 0; k < lin.length; k++) {
         lin[k] = linOnC[k][q];
@@ -247,7 +255,7 @@ class StarkProver {
     final traceAtZg = [for (final c in allCoefs) CircleFft.evalAt(c, zgx, zgy)];
     final compAtZ = [for (final c in compCoefs) CircleFft.evalAt(c, zx, zy)];
     final rhs = air.compositionAt(
-        traceAtZ, traceAtZg, air.periodicAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
+        traceAtZ, traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
     if (composeColumns(compAtZ) != rhs) throw StateError('composition relation fails at z');
     ts.absorbLimbs([for (final v in [...traceAtZ, ...traceAtZg, ...compAtZ]) ...v.limbs]);
     final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();
@@ -404,22 +412,27 @@ class PreCommitment {
   static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) =>
       _cache.putIfAbsent(_key(air, P, hash), () {
         final k = kernels ?? ProverKernels.best;
-        final t = P.logTrace, n = 1 << t;
         final cols = air.preColumns();
         if (cols.length != air.numPreCols) throw StateError('preColumns returned ${cols.length} columns');
-        final twin = <Uint32List>[];
-        for (final col in cols) {
-          if (col.length != n) throw StateError('preprocessed column has ${col.length} rows');
-          final vals = Uint32List(n);
-          for (int r = 0; r < n; r++) {
-            vals[CircleFft.twinIndex(t, r)] = col[r];
-          }
-          twin.add(vals);
-        }
-        final coefs = k.interpolateColumns(twin, t - 1);
+        final coefs = twinCoefs(cols, P.logTrace, k);
         final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
         return PreCommitment(coefs, ev, tree);
       });
+
+  /// Coefficients of columns given in cyclic row order on the trace domain.
+  static List<Uint32List> twinCoefs(List<Uint32List> cols, int t, ProverKernels k) {
+    final n = 1 << t;
+    final twin = <Uint32List>[];
+    for (final col in cols) {
+      if (col.length != n) throw StateError('column has ${col.length} rows, trace $n');
+      final vals = Uint32List(n);
+      for (int r = 0; r < n; r++) {
+        vals[CircleFft.twinIndex(t, r)] = col[r];
+      }
+      twin.add(vals);
+    }
+    return k.interpolateColumns(twin, t - 1);
+  }
 
   /// The root the verifier expects for [air].
   static List<int> root(Air air, StarkParams P, ProofHash hash) => of(air, P, hash).tree.root;

@@ -17,6 +17,7 @@
 import 'package:dartsv/dartsv.dart';
 import '../builder/pp1_sp_lock_builder.dart';
 import '../crypto/nullifier_set.dart';
+import '../crypto/note_commitment_tree.dart';
 import '../script_gen/pool_spend_air.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
@@ -74,6 +75,7 @@ class PoolChainReader {
   /// Apply the next round: [roundTx] must spend the ledger's state and
   /// slots. Advances [ledger] and returns what the round did.
   PoolRound apply(Transaction roundTx) {
+    if (gen.aggregated) return _applyAggregated(roundTx);
     final parent = ledger.tx;
     _expectSpends(roundTx, 0, parent, ShieldedPoolTool.stateVout);
     for (int i = 0; i < k; i++) {
@@ -131,17 +133,92 @@ class PoolChainReader {
     return round;
   }
 
+  /// An aggregated round: input 1 is the one slot, unlocked with every
+  /// transfer's lanes and the round lanes; the root proof also proved the
+  /// tree update, so the model's new root must be the one in the lanes.
+  PoolRound _applyAggregated(Transaction roundTx) {
+    final parent = ledger.tx;
+    final n = gen.n;
+    _expectSpends(roundTx, 0, parent, ShieldedPoolTool.stateVout);
+    _expectSpends(roundTx, 1, parent, gen.slotVout0);
+    if (roundTx.outputs.length < gen.slotVout0 + 1) throw FormatException('round has too few outputs');
+    final lanes = readSlotLanes(roundTx.inputs[1].script!, n * PP1SpScriptGen.laneChunk + PP1SpScriptGen.roundLanes);
+    if (lanes == null) throw FormatException('an aggregated round cannot skip its slot');
+    final expected = VerifierSlotGen.resultOutput(lanes);
+    final result = roundTx.outputs[1];
+    if (!_bytesEqual(ShieldedPoolTool.outputFromBytes(expected).script.buffer, result.script.buffer) || result.satoshis != BigInt.zero) {
+      throw FormatException('the result output does not match the slot\'s unlocking script');
+    }
+    final transfers = <PoolPublicInputs?>[];
+    for (int t = 0; t < n; t++) {
+      final off = t * PP1SpScriptGen.laneChunk;
+      if (lanes.sublist(off + PoolPublicInputs.count, off + PP1SpScriptGen.laneChunk).any((v) => v != 0)) {
+        throw FormatException('transfer $t: padding lanes are not zero');
+      }
+      transfers.add(PoolPublicInputs.fromLanes(lanes.sublist(off, off + PoolPublicInputs.count)));
+    }
+    final round = lanes.sublist(n * PP1SpScriptGen.laneChunk);
+    final rootBefore = ledger.anchor;
+    if (!_sameInts(round.sublist(0, 8), rootBefore)) throw StateError('the round\'s rootBefore is not the pool\'s root');
+    final j = ledger.tree.nextSubtree;
+    if (round[16] != j) throw StateError('the round\'s subtree index disagrees with the rebuilt tree');
+    var vault = ledger.vault;
+    final cms = <List<int>>[];
+    for (final t in transfers) {
+      if (t!.real1) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf1));
+      if (t.real2) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf2));
+      vault -= t.publicOut;
+      cms.addAll([t.cmOut1, t.cmOut2]);
+    }
+    for (int s = 0; s < gen.leavesAppended ~/ NoteCommitmentTree.subtreeLeaves; s++) {
+      ledger.tree.appendSubtree([
+        for (int i = 0; i < NoteCommitmentTree.subtreeLeaves; i++)
+          s * NoteCommitmentTree.subtreeLeaves + i < cms.length ? cms[s * NoteCommitmentTree.subtreeLeaves + i] : MerkleFrontier.emptyLeaf
+      ]);
+    }
+    final rootAfter = ledger.tree.root;
+    if (!_sameInts(round.sublist(8, 16), rootAfter)) throw StateError('the round\'s rootAfter disagrees with the rebuilt tree');
+    final next = ledger.header.afterRound(rootAfter, ledger.nullifiers.root, leaves: gen.leavesAppended);
+    final state = roundTx.outputs[ShieldedPoolTool.stateVout];
+    if (!_bytesEqual(PP1SpLockBuilder.fromScript(state.script).header.bytes(), next.bytes())) {
+      throw StateError('the new state header disagrees with the rebuilt ledger');
+    }
+    if (state.satoshis.toInt() != vault) throw StateError('the new vault disagrees with the publics');
+    _checkSlots(gen, roundTx);
+    ledger
+      ..header = next
+      ..vault = vault
+      ..tx = roundTx;
+    final r = PoolRound(roundTx, transfers, j, cms);
+    rounds.add(r);
+    return r;
+  }
+
+  static bool _sameInts(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   /// The publics a verifier slot was unlocked with, or null for a skip.
   /// A proof unlock is `<50 publics> <proof...> <preimage> <prevoutsTail> OP_1`;
   /// a skip is `<preimage> <prevoutsTail> OP_0`.
   static PoolPublicInputs? readSlot(SVScript unlock) {
+    final lanes = readSlotLanes(unlock, PoolPublicInputs.count);
+    return lanes == null ? null : PoolPublicInputs.fromLanes(lanes);
+  }
+
+  /// The first [count] lanes a verifier slot was unlocked with, or null.
+  static List<int>? readSlotLanes(SVScript unlock, int count) {
     final chunks = unlock.chunks;
     if (chunks.isEmpty) throw FormatException('empty slot unlock');
     final selector = chunks.last.opcodenum;
     if (selector == OpCodes.OP_0) return null;
     if (selector != OpCodes.OP_1) throw FormatException('slot selector is neither OP_0 nor OP_1');
-    if (chunks.length < PoolPublicInputs.count + 3) throw FormatException('proof unlock too short');
-    return PoolPublicInputs.fromLanes([for (int i = 0; i < PoolPublicInputs.count; i++) scriptNum(chunks[i])]);
+    if (chunks.length < count + 3) throw FormatException('proof unlock too short');
+    return [for (int i = 0; i < count; i++) scriptNum(chunks[i])];
   }
 
   /// A pushed script number as an int: OP_0, OP_1..OP_16, OP_1NEGATE or a
@@ -172,6 +249,10 @@ class PoolChainReader {
 
   /// The fresh slots a pool transaction mints must be the generator's.
   static void _checkSlots(PP1SpScriptGen gen, Transaction tx) {
+    if (gen.aggregated) {
+      if (!_bytesEqual(tx.outputs[gen.slotVout0].script.buffer, gen.verifierBytes)) throw FormatException('output ${gen.slotVout0} is not the verifier slot');
+      return;
+    }
     for (int i = 0; i < gen.k; i++) {
       final s = tx.outputs[gen.slotVout0 + i].script.buffer;
       if (!_bytesEqual(s, gen.verifierBytes)) throw FormatException('output ${gen.slotVout0 + i} is not a verifier slot');

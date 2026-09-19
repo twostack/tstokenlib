@@ -349,7 +349,7 @@ class StarkProverRef {
       final pg = p * gT;
       final next = [for (final q in allPolys) q.evalP(pg)];
       final px = embed(p.x), py = embed(p.y);
-      return air.compositionAt(cur, next, air.periodicAt(px, py), air.linearAt(px, py), beta, px, chal: chal);
+      return air.compositionAt(cur, next, air.pointColumnsAt(px, py), air.linearAt(px, py), beta, px, chal: chal);
     }
     final compVals = [for (final p in dC) compAt(p)];
     final compPolys = CirclePolyRef.interpolateMulti(dC, [
@@ -373,7 +373,7 @@ class StarkProverRef {
     final compAtZ = [for (final q in compPolys) q.eval(zx, zy)];
     // pipeline sanity: composition relation holds at z
     final rhs = air.compositionAt(
-        traceAtZ, traceAtZg, air.periodicAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
+        traceAtZ, traceAtZg, air.pointColumnsAt(zx, zy), air.linearAt(zx, zy), beta, zx, chal: chal);
     if (composeColumns(compAtZ) != rhs) throw StateError('composition relation fails at z');
     ts.absorbLimbs([for (final v in [...traceAtZ, ...traceAtZg, ...compAtZ]) ...v.limbs]);
     final lamA = ts.squeezeQM31(), lamB = ts.squeezeQM31(), lamC = ts.squeezeQM31(), alC = ts.squeezeQM31();

@@ -36,7 +36,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   int? rabinPadding, vault;
 
   // round
-  List<int>? extraPrevouts, rootAfter;
+  List<int>? extraPrevouts, rootAfter, roundLanes;
   List<PP1SpTransfer?>? transfers;
 
   PP1SpUnlockBuilder.create(this.gen,
@@ -50,6 +50,11 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       : action = ShieldedPoolAction.create;
 
   PP1SpUnlockBuilder.round(this.gen, {required this.extraPrevouts, required this.rootAfter, required this.transfers})
+      : action = ShieldedPoolAction.round;
+
+  /// An aggregated round: every transfer present, the round lanes from the
+  /// root proof's wide statement.
+  PP1SpUnlockBuilder.roundAggregated(this.gen, {required this.extraPrevouts, required this.transfers, required this.roundLanes})
       : action = ShieldedPoolAction.round;
 
   @override
@@ -67,7 +72,8 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
             vault: vault!,
             extras: extras!);
       case ShieldedPoolAction.round:
-        return gen.spendUnlock(preimage: preimage!, extraPrevouts: extraPrevouts!, rootAfter: rootAfter!, transfers: transfers!);
+        return gen.spendUnlock(
+            preimage: preimage!, extraPrevouts: extraPrevouts!, rootAfter: rootAfter ?? const [], transfers: transfers!, roundLanes: roundLanes);
     }
   }
 
@@ -79,19 +85,20 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
 class VerifierSlotUnlockBuilder extends UnlockingScriptBuilder {
   final VerifierSlotGen gen;
   final StarkProof? proof;
-  final PoolPublicInputs? publics;
+  final List<int>? lanes;
   Uint8List? preimage;
   List<int>? prevoutsTail;
 
-  VerifierSlotUnlockBuilder.proof(this.gen, this.proof, this.publics);
+  VerifierSlotUnlockBuilder.proof(this.gen, this.proof, PoolPublicInputs publics) : lanes = publics.toLanes();
+  VerifierSlotUnlockBuilder.proofLanes(this.gen, this.proof, this.lanes);
   VerifierSlotUnlockBuilder.skip(this.gen)
       : proof = null,
-        publics = null;
+        lanes = null;
 
   @override
   SVScript getScriptSig() {
     if (preimage == null) return SVScript();
-    return proof == null ? gen.unlockSkip(preimage!, prevoutsTail!) : gen.unlockProof(proof!, publics!, preimage!, prevoutsTail!);
+    return proof == null ? gen.unlockSkip(preimage!, prevoutsTail!) : gen.unlockProofLanes(proof!, lanes!, preimage!, prevoutsTail!);
   }
 
   @override

@@ -14,7 +14,9 @@
    limitations under the License.
 */
 
+import 'dart:math' show pow;
 import '../crypto/m31.dart';
+import '../crypto/note_commitment_tree.dart';
 import '../crypto/poseidon2_m31.dart';
 import '../crypto/proof_hash.dart';
 import '../crypto/stark_prover_ref.dart';
@@ -92,10 +94,14 @@ class _Period {
   Wire? loWire8; // fresh: lanes 0..7 pinned to a K8 wire (consumed)
   Wire? hiA, hiB; // lanes 8..11 / 12..15 pinned to K4 wires (consumed)
   Wire? hiWire8; // lanes 8..15 pinned to a K8 wire (consumed)
+  Wire? hiWire8Next; // lanes 8..15 pinned to a K8 wire consumed at row 1
+  bool loSameAsHi = false; // lanes 0..7 pinned to the same operands as 8..15 (an empty node)
   bool hiZero = false;
   bool hiNonce = false; // lanes 9..15 zero, lane 8 free
   List<int> Function()? loFree, hiFree; // free witness halves
   Wire? prodHiA, prodHiB; // lanes 8..11 / 12..15 produced as K4 wires (from hiFree)
+  Wire? prodHi8; // lanes 8..15 produced as one K8 wire (from pinned K4 operands)
+  bool pinWide = false; // row 0: lanes 8..15 pinned to the public columns
   // row 31
   int Function()? swapBitFn; // the next period's swap bit (witness)
   Wire? swapWire; // lane 8 of row 31 produced as K1
@@ -104,7 +110,8 @@ class _Period {
   List<int>? _input, _digest;
   int? _swapBitValue;
   _Period(this.index);
-  bool get row0Claimed => loWire8 != null || hiA != null || hiWire8 != null || prodHiA != null;
+  bool get row0Claimed =>
+      loWire8 != null || hiA != null || hiWire8 != null || hiWire8Next != null || prodHiA != null || prodHi8 != null;
   bool get row31Claimed => digProd8 != null || digProd4 != null || digProd1 != null || digCons8 != null;
 }
 
@@ -134,30 +141,129 @@ class _WireRing extends Ring<Wire> {
       b._vm(_Op.limb, x, null, QM31.fromLimbs(k == 0 ? 1 : 0, k == 1 ? 1 : 0, k == 2 ? 1 : 0, k == 3 ? 1 : 0), 'limb$k');
 }
 
-/// The compiled program for one inner shape: the preprocessed columns of
-/// [VerifierAir] and, given an inner proof, the witness trace.
+/// The aggregation tree a wide root program re-derives the digests of.
+/// Level 0 is the spends ([spendPublics] public lanes each, preprocessed
+/// root [spendPreRoot], empty for the pool's spend AIR); level l + 1 holds
+/// the verifier proofs of shape [levels][l] (with that circuit's
+/// preprocessed root), each verifying [arity] proofs of the level below.
+/// The root verifies one proof of the last level and takes every spend's
+/// publics as its own (wide) statement.
+class AggregationTree {
+  final int spendPublics;
+  final List<int> spendPreRoot;
+  final List<(InnerShape, List<int>)> levels;
+  final int arity;
+
+  /// The chunks of each spend's publics that are commitment-tree leaves,
+  /// in leaf order (the pool's cm1, cm2).
+  final List<int> leafChunks;
+  AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arity, {this.leafChunks = const [3, 4]}) {
+    if (levels.isEmpty) throw ArgumentError('at least one aggregation level');
+    if (arity < 1) throw ArgumentError('arity');
+  }
+  int get depth => levels.length;
+  int get transfers => pow(arity, depth).toInt();
+
+  /// Pinned chunks per spend: its publics padded to whole chunks.
+  int get spendChunks => (spendPublics + 7) ~/ 8;
+
+  // ---- the commitment-tree update the root proves ----
+  static const subtreeLeaves = NoteCommitmentTree.subtreeLeaves;
+  static const mainDepth = NoteCommitmentTree.mainDepth;
+  int get leaves => transfers * leafChunks.length;
+
+  /// Whole subtrees appended per round (the last padded with empty leaves).
+  int get subtrees => (leaves + subtreeLeaves - 1) ~/ subtreeLeaves;
+
+  /// Rows appended to the pool's tree per round.
+  int get leavesAppended => subtrees * subtreeLeaves;
+
+  /// The round chunks after the transfers': rootBefore, rootAfter,
+  /// [index, 0 x 7] with index the first subtree's position.
+  static const roundChunks = 3;
+  int get roundOffset => 8 * spendChunks * transfers;
+
+  /// The root's wide public inputs: every transfer's publics (padded to
+  /// chunks), then the round chunks.
+  List<int> widePublics(List<List<int>> spends,
+      {required List<int> rootBefore, required List<int> rootAfter, required int index}) {
+    if (spends.length != transfers) throw ArgumentError('$transfers transfers expected');
+    if (rootBefore.length != 8 || rootAfter.length != 8) throw ArgumentError('8-lane roots');
+    if (index < 0 || index + subtrees > 1 << mainDepth) throw ArgumentError('subtree index');
+    return [
+      for (final p in spends) ...[...p, ...List.filled(8 * spendChunks - p.length, 0)],
+      ...rootBefore,
+      ...rootAfter,
+      index,
+      ...List.filled(7, 0),
+    ];
+  }
+
+  /// The leaves of subtree [s] from the transfers' publics, null = empty.
+  List<List<int>?> subtreeLeavesOf(List<List<int>> spends, int s) => [
+        for (int i = 0; i < subtreeLeaves; i++)
+          () {
+            final k = s * subtreeLeaves + i;
+            if (k >= leaves) return null;
+            final n = k ~/ leafChunks.length, c = leafChunks[k % leafChunks.length];
+            return spends[n].sublist(8 * c, 8 * c + 8);
+          }()
+      ];
+}
+
+/// The compiled program for a list of inner shapes: the preprocessed
+/// columns of [VerifierAir] and, given the inner proofs, the witness trace.
+///
+/// Digest mode ([tree] null): the program verifies one proof per shape and
+/// its 8-lane public input is the digest of their statement digests
+/// ([nodeDigest]). Wide mode: the root of an [AggregationTree].
 class VerifierProgram {
-  final InnerShape shape;
+  final List<InnerShape> shapes;
+  final AggregationTree? tree;
   final int logTrace;
   final VerifierProgramColumns columns;
   final int periodsUsed, vmRows, hintRows;
-  VerifierProgram(this.shape, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows);
+  VerifierProgram(this.shapes, this.tree, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows);
 
-  /// Compile for [shape] on a 2^[logTrace]-row trace.
-  static VerifierProgram compile(InnerShape shape, int logTrace) {
-    final b = VerifierProgramBuilder(shape, logTrace, null);
+  InnerShape get shape => shapes.single;
+  bool get wide => tree != null;
+
+  /// Compile for one [shape] on a 2^[logTrace]-row trace.
+  static VerifierProgram compile(InnerShape shape, int logTrace) => compileAll([shape], logTrace);
+
+  /// Compile a digest-mode program verifying one proof of each shape.
+  static VerifierProgram compileAll(List<InnerShape> shapes, int logTrace) {
+    final b = VerifierProgramBuilder(shapes, null, logTrace, null, null, null);
     b.build();
-    return VerifierProgram(shape, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length);
+    return VerifierProgram(shapes, null, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length);
   }
 
-  /// The verifier AIR for this program, verifying a proof whose statement
-  /// digest is [publics].
-  VerifierAir air(List<int> publics) => VerifierAir(logTrace, columns, publics);
+  /// Compile the wide root program of [tree].
+  static VerifierProgram compileWide(AggregationTree tree, int logTrace) {
+    final b = VerifierProgramBuilder([tree.levels.last.$1], tree, logTrace, null, null, null);
+    b.build();
+    return VerifierProgram([tree.levels.last.$1], tree, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length);
+  }
 
-  /// The trace rows (main columns) proving that [proof] verifies. The
-  /// program columns are recomputed and must match [columns].
-  List<List<int>> witness(StarkProof proof) {
-    final b = VerifierProgramBuilder(shape, logTrace, proof);
+  /// The verifier AIR for this program with its public inputs: the node
+  /// digest (digest mode) or the wide publics ([AggregationTree.widePublics]).
+  VerifierAir air(List<int> publics) => VerifierAir(logTrace, columns, publics, wide: wide);
+
+  /// The trace rows (main columns) proving that [proof] verifies.
+  List<List<int>> witness(StarkProof proof) => witnessAll([proof]);
+
+  /// The trace rows for the inner [proofs] (one per shape); a wide program
+  /// also needs the transfers' [widePublics]. The inner AIR instances
+  /// ([shapes], defaulting to the compiled ones) supply the proofs' public
+  /// inputs. The program columns are recomputed and must match [columns].
+  List<List<int>> witnessAll(List<StarkProof> proofs,
+      {List<InnerShape>? shapes, List<int>? widePublics, List<List<List<int>>>? subtreePaths}) {
+    shapes ??= this.shapes;
+    if (proofs.length != shapes.length) throw ArgumentError('${shapes.length} inner proofs expected');
+    if (wide && (widePublics == null || subtreePaths == null)) {
+      throw ArgumentError('a wide program needs the transfers\' publics and the subtree paths');
+    }
+    final b = VerifierProgramBuilder(shapes, tree, logTrace, proofs, widePublics, subtreePaths);
     b.build();
     for (int c = 0; c < VerifierProgramColumns.count; c++) {
       for (int r = 0; r < columns.rows; r++) {
@@ -176,6 +282,19 @@ class VerifierProgram {
     ts.absorbStatement(air.publicValues, preRoot);
     return ts.state;
   }
+
+  /// The public input of a digest-mode program verifying one proof.
+  static List<int> nodeDigestOf(Air air, List<int> preRoot) => nodeDigest([statementDigest(air, preRoot)]);
+
+  /// A digest-mode program's public input: the chain digest of its inner
+  /// proofs' statement digests.
+  static List<int> nodeDigest(List<List<int>> digests) {
+    final ts = Poseidon2Transcript();
+    for (final d in digests) {
+      ts.absorb(d);
+    }
+    return ts.state;
+  }
 }
 
 /// Lays out the verification of one inner proof as periods, VM rows and
@@ -183,9 +302,12 @@ class VerifierProgram {
 /// also computes every cell. The verification follows `StarkVerifierRef`
 /// check for check.
 class VerifierProgramBuilder {
-  final InnerShape shape;
+  final List<InnerShape> shapes;
+  final AggregationTree? tree;
   final int logTrace;
-  final StarkProof? proof;
+  final List<StarkProof>? proofs;
+  final List<int>? widePublics;
+  final List<List<List<int>>>? subtreePaths;
   final VerifierProgramColumns columns;
   final periods = <_Period>[];
   final vmItems = <_VmItem>[];
@@ -193,10 +315,11 @@ class VerifierProgramBuilder {
   late final _WireRing f = _WireRing(this);
   _Period? _cur; // the transcript's current period (its digest is the state)
 
-  VerifierProgramBuilder(this.shape, this.logTrace, this.proof) : columns = VerifierProgramColumns(1 << logTrace);
+  VerifierProgramBuilder(this.shapes, this.tree, this.logTrace, this.proofs, this.widePublics, this.subtreePaths)
+      : columns = VerifierProgramColumns(1 << logTrace);
 
-  bool get witnessMode => proof != null;
-  StarkProof get pf => proof!;
+  bool get witnessMode => proofs != null;
+  StarkProof pfAt(int i) => proofs![i];
   int get numPeriods => 1 << (logTrace - 5);
 
   // ---------------------------------------------------------------- wires and VM
@@ -340,6 +463,15 @@ class VerifierProgramBuilder {
   /// range-checked remainder), the root is checked at the end. Returns the
   /// bit wires.
   List<Wire> _walk(_Period leaf, Wire idx, int depth, Wire root, List<List<int>> Function() siblings) {
+    final (end, bits) = _walkTo(leaf, idx, depth, siblings);
+    end.digCons8 = root;
+    root.uses++;
+    return bits;
+  }
+
+  /// [_walk] without the root check: returns the final period (whose digest
+  /// is the root reached) and the bit wires.
+  (_Period, List<Wire>) _walkTo(_Period leaf, Wire idx, int depth, List<List<int>> Function() siblings) {
     var p = leaf;
     final bits = <Wire>[];
     for (int k = 0; k < depth; k++) {
@@ -353,72 +485,302 @@ class VerifierProgramBuilder {
       n.hiFree = () => siblings()[sib];
       p = n;
     }
-    p.digCons8 = root;
-    root.uses++;
     // idx = Σ 2^k b_k + 2^depth rem, rem < 2^(31 - depth) by bit decomposition
     final remBits = [for (int j = 0; j < 31 - depth; j++) bitHint('rem$j', () => (idx.lanes[0] >> (depth + j)) & 1)];
     assertEq(idx, f.add(_fromBits(bits), _fromBits(remBits, shift: depth)));
-    return bits;
+    return (p, bits);
+  }
+
+  // ---------------------------------------------------------------- the statements
+
+  Wire _digestWire(_Period p) => p.digProd8 ??= Wire(8, 'S${p.index}', () => _simulate(p));
+
+  /// A fresh chain period with the given high half (see [_absorb]).
+  _Period _fresh({Wire? w8, List<int> Function()? free}) {
+    final p = _period();
+    p.fresh = true;
+    p.loZero = true;
+    if (w8 != null) {
+      p.hiWire8 = w8;
+      w8.uses++;
+    } else {
+      p.hiFree = free;
+    }
+    _cur = p;
+    return p;
+  }
+
+  /// The two K4 wires of a period's high half (lanes 8..11, 12..15).
+  (Wire, Wire) _hiWires(_Period p, String label) {
+    final wa = Wire(4, '${label}a', () => p._input!.sublist(8, 12));
+    final wb = Wire(4, '${label}b', () => p._input!.sublist(12, 16));
+    wb.tagOffset = VerifierAir.tagP2Offset;
+    p.prodHiA = wa;
+    p.prodHiB = wb;
+    return (wa, wb);
+  }
+
+  /// The inner AIR's publics as single-lane wires from the statement's
+  /// chunk wires (each K4).
+  List<Wire> _pubLanes(Air air, List<Wire> chunks) =>
+      [for (int k = 0; k < air.numPublics; k++) f.limb(chunks[k ~/ 4], k % 4)];
+
+  /// The statement of inner [i] with free publics (the inner proof binds
+  /// them): its chunks produced as K4 wires for the inner's constraints,
+  /// then the preprocessed root chunk bound to [preRoot] (a K8 wire, the
+  /// same one the query walks check against) or zero. Returns the last
+  /// period and the public lanes.
+  (_Period, List<Wire>) _statementFree(int i, Wire? preRoot) {
+    final air = shapes[i].air;
+    final pubs = air.publicValues;
+    final chunkWires = <Wire>[];
+    _Period? p;
+    for (int c = 0; c < Poseidon2Transcript.statementPeriods - 1; c++) {
+      List<int> lanes() => [for (int j = 0; j < 8; j++) 8 * c + j < pubs.length ? pubs[8 * c + j] : 0];
+      p = c == 0 ? _fresh(free: lanes) : (_cur = _absorb(free: lanes));
+      final (wa, wb) = _hiWires(p, 'pub${i}_$c');
+      chunkWires.addAll([wa, wb]);
+    }
+    _cur = preRoot == null ? _absorb(zero: true) : _absorb(w8: preRoot);
+    return (_cur!, _pubLanes(air, chunkWires));
+  }
+
+  /// The statement of a verifier proof whose 8-lane public input is the
+  /// wire [d8] (bound), with its preprocessed root the constant [preRoot].
+  /// Returns the last period, the public lanes, and the root as a K8 wire
+  /// for the query walks.
+  (_Period, List<Wire>, Wire) _statementBound(Air air, Wire d8, List<int> preRoot) {
+    final p0 = _fresh(w8: d8);
+    final (wa, wb) = _hiWires(p0, 'bound');
+    for (int c = 1; c < Poseidon2Transcript.statementPeriods - 1; c++) {
+      _cur = _absorb(zero: true);
+    }
+    if (preRoot.length != 8) throw ArgumentError('an 8-lane preprocessed root');
+    final ca = f.constQ(QM31.fromLimbs(preRoot[0], preRoot[1], preRoot[2], preRoot[3]));
+    final cb = f.constQ(QM31.fromLimbs(preRoot[4], preRoot[5], preRoot[6], preRoot[7]));
+    final pr = _absorb(a: ca, b: cb);
+    final root8 = Wire(8, 'preRootConst', () => preRoot);
+    pr.prodHi8 = root8;
+    _cur = pr;
+    return (pr, _pubLanes(air, [wa, wb]), root8);
+  }
+
+  /// A fresh period whose high half is pinned to public chunk [c] (lanes
+  /// widePublics[8c..8c+8]); [chained] continues the current chain instead.
+  _Period _pinnedChunk(int c, {bool chained = false}) {
+    List<int> lanes() => widePublics!.sublist(8 * c, 8 * c + 8);
+    final p = chained ? (_cur = _absorb(free: lanes)) : _fresh(free: lanes);
+    p.pinWide = true;
+    return p;
+  }
+
+  /// The statement of spend [n] of a wide root: its chunks pinned to the
+  /// public columns, padding and root chunks zero. Returns the pinned
+  /// chunk periods and the last period.
+  (List<_Period>, _Period) _statementPinned(int n) {
+    final t = tree!;
+    final c0 = t.spendChunks * n;
+    final chunks = <_Period>[];
+    for (int c = 0; c < Poseidon2Transcript.statementPeriods - 1; c++) {
+      if (c < t.spendChunks) {
+        chunks.add(_pinnedChunk(c0 + c, chained: c > 0));
+      } else {
+        _cur = _absorb(zero: true);
+      }
+    }
+    if (t.spendPreRoot.isEmpty) {
+      _cur = _absorb(zero: true);
+    } else {
+      final r = t.spendPreRoot;
+      _cur = _absorb(a: f.constQ(QM31.fromLimbs(r[0], r[1], r[2], r[3])), b: f.constQ(QM31.fromLimbs(r[4], r[5], r[6], r[7])));
+    }
+    return (chunks, _cur!);
+  }
+
+  /// A period's high half as a K8 wire (its operand cells pin the lanes).
+  Wire _hi8(_Period p, String label) => p.prodHi8 ??= Wire(8, label, () {
+        _simulate(p);
+        return p._input!.sublist(8, 16);
+      });
+
+  // ---------------------------------------------------------------- the commitment tree
+
+  /// The empty node of height [h] >= 1 as a K8 wire: P(E_{h-1} ‖ E_{h-1}),
+  /// both halves pinned to the same constant operands; one period per
+  /// height, shared.
+  final Map<int, Wire> _emptyNodes = {};
+  Wire _emptyNode(int h) => _emptyNodes.putIfAbsent(h, () => _digestWire(_emptyPeriod(h)));
+
+  _Period _emptyPeriod(int h) {
+    final e = MerkleFrontier.emptyRoots[h - 1];
+    final p = _period();
+    p.fresh = true;
+    p.hiA = f.constQ(QM31.fromLimbs(e[0], e[1], e[2], e[3]));
+    p.hiB = f.constQ(QM31.fromLimbs(e[4], e[5], e[6], e[7]));
+    p.hiA!.uses++;
+    p.hiB!.uses++;
+    p.loSameAsHi = true;
+    return p;
+  }
+
+  /// P(left ‖ right) of two K8 wires at height [h] (null = the empty node
+  /// of height h - 1; leaves are zero).
+  _Period _node(Wire? left, Wire? right, int h) {
+    // children first: a consumed period must precede its consumer
+    final lw = left ?? (h == 1 ? null : _emptyNode(h - 1));
+    final rw = right ?? (h == 1 ? null : _emptyNode(h - 1));
+    final p = _period();
+    p.fresh = true;
+    if (lw == null) {
+      p.loZero = true;
+    } else {
+      p.loWire8 = lw;
+      lw.uses++;
+    }
+    if (rw == null) {
+      p.hiZero = true;
+    } else {
+      p.hiWire8Next = rw;
+      rw.uses++;
+    }
+    return p;
+  }
+
+  /// The subtree over [leaves] (K8 wires, null = empty): returns its root
+  /// period (the last one allocated, so a walk can chain from it).
+  _Period _subtree(List<Wire?> leaves) {
+    var level = leaves;
+    var h = 1;
+    while (level.length > 1) {
+      final periods = <_Period?>[];
+      for (int i = 0; i < level.length; i += 2) {
+        final l = level[i], r = level[i + 1];
+        periods.add(l == null && r == null ? null : _node(l, r, h));
+      }
+      if (periods.length == 1) return periods[0]!;
+      level = [for (final p in periods) p == null ? null : _digestWire(p)];
+      h++;
+    }
+    throw StateError('a subtree of one leaf');
+  }
+
+  /// Prove the round's subtrees appended: from [rootBefore] (each slot
+  /// shown empty first) to [rootAfter], the subtrees at [index]..
+  void _treeUpdate(List<Wire> leaves, Wire rootBefore, Wire rootAfter, Wire index) {
+    final t = tree!;
+    var before = rootBefore;
+    for (int s = 0; s < t.subtrees; s++) {
+      final subLeaves = <Wire?>[
+        for (int i = 0; i < AggregationTree.subtreeLeaves; i++)
+          s * AggregationTree.subtreeLeaves + i < leaves.length ? leaves[s * AggregationTree.subtreeLeaves + i] : null
+      ];
+      final idx = s == 0 ? index : f.addConst(index, s);
+      List<List<int>> siblings() => subtreePaths![s];
+      // the slot is empty under the root so far
+      _walk(_emptyPeriod(NoteCommitmentTree.subtreeDepth), idx, AggregationTree.mainDepth, before, siblings);
+      // the subtree in place
+      final (end, _) = _walkTo(_subtree(subLeaves), idx, AggregationTree.mainDepth, siblings);
+      if (s == t.subtrees - 1) {
+        end.digCons8 = rootAfter;
+        rootAfter.uses++;
+      } else {
+        before = _digestWire(end);
+      }
+    }
+  }
+
+  /// The chain digest of the K8 wires [s]: a fresh zero-state period
+  /// absorbing s[0], then one chained period per further wire.
+  _Period _chain(List<Wire> s) {
+    _Period? p;
+    for (final w in s) {
+      p = p == null ? _fresh(w8: w) : (_cur = _absorb(w8: w));
+    }
+    return p!;
   }
 
   // ---------------------------------------------------------------- the verification
 
   void build() {
+    if (tree == null) {
+      final digests = <Wire>[];
+      for (int i = 0; i < shapes.length; i++) {
+        final preRoot = shapes[i].R > 0 ? hint8('preRoot$i', () => pfAt(i).preRoot) : null;
+        final (st, pubLane) = _statementFree(i, preRoot);
+        digests.add(_digestWire(st));
+        _verifyInner(i, pubLane, preRoot);
+      }
+      _chain(digests).pinPub = true;
+    } else {
+      _buildWide();
+    }
+    _finish();
+  }
+
+  void _buildWide() {
+    final t = tree!;
+    final digests0 = <Wire>[], leaves = <Wire>[];
+    for (int n = 0; n < t.transfers; n++) {
+      final (chunks, last) = _statementPinned(n);
+      digests0.add(_digestWire(last));
+      for (final c in t.leafChunks) {
+        leaves.add(_hi8(chunks[c], 'leaf${n}_$c'));
+      }
+    }
+    // the round chunks and the commitment-tree update
+    final r0 = _pinnedChunk(t.roundOffset ~/ 8), r1 = _pinnedChunk(t.roundOffset ~/ 8 + 1), r2 = _pinnedChunk(t.roundOffset ~/ 8 + 2);
+    final (ia, _) = _hiWires(r2, 'round');
+    _treeUpdate(leaves, _hi8(r0, 'rootBefore'), _hi8(r1, 'rootAfter'), f.limb(ia, 0));
+    var digests = digests0;
+    for (int l = 0; l < t.depth; l++) {
+      final (shape, preRoot) = t.levels[l];
+      final next = <Wire>[];
+      for (int m = 0; m < digests.length ~/ t.arity; m++) {
+        final d = _digestWire(_chain(digests.sublist(t.arity * m, t.arity * (m + 1))));
+        final (st, pubLane, root8) = _statementBound(shape.air, d, preRoot);
+        if (l == t.depth - 1) {
+          _verifyInner(0, pubLane, root8);
+        } else {
+          next.add(_digestWire(st));
+        }
+      }
+      digests = next;
+    }
+  }
+
+  /// Verify inner proof [i] from the current transcript state (its
+  /// statement period), replaying `StarkVerifierRef` check for check.
+  void _verifyInner(int i, List<Wire> pubLane, Wire? preRoot) {
+    final shape = shapes[i];
     final P = shape.P, air = shape.air;
-    final A = shape.A, R = shape.R, CT = shape.CT;
+    final A = shape.A, CT = shape.CT;
     final a = P.logCompHalf;
     final gT = CirclePoint.subgroupGen(P.logTrace);
-
-    // ---- statement: publics padded to 64 lanes, then the preprocessed root (or zeros) ----
-    final pubWires = <Wire>[];
-    final pubs = air.publicValues;
-    for (int c = 0; c < Poseidon2Transcript.statementPeriods; c++) {
-      final p = _period();
-      if (c == 0) {
-        p.fresh = true;
-        p.loZero = true;
-      } else {
-        periods[c - 1].swapBitFn = () => 0;
-      }
-      if (c < 8) {
-        p.hiFree = () => [for (int j = 0; j < 8; j++) 8 * c + j < pubs.length ? pubs[8 * c + j] : 0];
-        final wa = Wire(4, 'pub${2 * c}', () => p._input!.sublist(8, 12));
-        final wb = Wire(4, 'pub${2 * c + 1}', () => p._input!.sublist(12, 16));
-        wb.tagOffset = VerifierAir.tagP2Offset;
-        p.prodHiA = wa;
-        p.prodHiB = wb;
-        pubWires.addAll([wa, wb]);
-      } else {
-        p.hiFree = () => R > 0 ? pf.preRoot : Poseidon2Transcript.zeros;
-        p.pinPub = true;
-      }
-      _cur = p;
-    }
-    final pubLane = [for (int k = 0; k < pubs.length; k++) f.limb(pubWires[k ~/ 4], k % 4)];
+    StarkProof pf() => pfAt(i);
 
     // ---- transcript: roots and challenges ----
-    final traceRoot = hint8('traceRoot', () => pf.traceRoot);
+    final traceRoot = hint8('traceRoot', () => pf().traceRoot);
     _cur = _absorb(w8: traceRoot);
     final chal = [for (int k = 0; k < air.numChallenges; k++) squeeze4('chal$k')];
     Wire? auxRoot;
     if (A > 0) {
-      auxRoot = hint8('auxRoot', () => pf.auxRoot);
+      auxRoot = hint8('auxRoot', () => pf().auxRoot);
       _cur = _absorb(w8: auxRoot);
     }
     final beta = squeeze4('beta');
-    final compRoot = hint8('compRoot', () => pf.compRoot);
+    final compRoot = hint8('compRoot', () => pf().compRoot);
     _cur = _absorb(w8: compRoot);
     final tch = squeeze4('tch');
-    final zHint = hint4('zHint', () => pf.zHint);
+    final zHint = hint4('zHint', () => pf().zHint);
     final t2 = f.mul(tch, tch);
     assertEq(f.mul(f.add(f.one, t2), zHint), f.one);
     final zx = f.mul(f.sub(f.one, t2), zHint), zy = f.mul(f.add(tch, tch), zHint);
-    final traceAtZ = [for (int j = 0; j < CT; j++) hint4('tz$j', () => pf.traceAtZ[j])];
-    final traceAtZg = [for (int j = 0; j < CT; j++) hint4('tzg$j', () => pf.traceAtZg[j])];
-    final compAtZ = [for (int k = 0; k < 4; k++) hint4('cz$k', () => pf.compAtZ[k])];
+    final traceAtZ = [for (int j = 0; j < CT; j++) hint4('tz$j', () => pf().traceAtZ[j])];
+    final traceAtZg = [for (int j = 0; j < CT; j++) hint4('tzg$j', () => pf().traceAtZg[j])];
+    final compAtZ = [for (int k = 0; k < 4; k++) hint4('cz$k', () => pf().compAtZ[k])];
     final oods = [...traceAtZ, ...traceAtZg, ...compAtZ];
-    for (int i = 0; i < oods.length; i += 2) {
-      _cur = _absorb(a: oods[i], b: i + 1 < oods.length ? oods[i + 1] : f.zero);
+    for (int k = 0; k < oods.length; k += 2) {
+      _cur = _absorb(a: oods[k], b: k + 1 < oods.length ? oods[k + 1] : f.zero);
     }
     final lamA = squeeze4('lamA'), lamB = squeeze4('lamB'), lamC = squeeze4('lamC'), alC = squeeze4('alC');
 
@@ -437,17 +799,17 @@ class VerifierProgramBuilder {
     // ---- FRI roots and alphas, final coefficients, grinding, indices ----
     final friRoots = <Wire>[], alphas = <Wire>[];
     for (int l = 0; l < P.numLineFolds; l++) {
-      final w = hint8('fr$l', () => pf.friRoots[l]);
+      final w = hint8('fr$l', () => pf().friRoots[l]);
       friRoots.add(w);
       _cur = _absorb(w8: w);
       alphas.add(squeeze4('al$l'));
     }
-    final finalCoefs = [for (int i = 0; i < P.finalDegree; i++) hint4('fc$i', () => pf.finalCoefs[i])];
-    for (int i = 0; i < finalCoefs.length; i += 2) {
-      _cur = _absorb(a: finalCoefs[i], b: i + 1 < finalCoefs.length ? finalCoefs[i + 1] : f.zero);
+    final finalCoefs = [for (int k = 0; k < P.finalDegree; k++) hint4('fc$k', () => pf().finalCoefs[k])];
+    for (int k = 0; k < finalCoefs.length; k += 2) {
+      _cur = _absorb(a: finalCoefs[k], b: k + 1 < finalCoefs.length ? finalCoefs[k + 1] : f.zero);
     }
     final stateBeforeGrind = _cur!;
-    final grind = _absorb(nonce: true, free: () => [pf.nonce[0], 0, 0, 0, 0, 0, 0, 0]);
+    final grind = _absorb(nonce: true, free: () => [pf().nonce[0], 0, 0, 0, 0, 0, 0, 0]);
     final grindLane = Wire(1, 'grind', () => [grind._digest![0]]);
     grind.digProd1 = grindLane;
     {
@@ -471,7 +833,7 @@ class VerifierProgramBuilder {
     }
     for (int q = 0; q < P.numQueries; q++) {
       final idx = indices[q];
-      QueryProof qp() => pf.queries[q];
+      QueryProof qp() => pf().queries[q];
       // composition opening and walk
       final cl0 = hint4('cl${q}a', () => _q4(qp().compLeaf, 0)), cl1 = hint4('cl${q}b', () => _q4(qp().compLeaf, 4));
       final leaf = _leaf([cl0, cl1]);
@@ -509,7 +871,7 @@ class VerifierProgramBuilder {
         // the previous output is the component of this layer's pair the top bit selects
         assertEq(out, f.add(lf, f.mul(top, f.sub(lg, lf))));
         Wire? outT;
-        if (l == P.foldInIndex) outT = _foldIn(q, idx, traceRoot, auxRoot, kB, kC, xB, yB, alphas[l]);
+        if (l == P.foldInIndex) outT = _foldIn(i, q, idx, traceRoot, auxRoot, preRoot, kB, kC, xB, yB, alphas[l]);
         final lLeaf = _leaf([lf, lg]);
         final lbits = _walk(lLeaf, idx, d, friRoots[l], () => qp().linePaths[l]);
         final xi = hint1('lxi${q}_$l', () => qp().lineXInv[l]);
@@ -527,7 +889,6 @@ class VerifierProgramBuilder {
         }
       }
     }
-    _finish();
   }
 
   static QM31 _q4(List<int> l, int from) => QM31.fromLimbs(l[from], l[from + 1], l[from + 2], l[from + 3]);
@@ -543,9 +904,11 @@ class VerifierProgramBuilder {
     }
   }
 
-  Wire _foldIn(int q, Wire idx, Wire traceRoot, Wire? auxRoot, DeepWires kB, DeepWires kC, Wire xB, Wire yB, Wire alpha) {
+  Wire _foldIn(int i, int q, Wire idx, Wire traceRoot, Wire? auxRoot, Wire? preRoot, DeepWires kB, DeepWires kC, Wire xB,
+      Wire yB, Wire alpha) {
+    final shape = shapes[i];
     final C = shape.C, A = shape.A, R = shape.R;
-    QueryProof qp() => pf.queries[q];
+    QueryProof qp() => pfAt(i).queries[q];
     List<Wire> chunks(String tag, int lanes, List<int> Function() src) {
       final n = (lanes + 3) ~/ 4;
       final out = <Wire>[];
@@ -569,9 +932,9 @@ class VerifierProgramBuilder {
       _walk(_leaf(al), idx, shape.P.logTraceHalf, auxRoot!, () => qp().auxPath);
     }
     if (R > 0) {
-      final preRoot = hint8('preRoot', () => pf.preRoot);
+      // the root the statement absorbed: one wire for the statement and every query
       pl = chunks('prl', 2 * R, () => qp().preLeaf);
-      _walk(_leaf(pl), idx, shape.P.logTraceHalf, preRoot, () => qp().prePath);
+      _walk(_leaf(pl), idx, shape.P.logTraceHalf, preRoot!, () => qp().prePath);
     }
     List<Wire> lanesOf(List<Wire> ch, int from, int count) =>
         [for (int j = 0; j < count; j++) f.limb(ch[(from + j) ~/ 4], (from + j) % 4)];
@@ -645,6 +1008,7 @@ class VerifierProgramBuilder {
     for (final p in periods) {
       final r0 = p.index << 5;
       if (p.row0Claimed) _claimed[r0] = true;
+      if (p.hiWire8Next != null) _claimed[r0 + 1] = true;
       if (p.row31Claimed || p.swapWire != null) _claimed[r0 + 31] = true;
     }
     for (final p in periods) {
@@ -671,12 +1035,23 @@ class VerifierProgramBuilder {
         columns.set(VerifierProgramColumns.inHiAB, r0, 1);
         _consumeAt(r0, p.hiWire8!);
       }
+      if (p.hiWire8Next != null) {
+        columns.set(VerifierProgramColumns.inHiNext, r0, 1);
+        _consumeAt(r0 + 1, p.hiWire8Next!);
+      }
+      if (p.loSameAsHi) columns.set(VerifierProgramColumns.inLoAB, r0, 1);
       if (p.prodHiA != null) {
         columns.set(VerifierProgramColumns.inHiAB, r0, 1);
         if (p.prodHiA!.uses > 0) _produceAt(r0, p.prodHiA!, VerifierProgramColumns.p1a4);
         if (p.prodHiB!.uses > 0) _produceAt(r0, p.prodHiB!, VerifierProgramColumns.p2en);
         _pinned.add((r0, p.prodHiA!, p.prodHiB!));
       }
+      if (p.prodHi8 != null && p.prodHi8!.uses > 0) {
+        if (p.prodHiA != null && p.prodHiA!.uses > 0) throw StateError('two P1 producers at row $r0');
+        columns.set(VerifierProgramColumns.inHiAB, r0, 1);
+        _produceAt(r0, p.prodHi8!, VerifierProgramColumns.p1ab8);
+      }
+      if (p.pinWide) columns.set(VerifierProgramColumns.pinPub, r0, 1);
       if (p.swapWire != null && p.swapWire!.uses > 0) _produceAt(r31, p.swapWire!, VerifierProgramColumns.p1swap);
       if (p.row31Claimed) columns.set(VerifierProgramColumns.digAB, r31, 1);
       var prods = 0;
@@ -796,6 +1171,8 @@ class VerifierProgramBuilder {
       input.setRange(12, 16, p.hiB!.lanes);
     }
     if (p.hiWire8 != null) input.setRange(8, 16, p.hiWire8!.lanes);
+    if (p.hiWire8Next != null) input.setRange(8, 16, p.hiWire8Next!.lanes);
+    if (p.loSameAsHi) input.setRange(0, 8, input.sublist(8, 16));
     p._input = input;
     p._digest = Poseidon2M31.permute(input).sublist(0, 8);
     return p._digest!;

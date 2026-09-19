@@ -148,6 +148,42 @@ abstract class Air {
   List<Uint32List> preColumns() => const [];
 
   int get totalCols => numCols + numAuxCols + numPreCols;
+
+  // ---------------------------------------------------------------- public columns
+  //
+  // A wide statement: columns of public values the verifier knows but that
+  // are not committed. The prover extends them like trace columns; the
+  // verifier evaluates them out of domain in closed form from the public
+  // inputs (with inverse hints in script). Their values follow the
+  // periodic values in the `per` list of the constraint functions.
+
+  int get numPubCols => 0;
+
+  /// The public column values on the trace domain (cyclic row order).
+  List<Uint32List> pubColumns() => const [];
+
+  /// The public columns at an out-of-domain point.
+  List<QM31> pubColumnsAt(QM31 zx, QM31 zy) => const [];
+
+  /// Generic form; only the QM31 ring can invert, so wide statements are
+  /// verified by the reference verifier and in script, not recursively.
+  List<T> pubColumnsAtG<T>(Ring<T> f, T zx, T zy) =>
+      numPubCols == 0 ? const [] : throw UnsupportedError('$runtimeType: public columns need the QM31 ring');
+
+  /// QM31 hints the script needs for [emitPubColumns] (inverses), and
+  /// their values at the point.
+  int get numPubHints => 0;
+  List<QM31> pubHints(QM31 zx, QM31 zy) => const [];
+
+  /// Script: from the named limbs [zx], [zy], the vanishing value [v] (all
+  /// picked), the hint limbs [hints] (consumed) and the publics `pub{k}`
+  /// (picked), leave canonical limbs [out] (numPubCols entries).
+  void emitPubColumns(StackEmitter e, List<String> zx, List<String> zy, List<String> v, List<List<String>> hints,
+      List<List<String>> out) {}
+
+  /// Periodic then public column values at a point: the `per` list.
+  int get numPointCols => numPeriodic + numPubCols;
+  List<QM31> pointColumnsAt(QM31 x, QM31 y) => [...periodicAt(x, y), ...pubColumnsAt(x, y)];
   int get preCol0 => numCols + numAuxCols;
   int get totalConstraints => numConstraints + numAuxConstraints;
 
@@ -298,7 +334,7 @@ abstract class Air {
   T oodCheckG<T>(Ring<T> f, List<T> cur, List<T> next, List<T> comp, T beta, T zx, T zy, {List<T> chal = const []}) {
     final lin = linearAtG(f, zx, zy);
     final (xs, yd) = doublingChainG(f, zx, zy);
-    final per = periodicAtG(f, xs, yd);
+    final per = [...periodicAtG(f, xs, yd), ...pubColumnsAtG(f, zx, zy)];
     final v = xs[logTrace - 1];
     final cs = [...constraintsG(f, cur, next, per, lin), ...auxConstraintsG(f, cur, next, per, lin, chal)];
     final groups = allGroups;
@@ -570,7 +606,7 @@ class AirScriptGen {
     final cur = List.generate(air.totalCols, (j) => limbNames('cur$j'));
     final next = List.generate(air.totalCols, (j) => limbNames('next$j'));
     final comp = List.generate(4, (k) => limbNames('comp$k'));
-    final per = List.generate(air.numPeriodic, (k) => limbNames('per$k'));
+    final per = List.generate(air.numPointCols, (k) => limbNames('per$k'));
     final lin = List.generate(air.numLinear, (k) => limbNames('lin$k'));
     final chal = List.generate(air.numChallenges, (k) => limbNames('chal$k'));
     final cons = List.generate(air.totalConstraints, (j) => limbNames('c$j'));
@@ -588,10 +624,14 @@ class AirScriptGen {
       _copy(e, lin[d], limbNames('_ld$d'));
     }
     emitDoublingChain(e, limbNames('zx'), limbNames('zy'), air.logTrace, air.logPeriod);
+    final v = limbNames('_dx${air.logTrace - 1}');
+    if (air.numPubCols > 0) {
+      air.emitPubColumns(e, limbNames('zx'), limbNames('zy'), v,
+          List.generate(air.numPubHints, (c) => limbNames('pkh$c')), per.sublist(air.numPeriodic));
+    }
     _dropQ(e, limbNames('zx'));
     _dropQ(e, limbNames('zy'));
-    emitPeriodic(e, air, per);
-    final v = limbNames('_dx${air.logTrace - 1}');
+    emitPeriodic(e, air, per.sublist(0, air.numPeriodic));
     // aux constraints first (they only pick), then the base ones (consume)
     if (air.numAuxConstraints > 0) {
       air.emitAuxConstraints(e, cur, next, per, lin, chal, cons.sublist(air.numConstraints));

@@ -1252,10 +1252,57 @@ do the rest in about 26 s. Porting that evaluation to the Rust crate is the next
 lever and would bring a level to roughly half a minute. Compile and witness
 generation are under 0.4 s.
 
-**What remains for the pool.** The outermost level needs a SHA256-flavour proof and a
-script verifier for `VerifierAir` (its constraint emitter and the preprocessed
-opening in `StarkVerifierGen`), and the round then aggregates N spend proofs in one
-verifier statement rather than one. Neither changes the circuit above.
+**Aggregation on chain (built).** The outermost level and the round around it:
+
+- *The verifier AIR in script.* Its constraints are the recorded `ExprRing` programs
+  (`VerifierAir.mainProgram/auxProgram`) compiled to script by a generic
+  `ProgramScriptGen` (every node four limbs, rolled at its last use), so the AIR has no
+  hand-written emitter: 588 + 226 operations, 344 QM31 multiplications, 156 KB and 102 K
+  ops for the out-of-domain check. `StarkVerifierGen` opens the preprocessed columns
+  per query against a root baked into the script.
+- *The wide statement.* The root's public inputs are every transfer's raw publics
+  (56 lanes each, the spend's 52 padded to chunks) and three round chunks (the tree
+  root before and after, the subtree index). In the circuit they are *public columns*
+  (`Air.pubColumns`): a column holding public chunk c at the hash-input row of the
+  period that absorbs it, zero elsewhere, pinned by `pinPub` to lanes 8..15 of that
+  row. The prover extends them like trace columns; the script evaluates each at z in
+  closed form with the trace domain's Lagrange kernel,
+  v(z) Σ_c p_c s_c (1 + ⟨z, h_c⟩) / (z × h_c), s_c = (−1)^{r_c}/2^t, one hinted
+  inverse per chunk (checked against the FFT interpolant), about 330 ops per chunk.
+  Nothing else crosses the SHA256/Poseidon2 boundary.
+- *Digest chains.* An aggregator node verifies k inner proofs and publishes one 8-lane
+  digest, the Poseidon2 chain over the inner statement digests. The root re-derives
+  every digest from the raw publics: the spends' statements from the pinned chunks,
+  each level's node digests and statements (its preprocessed root as VM constants),
+  and pins the top proof's publics to the result. Every preprocessed root a walk
+  checks is the same wire the statement absorbed (a per-query hint before, a
+  soundness gap now closed).
+- *The tree update.* The root hashes the round's commitments into whole 32-leaf
+  subtrees (a Merkle node takes its two children from the bus: a program column pins
+  the high input half to the *next* row's operands), walks each slot empty from the
+  root before and filled to the root after, so the append slot is gone.
+- *One slot per round.* `PP1SpScriptGen.aggregated`: the state input reads N × 56 + 24
+  lanes and per transfer applies the balance, the two nullifier insertions and the
+  extra-output hash as before, checks rootBefore against ring[0] and the index
+  against size/32, and rebuilds the single result output `OP_RETURN SHA256(all
+  lanes)`; the verifier slot is the root's (`VerifierSlotGen(airFor:)`).
+  `PoolAggregation` is the coordinator's driver (levels compiled once, preprocessed
+  roots as constants); `ShieldedPoolTool.createAggregatedRoundTxn` builds the round,
+  `PoolChainReader` reads it back.
+
+Measured at small parameters (`test/recursion_tree_test.dart`,
+`test/pp1_sp_aggregated_test.dart`: four deposits, two level-1 verifiers on 2^15,
+one level-2 on 2^16, the wide root on 2^15 in SHA256 flavour): root program 861
+periods and 248 public lanes; root proof 22,004 B; root verifier script 357 KB and
+248 K ops, 0.5 s in the interpreter; state body 26 KB; the round transaction 811 KB
+with three inputs verified in 1.1 s; aggregation 31 s end to end. At production
+parameters the verifier script for a 2^18 verifier proof (blowup 16, 22 queries) is
+1,078 KB and 747 K ops before the wide statement, so the round's FRI must be
+re-tuned towards blowup 32 / 18 queries (about 620 K ops) to leave room for
+100-150 transfers' public columns under the 1 M-op limit; halving the per-transfer
+lanes (anchors checked in-circuit, commitments only in the tree) doubles that.
+Remaining: the Rust port of the verifier's constraint evaluation, native Poseidon2
+grinding, padding a round to arity^depth with dummy transfers in the coordinator.
 
 ## Open Items
 

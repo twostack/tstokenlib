@@ -37,11 +37,18 @@ import 'stark_verifier_gen.dart';
 /// rebuilt itself.
 class VerifierSlotGen {
   final StarkParams P;
+
+  /// The AIR the slot verifies, for given public lanes: the pool's spend
+  /// AIR by default, or an aggregation's wide root.
+  final Air Function(List<int> lanes) airFor;
+  final int numPublics;
   late final StarkVerifierGen _gen;
   SVScript? _lock;
 
-  VerifierSlotGen(this.P) {
-    _gen = StarkVerifierGen(P, PoolSpendAir.air(PoolPublicInputs.zero()))
+  VerifierSlotGen(this.P, {Air Function(List<int> lanes)? airFor, int? numPublics})
+      : airFor = airFor ?? ((l) => PoolSpendAir.air(PoolPublicInputs.fromLanes(l))),
+        numPublics = numPublics ?? PoolPublicInputs.count {
+    _gen = StarkVerifierGen(P, this.airFor(List.filled(this.numPublics, 0)))
       ..unlockAbove = const ['preimage', 'prevoutsTail']
       ..prologue = (e) {
         _bind(e, withPublics: true);
@@ -60,7 +67,7 @@ class VerifierSlotGen {
   /// The result output, then the checks and the signature, leaving `sig`.
   void _bind(StackEmitter e, {required bool withPublics}) {
     if (withPublics) {
-      SlotScript.lanesToBytes(e, [for (int k = 0; k < PoolPublicInputs.count; k++) Air.publicName(k)], as: 'pb');
+      SlotScript.lanesToBytes(e, [for (int k = 0; k < numPublics; k++) Air.publicName(k)], as: 'pb');
       SlotScript.op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
       e.pushData([...List.filled(8, 0), 34, OpCodes.OP_RETURN, 32]);
       e.swap();
@@ -90,8 +97,12 @@ class VerifierSlotGen {
     ]);
   }
 
-  SVScript unlockProof(StarkProof proof, PoolPublicInputs publics, Uint8List preimage, List<int> prevoutsTail) {
-    final base = StarkVerifierGen(P, PoolSpendAir.air(publics)).buildUnlock(proof);
+  SVScript unlockProof(StarkProof proof, PoolPublicInputs publics, Uint8List preimage, List<int> prevoutsTail) =>
+      unlockProofLanes(proof, publics.toLanes(), preimage, prevoutsTail);
+
+  SVScript unlockProofLanes(StarkProof proof, List<int> lanes, Uint8List preimage, List<int> prevoutsTail) {
+    if (lanes.length != numPublics) throw ArgumentError('$numPublics public lanes');
+    final base = StarkVerifierGen(P, airFor(lanes)).buildUnlock(proof);
     final b = ScriptBuilder();
     b.addData(preimage);
     b.addData(Uint8List.fromList(prevoutsTail));

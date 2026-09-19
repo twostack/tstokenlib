@@ -15,6 +15,7 @@ String? checkTrace(Air air, List<List<int>> rows, List<QM31> chal) {
   final n = rows.length;
   final aux = air.auxColumns(rows, chal);
   final pre = air.preColumns();
+  final pub = air.pubColumns();
   final CT = air.totalCols;
   List<int> full(int r) => [
         ...rows[r],
@@ -22,7 +23,7 @@ String? checkTrace(Air air, List<List<int>> rows, List<QM31> chal) {
         for (final c in pre) c[r],
       ];
   final cur = Uint32List(CT), next = Uint32List(CT);
-  final per = Uint32List(air.numPeriodic), lin = Uint32List(air.numLinear);
+  final per = Uint32List(air.numPointCols), lin = Uint32List(air.numLinear);
   final out = Uint32List(air.numConstraints);
   final auxOut = List<QM31>.filled(air.numAuxConstraints, QM31.zero);
   for (int r = 0; r < n; r++) {
@@ -30,6 +31,9 @@ String? checkTrace(Air air, List<List<int>> rows, List<QM31> chal) {
     next.setAll(0, full((r + 1) % n));
     for (int k = 0; k < air.numPeriodic; k++) {
       per[k] = air.periodicValue(k, r);
+    }
+    for (int j = 0; j < pub.length; j++) {
+      per[air.numPeriodic + j] = pub[j][r];
     }
     final p = air.rowPoint(r);
     for (int k = 0; k < air.numLinear; k++) {
@@ -81,7 +85,7 @@ void main() {
     sw.reset();
     final rows = program.witness(innerProof);
     print('  witness in ${sw.elapsedMilliseconds} ms');
-    final digest = VerifierProgram.statementDigest(innerAir, innerProof.preRoot);
+    final digest = VerifierProgram.nodeDigestOf(innerAir, innerProof.preRoot);
     final vAir = program.air(digest);
     vAir.validateGroups();
     final chal = [rq(), rq(), rq()];
@@ -104,7 +108,7 @@ void main() {
           ...innerProof.queries.sublist(1)
         ]);
     final rows = program.witness(bad);
-    final vAir = program.air(VerifierProgram.statementDigest(innerAir, bad.preRoot));
+    final vAir = program.air(VerifierProgram.nodeDigestOf(innerAir, bad.preRoot));
     final result = checkTrace(vAir, rows, [rq(), rq(), rq()]);
     print('  tampered leaf: $result');
     expect(result, isNotNull);
@@ -116,7 +120,7 @@ void main() {
   test('the verifier trace proves and verifies (small parameters)', () {
     const outer = StarkParams(logTrace: vLog, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
     final rows = program.witness(innerProof);
-    final vAir = program.air(VerifierProgram.statementDigest(innerAir, innerProof.preRoot));
+    final vAir = program.air(VerifierProgram.nodeDigestOf(innerAir, innerProof.preRoot));
     final sw = Stopwatch()..start();
     final proof = StarkProver.prove(outer, vAir, rows, rng: Random(2), hash: p2, verbose: true);
     print('  outer prover ${sw.elapsedMilliseconds} ms, proof ${ProofSize.bytes(outer, vAir, p2)} B');

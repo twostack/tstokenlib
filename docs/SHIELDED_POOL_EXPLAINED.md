@@ -226,6 +226,7 @@ coordinator can build proofs, not with what the blockchain can hold.
 
 ---
 
-*Status note for maintainers: sections 1–7 and 9–11 describe what is built and
-tested. Section 8's aggregation is built and measured off chain; putting the
-bundled proof on chain (one checker per round) is the next engineering step.*
+*Status note for maintainers: everything above is built and tested end to end at
+small parameters, including section 8's aggregation with one checker per round;
+tuning the round's proof parameters for a full-size round is the next engineering
+step.*
