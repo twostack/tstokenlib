@@ -39,7 +39,8 @@ void main() {
       final coefs = [for (int j = 0; j < 5; j++) col(n ~/ 2)];
       final (evD, tD) = dart.commitColumns(coefs, m, p2);
       final (evN, tN) = native!.commitColumns(coefs, m, p2);
-      expect(evN, evD);
+      expect([for (int j = 0; j < evN.count; j++) evN.column(j)], [for (int j = 0; j < evD.count; j++) evD.column(j)]);
+      evN.release();
       expect(tN.root, tD.root, reason: 'root m=$m');
       for (final leaf in [0, 3, (1 << m) - 1]) {
         expect(tN.path(leaf), tD.path(leaf), reason: 'path $leaf m=$m');

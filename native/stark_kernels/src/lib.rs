@@ -18,6 +18,7 @@
 //!   then each level above it, the root last.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 // ------------------------------------------------------------------ M31
@@ -442,115 +443,223 @@ const P2_PARTIAL: usize = 14;
 /// which derives them; see `Poseidon2M31`).
 const P2_RC_LEN: usize = P2_FULL * P2_WIDTH + P2_PARTIAL;
 
-const M4: [[u32; 4]; 4] = [[5, 7, 1, 3], [4, 6, 1, 1], [1, 3, 5, 7], [1, 1, 4, 6]];
+/// Leaves (or nodes) hashed side by side: the permutation runs on `[u32; N]`
+/// per state lane in struct-of-arrays layout, so every field operation is a
+/// loop of N independent lanes that the compiler vectorises.
+const P2_N: usize = 16;
 
-fn p2_internal_diag() -> [u32; 16] {
-    let shifts = [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16];
-    let mut d = [0u32; 16];
-    d[0] = P - 2;
-    for (i, s) in shifts.iter().enumerate() {
-        d[i + 1] = 1u32 << s;
+#[inline(always)]
+fn v_add<const N: usize>(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        let s = a[i] + b[i];
+        r[i] = s.min(s.wrapping_sub(P));
     }
-    d
+    r
 }
 
 #[inline(always)]
-fn pow5(x: u32) -> u32 {
-    let x2 = mul(x, x);
-    mul(mul(x2, x2), x)
+fn v_sub<const N: usize>(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        let s = a[i].wrapping_sub(b[i]);
+        r[i] = s.min(s.wrapping_add(P));
+    }
+    r
 }
 
-fn p2_external_layer(s: &mut [u32; 16]) {
-    let mut y = [0u32; 16];
+/// 2^s * a mod p: a rotation of the 31-bit value (a canonical, s in 1..=30).
+#[inline(always)]
+fn v_shl<const N: usize>(a: &[u32; N], s: u32) -> [u32; N] {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        r[i] = ((a[i] << s) & P) | (a[i] >> (31 - s));
+    }
+    r
+}
+
+#[inline(always)]
+fn v_mul<const N: usize>(a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        let x = (a[i] as u64) * (b[i] as u64);
+        let y = ((x & P as u64) + (x >> 31)) as u32;
+        let z = (y & P) + (y >> 31);
+        r[i] = z.min(z.wrapping_sub(P));
+    }
+    r
+}
+
+#[inline(always)]
+fn v_pow5<const N: usize>(x: &[u32; N]) -> [u32; N] {
+    let x2 = v_mul(x, x);
+    v_mul(&v_mul(&x2, &x2), x)
+}
+
+#[inline(always)]
+fn v_add_const<const N: usize>(a: &[u32; N], c: u32) -> [u32; N] {
+    let mut r = [0u32; N];
+    for i in 0..N {
+        let s = a[i] + c;
+        r[i] = s.min(s.wrapping_sub(P));
+    }
+    r
+}
+
+/// M4 = [[5,7,1,3],[4,6,1,1],[1,3,5,7],[1,1,4,6]] as the add chain of the
+/// Poseidon2 paper (t6, t5, t7, t4 are its rows).
+#[inline(always)]
+fn v_m4<const N: usize>(x: &mut [[u32; N]; 16], b: usize) {
+    let (x0, x1, x2, x3) = (x[4 * b], x[4 * b + 1], x[4 * b + 2], x[4 * b + 3]);
+    let t0 = v_add(&x0, &x1);
+    let t1 = v_add(&x2, &x3);
+    let t2 = v_add(&v_shl(&x1, 1), &t1);
+    let t3 = v_add(&v_shl(&x3, 1), &t0);
+    let t4 = v_add(&v_shl(&t1, 2), &t3);
+    let t5 = v_add(&v_shl(&t0, 2), &t2);
+    let t6 = v_add(&t3, &t5);
+    let t7 = v_add(&t2, &t4);
+    x[4 * b] = t6;
+    x[4 * b + 1] = t5;
+    x[4 * b + 2] = t7;
+    x[4 * b + 3] = t4;
+}
+
+#[inline(always)]
+fn v_external_layer<const N: usize>(s: &mut [[u32; N]; 16]) {
     for b in 0..4 {
-        for r in 0..4 {
-            let mut acc = 0u32;
-            for c in 0..4 {
-                acc = add(acc, mul(s[4 * b + c], M4[r][c]));
-            }
-            y[4 * b + r] = acc;
-        }
+        v_m4(s, b);
     }
     for r in 0..4 {
-        let sum = add(add(y[r], y[4 + r]), add(y[8 + r], y[12 + r]));
+        let sum = v_add(&v_add(&s[r], &s[4 + r]), &v_add(&s[8 + r], &s[12 + r]));
         for b in 0..4 {
-            y[4 * b + r] = add(y[4 * b + r], sum);
+            s[4 * b + r] = v_add(&s[4 * b + r], &sum);
         }
     }
-    *s = y;
 }
 
-fn p2_internal_layer(s: &mut [u32; 16], diag: &[u32; 16]) {
-    let mut sum = 0u32;
-    for v in s.iter() {
-        sum = add(sum, *v);
+/// Internal diagonal: -2 on lane 0, then 2^0, 2^1, .., 2^8, 2^10, .., 2^16.
+const P2_DIAG_SHIFTS: [u32; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16];
+
+#[inline(always)]
+fn v_internal_layer<const N: usize>(s: &mut [[u32; N]; 16]) {
+    let mut sum = s[0];
+    for j in 1..16 {
+        sum = v_add(&sum, &s[j]);
     }
-    for j in 0..16 {
-        s[j] = add(sum, mul(diag[j], s[j]));
+    s[0] = v_sub(&sum, &v_shl(&s[0], 1));
+    for j in 1..16 {
+        let sh = P2_DIAG_SHIFTS[j - 1];
+        let d = if sh == 0 { s[j] } else { v_shl(&s[j], sh) };
+        s[j] = v_add(&sum, &d);
     }
 }
 
-/// The full permutation, exactly as `Poseidon2M31.permute`.
-fn p2_permute(s: &mut [u32; 16], rc: &[u32], diag: &[u32; 16]) {
-    p2_external_layer(s);
+/// The full permutation on N states at once, exactly as `Poseidon2M31.permute`.
+fn v_permute<const N: usize>(s: &mut [[u32; N]; 16], rc: &[u32]) {
+    v_external_layer(s);
     for r in 0..P2_HALF_FULL {
         for k in 0..16 {
-            s[k] = pow5(add(s[k], rc[r * 16 + k]));
+            s[k] = v_pow5(&v_add_const(&s[k], rc[r * 16 + k]));
         }
-        p2_external_layer(s);
+        v_external_layer(s);
     }
     for r in 0..P2_PARTIAL {
-        s[0] = pow5(add(s[0], rc[P2_FULL * 16 + r]));
-        p2_internal_layer(s, diag);
+        s[0] = v_pow5(&v_add_const(&s[0], rc[P2_FULL * 16 + r]));
+        v_internal_layer(s);
     }
     for r in P2_HALF_FULL..P2_FULL {
         for k in 0..16 {
-            s[k] = pow5(add(s[k], rc[r * 16 + k]));
+            s[k] = v_pow5(&v_add_const(&s[k], rc[r * 16 + k]));
         }
-        p2_external_layer(s);
+        v_external_layer(s);
     }
 }
 
-/// P(left || right)[0..8]
-#[inline]
-fn p2_compress(left: &[u32], right: &[u32], rc: &[u32], diag: &[u32; 16], out: &mut [u32]) {
-    let mut s = [0u32; 16];
-    s[..8].copy_from_slice(left);
-    s[8..].copy_from_slice(right);
-    p2_permute(&mut s, rc, diag);
-    out.copy_from_slice(&s[..8]);
+/// The permutation of one state in place.
+fn p2_permute(s: &mut [u32; 16], rc: &[u32]) {
+    let mut v = [[0u32; 1]; 16];
+    for k in 0..16 {
+        v[k][0] = s[k];
+    }
+    v_permute(&mut v, rc);
+    for k in 0..16 {
+        s[k] = v[k][0];
+    }
 }
 
-/// Leaf over lanes: h = 0; h = P(h || chunk)[0..8] per zero-padded 8-lane chunk.
-fn p2_leaf(lanes: &[u32], rc: &[u32], diag: &[u32; 16], out: &mut [u32]) {
-    let mut h = [0u32; 8];
-    let chunks = if lanes.is_empty() { 1 } else { (lanes.len() + 7) / 8 };
+/// N leaves at once, leaf l over the lanes `lane(l, k)`, k < n_lanes:
+/// h = 0; h = P(h || chunk)[0..8] per zero-padded 8-lane chunk. Writes the
+/// 8 digest lanes of leaf l at `out[8l..8l+8]`.
+#[inline(always)]
+fn v_leaf<const N: usize, F: Fn(usize, usize) -> u32>(n_lanes: usize, lane: F, rc: &[u32], out: &mut [u32]) {
+    let chunks = if n_lanes == 0 { 1 } else { (n_lanes + 7) / 8 };
+    let mut h = [[0u32; N]; 8];
     for c in 0..chunks {
-        let mut chunk = [0u32; 8];
+        let mut s = [[0u32; N]; 16];
+        s[..8].copy_from_slice(&h);
         for i in 0..8 {
             let k = c * 8 + i;
-            if k < lanes.len() {
-                chunk[i] = lanes[k];
+            if k < n_lanes {
+                for l in 0..N {
+                    s[8 + i][l] = lane(l, k);
+                }
             }
         }
-        let mut next = [0u32; 8];
-        p2_compress(&h, &chunk, rc, diag, &mut next);
-        h = next;
+        v_permute(&mut s, rc);
+        h.copy_from_slice(&s[..8]);
     }
-    out.copy_from_slice(&h);
+    for l in 0..N {
+        for k in 0..8 {
+            out[8 * l + k] = h[k][l];
+        }
+    }
+}
+
+/// N compressions at once: node l = P(prev[16l..16l+8] || prev[16l+8..16l+16])[0..8]
+/// over the 16N lanes of `prev`, written to `out[8l..8l+8]`.
+#[inline(always)]
+fn v_compress<const N: usize>(prev: &[u32], rc: &[u32], out: &mut [u32]) {
+    let mut s = [[0u32; N]; 16];
+    for l in 0..N {
+        for k in 0..16 {
+            s[k][l] = prev[16 * l + k];
+        }
+    }
+    v_permute(&mut s, rc);
+    for l in 0..N {
+        out[8 * l..8 * l + 8].copy_from_slice(&[s[0][l], s[1][l], s[2][l], s[3][l], s[4][l], s[5][l], s[6][l], s[7][l]]);
+    }
+}
+
+/// Leaf hashing of `leaves` leaves into `out` (8 lanes each), P2_N at a time.
+fn p2_leaves<F: Fn(usize, usize) -> u32 + Sync>(leaves: usize, n_lanes: usize, lane: F, rc: &[u32], out: &mut [u32]) {
+    let full = leaves - leaves % P2_N;
+    par_fill_u32(&mut out[..full * 8], 8 * P2_N, 256, |b, block| {
+        v_leaf::<P2_N, _>(n_lanes, |l, k| lane(b * P2_N + l, k), rc, block);
+    });
+    for i in full..leaves {
+        v_leaf::<1, _>(n_lanes, |_, k| lane(i, k), rc, &mut out[8 * i..8 * i + 8]);
+    }
 }
 
 /// Build the levels above the leaves already written at `tree[..leaves*8]` (lanes).
-fn merkle_above_p2(tree: &mut [u32], leaves: usize, rc: &[u32], diag: &[u32; 16]) {
+fn merkle_above_p2(tree: &mut [u32], leaves: usize, rc: &[u32]) {
     let mut offset = 0usize;
     let mut len = leaves;
     while len > 1 {
         let next = len / 2;
         let (below, above) = tree.split_at_mut(offset + len * 8);
         let prev = &below[offset..offset + len * 8];
-        par_fill_u32(&mut above[..next * 8], 8, 2048, |i, node| {
-            p2_compress(&prev[16 * i..16 * i + 8], &prev[16 * i + 8..16 * i + 16], rc, diag, node);
-        });
+        if next % P2_N == 0 {
+            par_fill_u32(&mut above[..next * 8], 8 * P2_N, 256, |b, block| {
+                v_compress::<P2_N>(&prev[16 * P2_N * b..16 * P2_N * (b + 1)], rc, block);
+            });
+        } else {
+            for (i, node) in above[..next * 8].chunks_mut(8).enumerate() {
+                v_compress::<1>(&prev[16 * i..16 * i + 16], rc, node);
+            }
+        }
         offset += len * 8;
         len = next;
     }
@@ -636,12 +745,98 @@ fn tree_bytes(leaves: usize) -> usize {
     (2 * leaves - 1) * 32
 }
 
+// ------------------------------------------------------------------ column store
+
+/// Committed evaluations kept on this side of the FFI boundary: `k` columns
+/// of `n` words (twin layout), handed to Dart as an id. The later kernels
+/// (composition, DEEP quotients, openings) read them in place, so the
+/// gigabytes of a node's columns never cross into the Dart heap.
+struct Stored {
+    k: usize,
+    n: usize,
+    data: Vec<u32>,
+}
+
+impl Stored {
+    fn column(&self, j: usize) -> &[u32] {
+        &self.data[j * self.n..(j + 1) * self.n]
+    }
+}
+
+fn store() -> &'static Mutex<HashMap<u64, Arc<Stored>>> {
+    static STORE: OnceLock<Mutex<HashMap<u64, Arc<Stored>>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn store_put(k: usize, n: usize, data: Vec<u32>) -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    debug_assert_eq!(data.len(), k * n);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    store().lock().unwrap().insert(id, Arc::new(Stored { k, n, data }));
+    id
+}
+
+fn store_get(id: u64) -> Arc<Stored> {
+    store().lock().unwrap().get(&id).cloned().unwrap_or_else(|| panic!("column store: no columns with id {id}"))
+}
+
+/// The columns of several stored sets, in order.
+fn stored_columns(sets: &[Arc<Stored>]) -> Vec<&[u32]> {
+    let mut v = Vec::new();
+    for s in sets {
+        for j in 0..s.k {
+            v.push(s.column(j));
+        }
+    }
+    v
+}
+
+unsafe fn handles(ptr: *const u64, count: usize) -> Vec<Arc<Stored>> {
+    std::slice::from_raw_parts(ptr, count).iter().map(|&h| store_get(h)).collect()
+}
+
+/// Stores `k` columns of `n` words copied from `data`; returns the id.
+#[no_mangle]
+pub unsafe extern "C" fn sk_store_put(data: *const u32, k: usize, n: usize) -> u64 {
+    store_put(k, n, std::slice::from_raw_parts(data, k * n).to_vec())
+}
+
+/// Evaluates `k` coefficient columns of `len` words on HalfCoset(m) ∪ conj
+/// and stores the values; returns the id.
+#[no_mangle]
+pub unsafe extern "C" fn sk_store_evaluate(coefs: *const u32, k: usize, len: usize, m: u32) -> u64 {
+    let n = 1usize << (m + 1);
+    let coefs = std::slice::from_raw_parts(coefs, k * len);
+    let mut ev = vec![0u32; k * n];
+    par_fill_u32(&mut ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
+    store_put(k, n, ev)
+}
+
+/// Frees the stored columns `id` (a no-op for an unknown id).
+#[no_mangle]
+pub extern "C" fn sk_store_free(id: u64) {
+    store().lock().unwrap().remove(&id);
+}
+
+/// One value: column `col` at position `i` of the stored columns `id`.
+#[no_mangle]
+pub extern "C" fn sk_store_get(id: u64, col: usize, i: usize) -> u32 {
+    store_get(id).column(col)[i]
+}
+
+/// `count` values of column `col` from position `start` into `out`.
+#[no_mangle]
+pub unsafe extern "C" fn sk_store_read(id: u64, col: usize, start: usize, count: usize, out: *mut u32) {
+    let s = store_get(id);
+    std::slice::from_raw_parts_mut(out, count).copy_from_slice(&s.column(col)[start..start + count]);
+}
+
 // ------------------------------------------------------------------ exported kernels
 
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    3
+    4
 }
 
 /// One Poseidon2 permutation of 16 lanes in place, with the round constants
@@ -650,15 +845,15 @@ pub extern "C" fn sk_version() -> u32 {
 pub unsafe extern "C" fn sk_poseidon2_permute(state: *mut u32, rc: *const u32) {
     let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
     let s = std::slice::from_raw_parts_mut(state, 16);
-    let diag = p2_internal_diag();
     let mut st = [0u32; 16];
     st.copy_from_slice(s);
-    p2_permute(&mut st, rc, &diag);
+    p2_permute(&mut st, rc);
     s.copy_from_slice(&st);
 }
 
 /// [sk_commit_columns] with Poseidon2: leaf i is the Poseidon2 leaf of the
 /// 2k lanes `ev[j][i]`, `ev[j][M+i]`; `out_tree` holds `(2M - 1) * 8` lanes.
+/// Returns the id of the stored evaluations.
 #[no_mangle]
 pub unsafe extern "C" fn sk_commit_columns_p2(
     coefs: *const u32,
@@ -666,27 +861,22 @@ pub unsafe extern "C" fn sk_commit_columns_p2(
     len: usize,
     m: u32,
     rc: *const u32,
-    out_ev: *mut u32,
     out_tree: *mut u32,
-) {
+) -> u64 {
     let big_m = 1usize << m;
     let n = 2 * big_m;
     let coefs = std::slice::from_raw_parts(coefs, k * len);
     let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
-    let ev = std::slice::from_raw_parts_mut(out_ev, k * n);
     let tree = std::slice::from_raw_parts_mut(out_tree, (2 * big_m - 1) * 8);
-    let diag = p2_internal_diag();
-    par_fill_u32(ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
-    let ev: &[u32] = ev;
-    par_fill_u32(&mut tree[..big_m * 8], 8, 2048, |i, leaf| {
-        let mut lanes = vec![0u32; 2 * k];
-        for j in 0..k {
-            lanes[j] = ev[j * n + i];
-            lanes[k + j] = ev[j * n + big_m + i];
-        }
-        p2_leaf(&lanes, rc, &diag, leaf);
-    });
-    merkle_above_p2(tree, big_m, rc, &diag);
+    let mut ev = vec![0u32; k * n];
+    par_fill_u32(&mut ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
+    {
+        let ev: &[u32] = &ev;
+        // lane j of leaf i is ev[j][i], lane k + j is ev[j][M + i]
+        p2_leaves(big_m, 2 * k, |i, lane| if lane < k { ev[lane * n + i] } else { ev[(lane - k) * n + big_m + i] }, rc, &mut tree[..big_m * 8]);
+    }
+    merkle_above_p2(tree, big_m, rc);
+    store_put(k, n, ev)
 }
 
 /// [sk_merkle_pairs] with Poseidon2; `out_tree` holds `(2h - 1) * 8` lanes.
@@ -697,14 +887,9 @@ pub unsafe extern "C" fn sk_merkle_pairs_p2(cur: *const u32, log_len: u32, rc: *
     let cur = std::slice::from_raw_parts(cur, 4 * len);
     let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
     let tree = std::slice::from_raw_parts_mut(out_tree, (2 * h - 1) * 8);
-    let diag = p2_internal_diag();
-    par_fill_u32(&mut tree[..h * 8], 8, 2048, |i, leaf| {
-        let mut lanes = [0u32; 8];
-        lanes[..4].copy_from_slice(&cur[4 * i..4 * i + 4]);
-        lanes[4..].copy_from_slice(&cur[4 * (h + i)..4 * (h + i) + 4]);
-        p2_leaf(&lanes, rc, &diag, leaf);
-    });
-    merkle_above_p2(tree, h, rc, &diag);
+    // leaf i: the 4 limbs at i, then the 4 limbs at h + i
+    p2_leaves(h, 8, |i, lane| if lane < 4 { cur[4 * i + lane] } else { cur[4 * (h + i) + lane - 4] }, rc, &mut tree[..h * 8]);
+    merkle_above_p2(tree, h, rc);
 }
 
 /// `k` columns of 2^(m+1) values (twin layout) -> `k` columns of coefficients.
@@ -727,36 +912,33 @@ pub unsafe extern "C" fn sk_evaluate_columns(coefs: *const u32, k: usize, len: u
 
 /// Evaluate `k` coefficient columns on HalfCoset(m) ∪ conj and commit: leaf
 /// `i` is SHA256 of the 2k little-endian words `ev[j][i]`, `ev[j][M+i]`.
-/// `out_ev` holds the k columns of 2^(m+1) values, `out_tree` the
-/// `(2M - 1) * 32` bytes of the tree.
+/// `out_tree` holds the `(2M - 1) * 32` bytes of the tree; the k columns
+/// of 2^(m+1) values are stored and their id returned.
 #[no_mangle]
-pub unsafe extern "C" fn sk_commit_columns(
-    coefs: *const u32,
-    k: usize,
-    len: usize,
-    m: u32,
-    out_ev: *mut u32,
-    out_tree: *mut u8,
-) {
+pub unsafe extern "C" fn sk_commit_columns(coefs: *const u32, k: usize, len: usize, m: u32, out_tree: *mut u8) -> u64 {
     let big_m = 1usize << m;
     let n = 2 * big_m;
     let coefs = std::slice::from_raw_parts(coefs, k * len);
-    let ev = std::slice::from_raw_parts_mut(out_ev, k * n);
     let tree = std::slice::from_raw_parts_mut(out_tree, tree_bytes(big_m));
-    par_fill_u32(ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
-    let ev: &[u32] = ev;
-    par_fill(&mut tree[..big_m * 32], 32, 4096, |i, leaf| {
-        let mut buf = vec![0u8; 8 * k];
-        for j in 0..k {
-            buf[4 * j..4 * j + 4].copy_from_slice(&ev[j * n + i].to_le_bytes());
-            buf[4 * (k + j)..4 * (k + j) + 4].copy_from_slice(&ev[j * n + big_m + i].to_le_bytes());
-        }
-        leaf.copy_from_slice(&sha256(&buf));
-    });
+    let mut ev = vec![0u32; k * n];
+    par_fill_u32(&mut ev, n, 2, |j, col| evaluate(&coefs[j * len..(j + 1) * len], m, col));
+    {
+        let ev: &[u32] = &ev;
+        par_fill(&mut tree[..big_m * 32], 32, 4096, |i, leaf| {
+            let mut buf = vec![0u8; 8 * k];
+            for j in 0..k {
+                buf[4 * j..4 * j + 4].copy_from_slice(&ev[j * n + i].to_le_bytes());
+                buf[4 * (k + j)..4 * (k + j) + 4].copy_from_slice(&ev[j * n + big_m + i].to_le_bytes());
+            }
+            leaf.copy_from_slice(&sha256(&buf));
+        });
+    }
     merkle_above(tree, big_m);
+    store_put(k, n, ev)
 }
 
-/// DEEP quotients of `k` value columns (twin layout on HalfCoset(m)):
+/// DEEP quotients of the stored value columns `sets` (twin layout on
+/// HalfCoset(m)), k columns in all:
 /// q = (c * Σ w_j col_j - A * y - B) / (dA * x + dB * y + dC) at every
 /// position, P side then C side (y negated). `consts` is
 /// `c, A, B, dA, dB, dC, w_0 .. w_{k-1}` as QM31 limbs. With `accumulate`
@@ -764,16 +946,21 @@ pub unsafe extern "C" fn sk_commit_columns(
 #[no_mangle]
 pub unsafe extern "C" fn sk_deep_quotients(
     consts: *const u32,
-    cols: *const u32,
-    k: usize,
+    sets: *const u64,
+    n_sets: usize,
     m: u32,
     accumulate: u32,
     out: *mut u32,
 ) {
     let big_m = 1usize << m;
     let n = 2 * big_m;
+    let sets = handles(sets, n_sets);
+    let cols = stored_columns(&sets);
+    let k = cols.len();
+    for c in &cols {
+        assert_eq!(c.len(), n, "stored columns are not on HalfCoset({m})");
+    }
     let consts = std::slice::from_raw_parts(consts, 24 + 4 * k);
-    let cols = std::slice::from_raw_parts(cols, k * n);
     let out = std::slice::from_raw_parts_mut(out, 4 * n);
     let c = q_at(consts, 0);
     let ca = q_at(consts, 1);
@@ -786,26 +973,49 @@ pub unsafe extern "C" fn sk_deep_quotients(
     // numerators straight into out, denominators aside, then one batch inversion per chunk
     let th = threads();
     let per = ((n + th - 1) / th).max(1024);
-    let cols: &[u32] = cols;
     std::thread::scope(|s| {
         for (blk, block) in out.chunks_mut(4 * per).enumerate() {
-            let (c, ca, cb, da, db, dc, w, t) = (&c, &ca, &cb, &da, &db, &dc, &w, &t);
+            let (c, ca, cb, da, db, dc, w, t, cols) = (&c, &ca, &cb, &da, &db, &dc, &w, &t, &cols);
             s.spawn(move || {
                 let cnt = block.len() / 4;
                 let base = blk * per;
                 let mut dens = vec![Q_ZERO; cnt];
                 let mut nums = vec![Q_ZERO; cnt];
-                for r in 0..cnt {
-                    let q = base + r;
-                    let i = if q < big_m { q } else { q - big_m };
-                    let px = t.x[i];
-                    let py = if q < big_m { t.y[i] } else { neg(t.y[i]) };
-                    let mut sacc = Q_ZERO;
-                    for j in 0..k {
-                        sacc = qadd(&sacc, &qscale(&w[j], cols[j * n + q]));
+                // the weighted column sum in blocks of rows, one column at a
+                // time (contiguous reads), limbs kept as four lane arrays
+                const DB: usize = 512;
+                let mut sl = [[0u32; DB]; 4];
+                let mut r0 = 0usize;
+                while r0 < cnt {
+                    let len = DB.min(cnt - r0);
+                    for lane in 0..4 {
+                        sl[lane][..len].fill(0);
                     }
-                    nums[r] = qsub(&qsub(&qmul(c, &sacc), &qscale(ca, py)), cb);
-                    dens[r] = qadd(&qadd(&qscale(da, px), &qscale(db, py)), dc);
+                    for j in 0..k {
+                        let col = &cols[j][base + r0..base + r0 + len];
+                        for lane in 0..4 {
+                            let wl = w[j][lane] as u64;
+                            let acc = &mut sl[lane][..len];
+                            for r in 0..len {
+                                let x = wl * col[r] as u64;
+                                let y = ((x & P as u64) + (x >> 31)) as u32;
+                                let z = (y & P) + (y >> 31);
+                                let m = z.min(z.wrapping_sub(P));
+                                let a = acc[r] + m;
+                                acc[r] = a.min(a.wrapping_sub(P));
+                            }
+                        }
+                    }
+                    for r in 0..len {
+                        let q = base + r0 + r;
+                        let i = if q < big_m { q } else { q - big_m };
+                        let px = t.x[i];
+                        let py = if q < big_m { t.y[i] } else { neg(t.y[i]) };
+                        let sacc = [sl[0][r], sl[1][r], sl[2][r], sl[3][r]];
+                        nums[r0 + r] = qsub(&qsub(&qmul(c, &sacc), &qscale(ca, py)), cb);
+                        dens[r0 + r] = qadd(&qadd(&qscale(da, px), &qscale(db, py)), dc);
+                    }
+                    r0 += len;
                 }
                 let invs = qbatch_inv(&dens);
                 for r in 0..cnt {
@@ -903,7 +1113,9 @@ pub unsafe extern "C" fn sk_sha256(data: *const u8, len: usize, out: *mut u8) {
 //          words, evaluated on the domain here so the values never cross the FFI boundary)]
 //   ops:  7 words per op: kind (0 add, 1 sub, 2 mul, 3 scale, 4 constant), a, b, imm0..imm3
 //   src:  2 words per input: kind (0 cur, 1 next, 2 per, 3 lin, 4 const, 5 chal), index
-//   cols: n_cols x nC (cur at q, next at idx_next[q]); per: n_per x 2^log_pc (at idx_per[q]);
+//   cols: with coef_len > 0, n_cols coefficient columns; else unused and the value columns
+//         are the stored sets `sets` (n_sets ids, n_cols columns in all), on the domain
+//         (cur at q, next at idx_next[q]); per: n_per x 2^log_pc (at idx_per[q]);
 //   lin: n_lin x nC; chal: 4 words each; divs: n_div x nC; out: nC x 4 (row-major limbs).
 // ---------------------------------------------------------------------------
 
@@ -923,7 +1135,7 @@ impl<'a> Prog<'a> {
 struct RowCtx<'a> {
     n_c: usize,
     n_pc: usize,
-    cols: &'a [u32],
+    cols: Vec<&'a [u32]>,
     per: &'a [u32],
     lin: &'a [u32],
     chal: &'a [u32],
@@ -931,51 +1143,122 @@ struct RowCtx<'a> {
     idx_per: &'a [u32],
 }
 
+// ---- row blocks: every op of the program runs over RB rows at once, so the
+// interpreter's dispatch is paid once per RB rows and the field arithmetic
+// is a loop of RB independent lanes the compiler vectorises. ----
+
+const RB: usize = 16;
+type VB = [u32; RB];
+type QB = [VB; 4];
+const VB_ZERO: VB = [0; RB];
+const QB_ZERO: QB = [VB_ZERO; 4];
+
+#[inline(always)]
+fn vb_splat(c: u32) -> VB {
+    [c; RB]
+}
+
+#[inline(always)]
+fn qb_splat(q: &Q) -> QB {
+    [vb_splat(q[0]), vb_splat(q[1]), vb_splat(q[2]), vb_splat(q[3])]
+}
+
+#[inline(always)]
+fn qb_add(a: &QB, b: &QB) -> QB {
+    [v_add(&a[0], &b[0]), v_add(&a[1], &b[1]), v_add(&a[2], &b[2]), v_add(&a[3], &b[3])]
+}
+
+#[inline(always)]
+fn qb_sub(a: &QB, b: &QB) -> QB {
+    [v_sub(&a[0], &b[0]), v_sub(&a[1], &b[1]), v_sub(&a[2], &b[2]), v_sub(&a[3], &b[3])]
+}
+
+/// Every limb times the per-row M31 vector `m`.
+#[inline(always)]
+fn qb_scale(a: &QB, m: &VB) -> QB {
+    [v_mul(&a[0], m), v_mul(&a[1], m), v_mul(&a[2], m), v_mul(&a[3], m)]
+}
+
+#[inline(always)]
+fn vb_cmul(a0: &VB, a1: &VB, b0: &VB, b1: &VB) -> (VB, VB) {
+    (v_sub(&v_mul(a0, b0), &v_mul(a1, b1)), v_add(&v_mul(a0, b1), &v_mul(a1, b0)))
+}
+
+#[inline(always)]
+fn vb_cmul_2i(a: &VB, b: &VB) -> (VB, VB) {
+    (v_sub(&v_add(a, a), b), v_add(a, &v_add(b, b)))
+}
+
+/// [qmul] lane by lane.
+#[inline(always)]
+fn qb_mul(a: &QB, b: &QB) -> QB {
+    let (p0, p1) = vb_cmul(&a[0], &a[1], &b[0], &b[1]);
+    let (q0, q1) = vb_cmul(&a[2], &a[3], &b[2], &b[3]);
+    let (q0, q1) = vb_cmul_2i(&q0, &q1);
+    let (r0, r1) = vb_cmul(&a[0], &a[1], &b[2], &b[3]);
+    let (s0, s1) = vb_cmul(&a[2], &a[3], &b[0], &b[1]);
+    [v_add(&p0, &q0), v_add(&p1, &q1), v_add(&r0, &s0), v_add(&r1, &s1)]
+}
+
 impl<'a> RowCtx<'a> {
+    /// The M31 lane of input (kind, idx) over rows q0 .. q0 + len (lanes
+    /// past len hold the row-q0 value).
     #[inline(always)]
-    fn input(&self, kind: u32, idx: usize, q: usize) -> Q {
+    fn input_block(&self, kind: u32, idx: usize, q0: usize, len: usize) -> VB {
+        let mut r = VB_ZERO;
         match kind {
-            0 => [self.cols[idx * self.n_c + q], 0, 0, 0],
-            1 => [self.cols[idx * self.n_c + self.idx_next[q] as usize], 0, 0, 0],
-            2 => [self.per[idx * self.n_pc + self.idx_per[q] as usize], 0, 0, 0],
-            3 => [self.lin[idx * self.n_c + q], 0, 0, 0],
-            4 => [idx as u32, 0, 0, 0],
-            _ => q_at(self.chal, idx),
+            0 => r[..len].copy_from_slice(&self.cols[idx][q0..q0 + len]),
+            1 => {
+                let col = self.cols[idx];
+                for l in 0..len {
+                    r[l] = col[self.idx_next[q0 + l] as usize];
+                }
+            }
+            2 => {
+                for l in 0..len {
+                    r[l] = self.per[idx * self.n_pc + self.idx_per[q0 + l] as usize];
+                }
+            }
+            3 => r[..len].copy_from_slice(&self.lin[idx * self.n_c + q0..idx * self.n_c + q0 + len]),
+            4 => r = vb_splat(idx as u32),
+            _ => r = vb_splat(self.chal[4 * idx]),
         }
+        r
     }
 }
 
-fn run_m31(p: &Prog, ctx: &RowCtx, q: usize, vals: &mut [u32]) {
+fn run_m31_block(p: &Prog, ctx: &RowCtx, q0: usize, len: usize, vals: &mut [VB]) {
     for i in 0..p.n_inputs {
-        vals[i] = ctx.input(p.src[2 * i], p.src[2 * i + 1] as usize, q)[0];
+        vals[i] = ctx.input_block(p.src[2 * i], p.src[2 * i + 1] as usize, q0, len);
     }
     let mut n = p.n_inputs;
     for op in p.ops.chunks_exact(7) {
         let (a, b) = (op[1] as usize, op[2] as usize);
         vals[n] = match op[0] {
-            0 => add(vals[a], vals[b]),
-            1 => sub(vals[a], vals[b]),
-            2 => mul(vals[a], vals[b]),
-            3 => mul(vals[a], op[3]),
-            _ => op[3],
+            0 => v_add(&vals[a], &vals[b]),
+            1 => v_sub(&vals[a], &vals[b]),
+            2 => v_mul(&vals[a], &vals[b]),
+            3 => v_mul(&vals[a], &vb_splat(op[3])),
+            _ => vb_splat(op[3]),
         };
         n += 1;
     }
 }
 
-fn run_q(p: &Prog, ctx: &RowCtx, q: usize, vals: &mut [Q]) {
+fn run_q_block(p: &Prog, ctx: &RowCtx, q0: usize, len: usize, vals: &mut [QB]) {
     for i in 0..p.n_inputs {
-        vals[i] = ctx.input(p.src[2 * i], p.src[2 * i + 1] as usize, q);
+        let (kind, idx) = (p.src[2 * i], p.src[2 * i + 1] as usize);
+        vals[i] = if kind == 5 { qb_splat(&q_at(ctx.chal, idx)) } else { [ctx.input_block(kind, idx, q0, len), VB_ZERO, VB_ZERO, VB_ZERO] };
     }
     let mut n = p.n_inputs;
     for op in p.ops.chunks_exact(7) {
         let (a, b) = (op[1] as usize, op[2] as usize);
         vals[n] = match op[0] {
-            0 => qadd(&vals[a], &vals[b]),
-            1 => qsub(&vals[a], &vals[b]),
-            2 => qmul(&vals[a], &vals[b]),
-            3 => qscale(&vals[a], op[3]),
-            _ => [op[3], op[4], op[5], op[6]],
+            0 => qb_add(&vals[a], &vals[b]),
+            1 => qb_sub(&vals[a], &vals[b]),
+            2 => qb_mul(&vals[a], &vals[b]),
+            3 => qb_scale(&vals[a], &vb_splat(op[3])),
+            _ => qb_splat(&[op[3], op[4], op[5], op[6]]),
         };
         n += 1;
     }
@@ -1016,6 +1299,8 @@ pub unsafe extern "C" fn sk_composition(
     aux_out: *const u32,
     chal: *const u32,
     cols: *const u32,
+    sets: *const u64,
+    n_sets: usize,
     per: *const u32,
     lin: *const u32,
     idx_next: *const u32,
@@ -1052,10 +1337,17 @@ pub unsafe extern "C" fn sk_composition(
         par_fill_u32(&mut ev, n_c, 2, |j, col| evaluate(&coefs[j * coef_len..(j + 1) * coef_len], log_c - 1, col));
         ev
     };
+    let stored = if coef_len == 0 { handles(sets, n_sets) } else { Vec::new() };
+    let value_cols: Vec<&[u32]> =
+        if coef_len == 0 { stored_columns(&stored) } else { (0..n_cols).map(|j| &evaluated[j * n_c..(j + 1) * n_c]).collect() };
+    assert_eq!(value_cols.len(), n_cols, "column count");
+    for c in &value_cols {
+        assert_eq!(c.len(), n_c, "value columns are not on the composition domain");
+    }
     let ctx = RowCtx {
         n_c,
         n_pc,
-        cols: if coef_len == 0 { std::slice::from_raw_parts(cols, n_cols * n_c) } else { &evaluated },
+        cols: value_cols,
         per: std::slice::from_raw_parts(per, n_per * n_pc),
         lin: std::slice::from_raw_parts(lin, n_lin * n_c),
         chal: std::slice::from_raw_parts(chal, 4 * d[12] as usize),
@@ -1066,26 +1358,40 @@ pub unsafe extern "C" fn sk_composition(
     let div_sel = std::slice::from_raw_parts(div_sel, n_out);
     let divs = std::slice::from_raw_parts(divs, n_div * n_c);
     let out = std::slice::from_raw_parts_mut(out, 4 * n_c);
+    let wq: Vec<QB> = (0..n_out).map(|j| qb_splat(&q_at(weights, j))).collect();
     par_rows(out, 4, |range, block| {
-        let mut vm = vec![0u32; main.n_nodes()];
-        let mut va = vec![Q_ZERO; aux.n_nodes()];
-        for (r, q) in range.enumerate() {
-            let mut total = Q_ZERO;
-            run_m31(&main, &ctx, q, &mut vm);
+        let mut vm = vec![VB_ZERO; main.n_nodes()];
+        let mut va = vec![QB_ZERO; aux.n_nodes()];
+        let mut q0 = range.start;
+        while q0 < range.end {
+            let len = RB.min(range.end - q0);
+            let div = |j: usize| -> VB {
+                let mut d = VB_ZERO;
+                let base = div_sel[j] as usize * n_c + q0;
+                d[..len].copy_from_slice(&divs[base..base + len]);
+                d
+            };
+            let mut total = QB_ZERO;
+            run_m31_block(&main, &ctx, q0, len, &mut vm);
             for (j, &o) in main.outs.iter().enumerate() {
-                let c = mul(vm[o as usize], divs[div_sel[j] as usize * n_c + q]);
-                total = qadd(&total, &qscale(&q_at(weights, j), c));
+                let c = v_mul(&vm[o as usize], &div(j));
+                total = qb_add(&total, &qb_scale(&wq[j], &c));
             }
             if !aux.outs.is_empty() {
-                run_q(&aux, &ctx, q, &mut va);
+                run_q_block(&aux, &ctx, q0, len, &mut va);
                 let base = main.outs.len();
                 for (j, &o) in aux.outs.iter().enumerate() {
                     let jj = base + j;
-                    let f = divs[div_sel[jj] as usize * n_c + q];
-                    total = qadd(&total, &qscale(&qmul(&q_at(weights, jj), &va[o as usize]), f));
+                    total = qb_add(&total, &qb_scale(&qb_mul(&wq[jj], &va[o as usize]), &div(jj)));
                 }
             }
-            block[4 * r..4 * r + 4].copy_from_slice(&total);
+            let r0 = q0 - range.start;
+            for l in 0..len {
+                for k in 0..4 {
+                    block[4 * (r0 + l) + k] = total[k][l];
+                }
+            }
+            q0 += len;
         }
     });
 }
@@ -1306,6 +1612,72 @@ pub unsafe extern "C" fn sk_mlkem768_decaps(seed: *const u8, ct: *const u8, ss_o
     let ct = ml_kem::Ciphertext::<MlKem768>::try_from(ct).unwrap();
     let ss = dk.decapsulate(&ct).unwrap();
     ss_out.copy_from_slice(&ss);
+}
+
+#[cfg(test)]
+mod p2_tests {
+    use super::*;
+
+    fn rc() -> Vec<u32> {
+        (0..P2_RC_LEN as u32).map(|i| (i * 0x9e37_79b9) & P).collect()
+    }
+
+    #[test]
+    fn wide_matches_scalar() {
+        let rc = rc();
+        let n_lanes = 45;
+        let leaves = 8 * 5 + 3;
+        let lane = |i: usize, k: usize| ((i * 131 + k * 7919 + 1) as u32 * 2_654_435_761u32) & P;
+        let mut wide = vec![0u32; 8 * leaves];
+        p2_leaves(leaves, n_lanes, lane, &rc, &mut wide);
+        for i in 0..leaves {
+            let mut one = [0u32; 8];
+            v_leaf::<1, _>(n_lanes, |_, k| lane(i, k), &rc, &mut one);
+            assert_eq!(wide[8 * i..8 * i + 8], one[..], "leaf {i}");
+        }
+        // the tree above 16 leaves, wide, against scalar compressions
+        let mut tree = vec![0u32; (2 * 16 - 1) * 8];
+        tree[..16 * 8].copy_from_slice(&wide[..16 * 8]);
+        merkle_above_p2(&mut tree, 16, &rc);
+        let mut node = [0u32; 8];
+        v_compress::<1>(&tree[..16], &rc, &mut node);
+        assert_eq!(tree[16 * 8..16 * 8 + 8], node[..]);
+    }
+
+    #[test]
+    fn m4_matches_matrix() {
+        let rc = rc();
+        let _ = rc;
+        let m4 = [[5u32, 7, 1, 3], [4, 6, 1, 1], [1, 3, 5, 7], [1, 1, 4, 6]];
+        let mut s = [[0u32; 1]; 16];
+        for k in 0..16 {
+            s[k][0] = (k as u32 * 0x7654_3210 + 12345) & P;
+        }
+        let x = s;
+        v_m4(&mut s, 1);
+        for r in 0..4 {
+            let mut acc = 0u32;
+            for c in 0..4 {
+                acc = add(acc, mul(x[4 + c][0], m4[r][c]));
+            }
+            assert_eq!(s[4 + r][0], acc);
+        }
+        // the internal diagonal against the multiplications it replaces
+        let mut t = x;
+        v_internal_layer(&mut t);
+        let mut sum = 0u32;
+        for k in 0..16 {
+            sum = add(sum, x[k][0]);
+        }
+        let mut diag = [0u32; 16];
+        diag[0] = P - 2;
+        for (i, sh) in P2_DIAG_SHIFTS.iter().enumerate() {
+            diag[i + 1] = 1u32 << sh;
+        }
+        for k in 0..16 {
+            assert_eq!(t[k][0], add(sum, mul(diag[k], x[k][0])), "lane {k}");
+        }
+    }
 }
 
 #[cfg(test)]

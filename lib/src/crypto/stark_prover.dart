@@ -103,19 +103,24 @@ class StarkProver {
     }
 
     /// Commit column coefficients on HalfCoset(logTraceHalf) ∪ conj.
-    (List<Uint32List>, MerkleCommitment) commit(List<Uint32List> coefs) => kernels.commitColumns(coefs, P.logTraceHalf, hash);
+    (Columns, MerkleCommitment) commit(List<Uint32List> coefs) => kernels.commitColumns(coefs, P.logTraceHalf, hash);
+    // the committed columns of this proof, released when it is done (the
+    // preprocessed ones live in the PreCommitment cache)
+    final owned = <Columns>[];
+    try {
 
     final traceCoefs = coefsFor([
       for (int j = 0; j < nCols; j++) Uint32List.fromList([for (int k = 0; k < n; k++) rows[k][j]])
     ]);
     _lap('trace interpolation');
     final (traceEv, traceTree) = commit(traceCoefs);
+    owned.add(traceEv);
     _lap('trace LDE + merkle');
 
     // preprocessed columns: public, unmasked, committed on the same domain
     // (cached per instance: the verifier knows this root)
     var preCoefs = <Uint32List>[];
-    var preEv = <Uint32List>[];
+    var preEv = Columns.empty;
     MerkleCommitment? preTree;
     if (air.numPreCols > 0) {
       final pc = PreCommitment.of(air, P, hash, kernels: kernels);
@@ -133,18 +138,19 @@ class StarkProver {
     // ---- interaction round: challenges, aux columns, aux commitment ----
     final chal = [for (int k = 0; k < air.numChallenges; k++) ts.squeezeQM31()];
     var auxCoefs = <Uint32List>[];
-    var auxEv = <Uint32List>[];
+    var auxEv = Columns.empty;
     MerkleCommitment? auxTree;
     if (air.numAuxCols > 0) {
       final auxCols = _auxColumns(rows, chal, preEv.isEmpty ? const [] : air.preColumns());
       if (auxCols.length != air.numAuxCols) throw StateError('auxColumns returned ${auxCols.length} columns');
       auxCoefs = coefsFor(auxCols);
       (auxEv, auxTree) = commit(auxCoefs);
+      owned.add(auxEv);
       ts.absorb(auxTree.root);
       _lap('aux round');
     }
     final allCoefs = [...traceCoefs, ...auxCoefs, ...preCoefs];
-    final allEv = [...traceEv, ...auxEv, ...preEv];
+    final allEv = [traceEv, auxEv, preEv];
     final beta = ts.squeezeQM31();
 
     // ---- 2. composition on D_{t+e} (twin layout of HalfCoset(t+e-1)) ----
@@ -194,10 +200,15 @@ class StarkProver {
         }
       }
     }
-    List<Uint32List>? compLimbs = _nativeComposition(
-        groups, groupPow, beta, chal, [...allCoefs, ...pubCoefs], perOnC, linOnC, vInv, divInv, logC, logPC, shift, coefLen);
+    // when the composition domain is the commit domain (logExpand ==
+    // logBlowup) the committed evaluations are the values the kernel needs
+    final reuse = logC - 1 == P.logTraceHalf && pubCoefs.isEmpty;
+    List<Uint32List>? compLimbs = reuse
+        ? _nativeComposition(groups, groupPow, beta, chal, perOnC, linOnC, vInv, divInv, logC, logPC, shift, values: allEv)
+        : _nativeComposition(groups, groupPow, beta, chal, perOnC, linOnC, vInv, divInv, logC, logPC, shift,
+            coefs: [...allCoefs, ...pubCoefs], coefLen: coefLen);
     if (compLimbs != null) {
-      _lap('composition values (native, from coefficients)');
+      _lap('composition values (native${reuse ? '' : ', from coefficients'})');
     } else {
       final traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
       final pubOnC = pubCoefs.isEmpty ? <Uint32List>[] : kernels.evaluateColumns(pubCoefs, logC - 1);
@@ -213,6 +224,7 @@ class StarkProver {
         for (int l = 0; l < 4; l++) compCoefs[l].sublist(k * chunkLen, (k + 1) * chunkLen)
     ];
     final (compEv, compTree) = kernels.commitColumns(chunkCoefs, P.logTraceHalf, hash);
+    owned.add(compEv);
     _lap('composition LDE + merkle');
 
     ts.absorb(compTree.root);
@@ -234,7 +246,7 @@ class StarkProver {
       'beta': beta, 'tch': tch, 'zx': zx, 'zy': zy, 'zgx': zgx, 'zgy': zgy,
       'lamB': lamB, 'lamC': lamC, 'alC': alC,
       'probeOn': CircleFft.evalAt(traceCoefs[0], embed(CosetTables.of(t - 1).x[1]), embed(CosetTables.of(t - 1).y[1])),
-      'probeOff': embed(traceEv[0][3]),
+      'probeOff': embed(traceEv.at(0, 3)),
     };
     _lap('oods');
 
@@ -248,7 +260,7 @@ class StarkProver {
       dbg['dA$tag'] = k.dA; dbg['dB$tag'] = k.dB; dbg['dC$tag'] = k.dC;
       dbg['w${tag}1'] = k.weights[1];
     }
-    final qBC = kernels.deepQuotients(kB, [...allEv, ...compEv], P.logTraceHalf);
+    final qBC = kernels.deepQuotients(kB, [...allEv, compEv], P.logTraceHalf);
     kernels.deepQuotients(kC, allEv, P.logTraceHalf, into: qBC);
     final l0 = kernels.circleFold(qBC, P.logTraceHalf, alC);
     _lap('deep quotients + circle fold');
@@ -310,6 +322,7 @@ class StarkProver {
     }
 
     // ---- 6. openings ----
+    List<int> leafOf(Columns c, int i) => [for (int j = 0; j < c.count; j++) c.at(j, i), for (int j = 0; j < c.count; j++) c.at(j, mB + i)];
     final queries = <QueryProof>[];
     for (final i in indices) {
       final lineF0 = <QM31>[], lineF1 = <QM31>[], linePaths = <List<List<int>>>[], lineXInv = <int>[];
@@ -326,14 +339,14 @@ class StarkProver {
       final pBx = domB.x[iB], pBy = domB.y[iB];
       queries.add(QueryProof(
         index: i,
-        compLeaf: [for (final c in compEv) c[iB], for (final c in compEv) c[mB + iB]],
+        compLeaf: leafOf(compEv, iB),
         compPath: compTree.path(iB),
         lineF0: lineF0, lineF1: lineF1, linePaths: linePaths, lineXInv: lineXInv,
-        traceLeaf: [for (int j = 0; j < nCols; j++) traceEv[j][iB], for (int j = 0; j < nCols; j++) traceEv[j][mB + iB]],
+        traceLeaf: leafOf(traceEv, iB),
         tracePath: traceTree.path(iB),
-        auxLeaf: [for (final c in auxEv) c[iB], for (final c in auxEv) c[mB + iB]],
+        auxLeaf: leafOf(auxEv, iB),
         auxPath: auxTree?.path(iB) ?? const [],
-        preLeaf: [for (final c in preEv) c[iB], for (final c in preEv) c[mB + iB]],
+        preLeaf: leafOf(preEv, iB),
         prePath: preTree?.path(iB) ?? const [],
         yBInv: domB.yInv[iB],
         dBInvP: DeepQuotientRef.denominator(kB, pBx, pBy).inv,
@@ -351,6 +364,11 @@ class StarkProver {
     );
     proof.debug.addAll(dbg);
     return proof;
+    } finally {
+      for (final c in owned) {
+        c.release();
+      }
+    }
   }
 
   /// The aux columns: from the AIR's LogUp program on the native kernels
@@ -437,12 +455,14 @@ class StarkProver {
   /// The same values from the AIR's recorded programs on the native
   /// kernels, or null when they are unavailable (Dart kernels, an AIR
   /// without generic constraints, or a program the kernel cannot run).
+  /// The column values are [values] (on the composition domain) or the
+  /// coefficient columns [coefs] of [coefLen] words that the kernel
+  /// evaluates itself.
   List<Uint32List>? _nativeComposition(
       List<ConstraintGroup> groups,
       List<QM31> groupPow,
       QM31 beta,
       List<QM31> chal,
-      List<Uint32List> coefs,
       List<Uint32List> perOnC,
       List<Uint32List> linOnC,
       Uint32List vInv,
@@ -450,14 +470,17 @@ class StarkProver {
       int logC,
       int logPC,
       int shift,
-      int coefLen) {
+      {List<Uint32List> coefs = const [],
+      int coefLen = 0,
+      List<Columns> values = const []}) {
     if (kernels is DartKernels) return null;
     final main = air.mainProgram();
     if (main == null || !CompositionJob.baseOnly(main)) return null;
     final aux = air.auxProgram();
     if (air.numAuxConstraints > 0 && aux == null) return null;
     if (main.outputs.length != air.numConstraints || (aux?.outputs.length ?? 0) != air.numAuxConstraints) return null;
-    final nAll = coefs.length - air.numPubCols, nPer = perOnC.length;
+    final nValues = coefLen > 0 ? coefs.length : values.fold(0, (n, c) => n + c.count);
+    final nAll = nValues - air.numPubCols, nPer = perOnC.length;
     final mainSrc = CompositionJob.resolve(main, nAll, nPer, air.publicValues);
     final auxSrc = aux == null ? Uint32List(0) : CompositionJob.resolve(aux, nAll, nPer, air.publicValues);
     if (mainSrc == null || auxSrc == null) return null;
@@ -493,6 +516,7 @@ class StarkProver {
       auxSrc: auxSrc,
       cols: coefs,
       coefLen: coefLen,
+      values: values,
       per: perOnC,
       lin: linOnC,
       divs: divs,
@@ -512,7 +536,8 @@ class StarkProver {
 /// and hash: coefficients, evaluations and tree, computed once per
 /// instance (the prover needs all three, the verifier only the root).
 class PreCommitment {
-  final List<Uint32List> coefs, ev;
+  final List<Uint32List> coefs;
+  final Columns ev;
   final MerkleCommitment tree;
   PreCommitment(this.coefs, this.ev, this.tree);
 
@@ -520,7 +545,7 @@ class PreCommitment {
   /// [Air.preColumnsIdentity]) and the domain; an entry at 2^19 rows and
   /// blowup 32 is about 2 GB, so only a few are kept.
   static final Map<String, PreCommitment> _cache = {};
-  static const cacheEntries = 4;
+  static const cacheEntries = 8;
 
   static String _key(Air air, StarkParams P, ProofHash hash) =>
       '${identityHashCode(air.preColumnsIdentity)}:${P.logTrace}:${P.logTraceHalf}:${hash.name}';
@@ -535,7 +560,7 @@ class PreCommitment {
     final coefs = twinCoefs(cols, P.logTrace, k);
     final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
     while (_cache.length >= cacheEntries) {
-      _cache.remove(_cache.keys.first);
+      _cache.remove(_cache.keys.first)?.ev.release();
     }
     return _cache[key] = PreCommitment(coefs, ev, tree);
   }

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
+import 'package:tstokenlib/src/crypto/stark_kernels.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/proof_hash.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
@@ -32,6 +33,8 @@ void main() {
     }
   }, skip: skip);
 
+  List<Uint32List> lists(Columns c) => [for (int j = 0; j < c.count; j++) c.column(j)];
+
   test('interpolate, evaluate and commit match', () {
     for (final m in [2, 5, 9]) {
       final n = 1 << (m + 1);
@@ -43,7 +46,10 @@ void main() {
       final short = [for (final c in cd) Uint32List.fromList(c.sublist(0, n ~/ 4))];
       final (evD, treeD) = dart.commitColumns(short, m + 2, const Sha256ProofHash());
       final (evN, treeN) = native.commitColumns(short, m + 2, const Sha256ProofHash());
-      expect(evN, evD, reason: 'LDE m=$m');
+      expect(lists(evN), lists(evD), reason: 'LDE m=$m');
+      expect(evN.at(1, 5), evD.at(1, 5));
+      evN.release();
+      expect(() => evN.at(0, 0), throwsStateError);
       expect(treeN.root, treeD.root, reason: 'root m=$m');
       expect(treeN.depth, treeD.depth);
       for (final leaf in [0, 1, (1 << (m + 2)) - 1, rng.nextInt(1 << (m + 2))]) {
@@ -57,12 +63,17 @@ void main() {
       final n = 1 << (m + 1), mm = 1 << m;
       final cols = [for (int j = 0; j < 5; j++) col(n)];
       final k = DeepConstants(rq(), rq(), rq(), rq(), rq(), rq(), [for (int j = 0; j < 5; j++) rq()]);
-      final qD = dart.deepQuotients(k, cols, m), qN = native!.deepQuotients(k, cols, m);
+      // two sets, the native ones stored natively; a Dart set is copied in for the call
+      final setsD = [DartColumns(cols.sublist(0, 2)), DartColumns(cols.sublist(2))];
+      final stored = native!.storeColumns(cols.sublist(0, 2));
+      final setsN = [stored, DartColumns(cols.sublist(2))];
+      final qD = dart.deepQuotients(k, setsD, m), qN = native.deepQuotients(k, setsN, m);
       expect(qN, qD, reason: 'deep m=$m');
       final k2 = DeepConstants(rq(), rq(), rq(), rq(), rq(), rq(), [for (int j = 0; j < 5; j++) rq()]);
       final accD = Uint32List.fromList(qD), accN = Uint32List.fromList(qN);
-      dart.deepQuotients(k2, cols, m, into: accD);
-      native.deepQuotients(k2, cols, m, into: accN);
+      dart.deepQuotients(k2, setsD, m, into: accD);
+      native.deepQuotients(k2, setsN, m, into: accN);
+      stored.release();
       expect(accN, accD, reason: 'deep accumulate m=$m');
       final alpha = rq();
       expect(native.circleFold(qD, m, alpha), dart.circleFold(qD, m, alpha), reason: 'circle fold m=$m');
@@ -103,7 +114,12 @@ void main() {
     const p2 = Poseidon2ProofHash();
     const inner = StarkParams(
         logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
-    const outer = StarkParams(logTrace: 14, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
+    // blowup 4 (the kernel evaluates the coefficient columns itself) and
+    // blowup 8 = expansion (the committed evaluations are reused)
+    const outers = [
+      StarkParams(logTrace: 14, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1),
+      StarkParams(logTrace: 14, logBlowup: 3, logExpand: 3, logFinal: 4, numQueries: 2, grindBytes: 1),
+    ];
     final w = witness();
     final air = PoolSpendAir.air(w.publics);
     final innerProof = StarkProver.prove(inner, air, w.rows, rng: Random(5), hash: p2);
@@ -112,18 +128,20 @@ void main() {
     final vAir = program.air(VerifierProgram.nodeDigestOf(air, innerProof.preRoot));
     expect(vAir.mainProgram(), isNotNull);
     expect(vAir.auxProgram(), isNotNull);
-    final sw = Stopwatch()..start();
-    final pn = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: native, hash: p2, verbose: true);
-    final tn = sw.elapsedMilliseconds;
-    sw.reset();
-    final pd = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: dart, hash: p2);
-    print('  verifier AIR at 2^14: native ${tn} ms, dart ${sw.elapsedMilliseconds} ms');
-    expect(pn.preRoot, pd.preRoot);
-    expect(pn.compRoot, pd.compRoot);
-    expect(pn.compAtZ, pd.compAtZ);
-    expect(pn.friRoots, pd.friRoots);
-    expect(pn.finalCoefs, pd.finalCoefs);
-    expect(pn.nonce, pd.nonce);
+    for (final outer in outers) {
+      final sw = Stopwatch()..start();
+      final pn = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: native, hash: p2, verbose: true);
+      final tn = sw.elapsedMilliseconds;
+      sw.reset();
+      final pd = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: dart, hash: p2);
+      print('  verifier AIR at 2^14 blowup ${1 << outer.logBlowup}: native ${tn} ms, dart ${sw.elapsedMilliseconds} ms');
+      expect(pn.preRoot, pd.preRoot);
+      expect(pn.compRoot, pd.compRoot);
+      expect(pn.compAtZ, pd.compAtZ);
+      expect(pn.friRoots, pd.friRoots);
+      expect(pn.finalCoefs, pd.finalCoefs);
+      expect(pn.nonce, pd.nonce);
+    }
   }, skip: skip, timeout: const Timeout(Duration(minutes: 5)));
 
   test('production parameters: byte-identical, timed', () {

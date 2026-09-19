@@ -15,6 +15,18 @@ that toolchain, newer versions want Rust 1.85):
 
     cargo build --release --manifest-path native/stark_kernels/Cargo.toml
 
+Two things about how the kernels are shaped. The Poseidon2 permutation runs
+on 16 states at once in struct-of-arrays layout (`v_permute<N>`), with the
+external matrix as the paper's add chain and the internal diagonal as
+31-bit rotations, so the compiler vectorises every field operation; leaves
+and tree levels are hashed 16 at a time. The composition program (the AIR's
+constraints as a straight-line program) runs over 16 rows per op the same
+way. Committed value columns never come back to Dart: `sk_commit_columns*`
+keep them in a column store and return an id (`NativeColumns` on the Dart
+side), and the composition, DEEP-quotient and opening steps read them
+there (`sk_store_get`/`sk_store_read`); the Dart side releases them when
+the proof is done (`sk_store_free`). ABI version 4.
+
 `StarkKernels.tryLoad()` finds `target/release/libstark_kernels.{dylib,so}` /
 `stark_kernels.dll` under the working directory or its parents, or the path
 in `$STARK_KERNELS_LIB`. When it is missing the prover silently falls back

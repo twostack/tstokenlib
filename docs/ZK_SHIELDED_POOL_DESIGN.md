@@ -1473,6 +1473,68 @@ with its own parameters per level proves and verifies end to end at small
 parameters (`test/pool_aggregation_test.dart`). Rounds with fewer than 260
 transfers still need the coordinator's dummy padding.
 
+### Node cuts and the measured round (measured)
+
+Four cuts to the native kernels, all keeping proofs byte-identical to the
+Dart prover (`test/stark_kernels_test.dart` now covers both composition
+paths):
+
+- *Poseidon2, sixteen states at a time.* Committing 30 columns on 2^23 points
+  took 5.4 s under Poseidon2 against 1.5 s under SHA256: the Merkle hashing
+  was 4.3 s of it. The permutation now runs on 16 states in struct-of-arrays
+  layout so every field operation vectorises, the external matrix is the
+  paper's add chain and the internal diagonal is 31-bit rotations instead of
+  multiplications; leaves and tree levels are hashed 16 at a time. The same
+  commit is 2.1 s (hashing about 1.0 s). A spend proof at blowup 256 drops
+  from 3.2 s to 1.5 s.
+- *The composition program in row blocks.* The constraint program ran one row
+  at a time, 13 ns per op; it now runs 16 rows per op so the dispatch is paid
+  once per block and the arithmetic vectorises: 7.5 s to 3.7 s.
+- *Committed values reused; DEEP sums by column.* With blowup equal to the
+  composition expansion the composition domain is the commit domain, so the
+  committed evaluations are passed to the kernel instead of re-evaluating
+  every column (3.7 s to 2.6 s). The DEEP weighted sum walked 190 column
+  streams per row; it now sums one contiguous column at a time over row
+  blocks: 3.3 s to 0.5 s.
+- *A native column store.* The committed evaluations never come back to Dart:
+  the commit kernels keep them and return an id, and the composition, DEEP
+  and opening steps read them in place; the prover releases them when the
+  proof is done and the preprocessed-commitment cache (now 8 entries, one
+  per level and one for the root) when it evicts. That removes four
+  multi-gigabyte copies per node and most of the Dart heap: the level-1 node
+  peaks at 8.7 GB (from 12.5), and the 2^20 nodes at blowup 32 the plan
+  needs above level 2 fit at all.
+
+The level-1 node on 2^20 over 16 spends: 12.0 s standalone (from 33.7 s at
+the start of this pass and 34 s for 13 spends before it), 10 s inside a round
+where its preprocessed commitment is cached. What is left: composition
+extension and Merkle 2.2 s, composition 2.0, aux round 1.7, trace extension
+1.5, trace interpolation 0.8, DEEP 0.5, FRI 0.4.
+
+*The round, measured.* `tool/scratch/round_throughput.dart` proves the
+256-transfer plan (16 × 4 × 2 × 2, then the wide root) end to end at
+production parameters on the 12-core laptop:
+
+| stage | nodes | per node | total |
+|---|---|---|---|
+| level 1, 2^20 at blowup 8 / 30 queries, 16 spends each | 16 | 10.9 s | 173.8 s |
+| level 2, 2^21 at blowup 8 / 30 queries, 4 proofs each | 4 | 21.1 s | 84.4 s |
+| level 3, 2^20 at blowup 32 / 18 queries, 2 proofs each | 2 | 34.0 s | 67.9 s |
+| level 4, 2^19 at blowup 32 / 18 queries | 1 | 14.3 s | 14.3 s |
+| root, 2^19 at blowup 32 / 18 queries, SHA256 flavour | 1 | 15.5 s | 15.5 s |
+| **round** | 24 | | **356 s (5.9 min)** |
+
+The preprocessed commitments of the four levels take 20.8 s once and stay
+cached across rounds (19.4 GB of the 23.8 GB peak). The 256 spend proofs are
+the wallets' work (1.5 s each) and are excluded; the reference verifier checks
+every node in 0.1 s. The root script is 2,208,106 bytes and 882,775 ops (under
+Teranode's 1 M), the unlock 314 KB, and the interpreter accepts it in 15.2 s.
+So a 256-transfer round costs 6 minutes of one machine, inside the 10-minute
+budget; with level 1 at the edge the coordinator's share is 3 minutes. The
+blowup-32 nodes of levels 3 and 4 are the most expensive per node (their
+extensions run on 2^25 points) and the next thing to look at, together with
+the composition commitment (32 limb columns per node).
+
 ### Moving proving to the edge (considered)
 
 The round's work is a tree whose leaves are the transfers, so it distributes

@@ -46,13 +46,19 @@ abstract class ProverKernels {
   List<Uint32List> evaluateColumns(List<Uint32List> coefs, int m);
 
   /// [evaluateColumns] plus the Merkle commitment under [hash], whose leaf
-  /// i is `hash.leaf` of the 2k lanes `ev[j][i]`, `ev[j][M + i]`.
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash);
+  /// i is `hash.leaf` of the 2k lanes `ev[j][i]`, `ev[j][M + i]`. The
+  /// values stay where this implementation keeps them (see [Columns]).
+  (Columns, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash);
 
-  /// DEEP quotients of value columns on HalfCoset(m) ∪ conj at every
-  /// position: `(c Σ w_j col_j - A y - B) / (dA x + dB y + dC)`. Added into
-  /// [into] when given (and returned), else a fresh array.
-  Uint32List deepQuotients(DeepConstants k, List<Uint32List> cols, int m, {Uint32List? into});
+  /// Value columns held by this implementation (a copy for the Dart
+  /// kernels, native memory for the native ones).
+  Columns storeColumns(List<Uint32List> cols);
+
+  /// DEEP quotients of the value columns of [sets] (in order) on
+  /// HalfCoset(m) ∪ conj at every position:
+  /// `(c Σ w_j col_j - A y - B) / (dA x + dB y + dC)`. Added into [into]
+  /// when given (and returned), else a fresh array.
+  Uint32List deepQuotients(DeepConstants k, List<Columns> sets, int m, {Uint32List? into});
 
   /// Circle fold of a twin-layout QM31 array on HalfCoset(m):
   /// `(q_i + q_{M+i}) + alpha (q_i - q_{M+i}) / y_i`; accumulates into [into].
@@ -85,6 +91,87 @@ abstract class ProverKernels {
   static ProverKernels get best => StarkKernels.tryLoad() ?? DartKernels();
 }
 
+/// Value columns on a domain (k columns of 2^(m+1) words, twin layout),
+/// held wherever the kernels that produced them keep them: the Dart heap for
+/// [DartKernels], native memory for [StarkKernels], where a node's columns
+/// are gigabytes and the later kernels read them in place. [release] frees
+/// them; reading after that is an error.
+abstract class Columns {
+  int get count;
+  int get length;
+  int at(int col, int i);
+
+  /// Column [col] (a copy for native columns).
+  Uint32List column(int col);
+  void release();
+  bool get isEmpty => count == 0;
+
+  static final Columns empty = DartColumns(const []);
+}
+
+class DartColumns implements Columns {
+  final List<Uint32List> cols;
+  DartColumns(this.cols);
+  @override
+  int get count => cols.length;
+  @override
+  int get length => cols.isEmpty ? 0 : cols[0].length;
+  @override
+  int at(int col, int i) => cols[col][i];
+  @override
+  Uint32List column(int col) => cols[col];
+  @override
+  void release() {}
+  @override
+  bool get isEmpty => cols.isEmpty;
+}
+
+/// Columns in the native store, by id.
+class NativeColumns implements Columns {
+  final StarkKernels _k;
+  final int id;
+  @override
+  final int count;
+  @override
+  final int length;
+  bool _released = false;
+  NativeColumns._(this._k, this.id, this.count, this.length);
+
+  void _check() {
+    if (_released) throw StateError('native columns $id were released');
+  }
+
+  @override
+  int at(int col, int i) {
+    _check();
+    if (col < 0 || col >= count || i < 0 || i >= length) throw RangeError('column $col at $i of $count x $length');
+    return _k._storeGet(id, col, i);
+  }
+
+  @override
+  Uint32List column(int col) {
+    _check();
+    if (col < 0 || col >= count) throw RangeError('column $col of $count');
+    final out = calloc<ffi.Uint32>(length);
+    try {
+      _k._storeRead(id, col, 0, length, out);
+      return StarkKernels._download1(out, length);
+    } finally {
+      calloc.free(out);
+    }
+  }
+
+  @override
+  void release() {
+    if (_released) return;
+    _released = true;
+    _k._storeFree(id);
+  }
+
+  @override
+  bool get isEmpty => count == 0;
+}
+
 /// What the composition kernel needs: the main program (over M31) and the
 /// aux program (over QM31, null without aux constraints) with their inputs
 /// resolved to sources; the column values on the composition domain (trace,
@@ -103,8 +190,10 @@ class CompositionJob {
   final int logC, logPC;
 
   /// When > 0, [cols] are coefficient columns of this length (all equal)
-  /// that the kernel evaluates on the composition domain itself.
+  /// that the kernel evaluates on the composition domain itself; when 0
+  /// the values on the domain are the columns of [values], in order.
   final int coefLen;
+  final List<Columns> values;
   final Uint32List idxNext, idxPer;
   final List<QM31> chal;
   final List<QM31> weights;
@@ -126,6 +215,7 @@ class CompositionJob {
     required this.weights,
     required this.divSel,
     this.coefLen = 0,
+    this.values = const [],
   });
 
   /// Resolves [prog]'s input names against the layout: `cur{j}`/`next{j}`
@@ -322,7 +412,7 @@ class DartKernels implements ProverKernels {
   List<Uint32List> evaluateColumns(List<Uint32List> coefs, int m) => [for (final c in coefs) CircleFft.evaluate(c, m)];
 
   @override
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
+  (Columns, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
     final ev = evaluateColumns(coefs, m);
     final k = coefs.length, mB = 1 << m;
     final lanes = List<int>.filled(2 * k, 0);
@@ -333,11 +423,15 @@ class DartKernels implements ProverKernels {
       }
       return hash.leaf(lanes);
     });
-    return (ev, MerkleTree(leaves, node: hash.node));
+    return (DartColumns(ev), MerkleTree(leaves, node: hash.node));
   }
 
   @override
-  Uint32List deepQuotients(DeepConstants k, List<Uint32List> cols, int m, {Uint32List? into}) {
+  Columns storeColumns(List<Uint32List> cols) => DartColumns(cols);
+
+  @override
+  Uint32List deepQuotients(DeepConstants k, List<Columns> sets, int m, {Uint32List? into}) {
+    final cols = [for (final s in sets) for (int j = 0; j < s.count; j++) s.column(j)];
     final dom = CosetTables.of(m);
     final mm = dom.size, n = 2 * mm;
     final nums = List<QM31>.filled(n, QM31.zero);
@@ -401,12 +495,19 @@ typedef _InterpC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Uint
 typedef _InterpD = void Function(ffi.Pointer<ffi.Uint32>, int, int, ffi.Pointer<ffi.Uint32>);
 typedef _EvalC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
 typedef _EvalD = void Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>);
-typedef _CommitC = ffi.Void Function(
-    ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint8>);
-typedef _CommitD = void Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint8>);
+typedef _CommitC = ffi.Uint64 Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint8>);
+typedef _CommitD = int Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint8>);
 typedef _DeepC = ffi.Void Function(
-    ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Uint32, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
-typedef _DeepD = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>);
+    ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, ffi.Size, ffi.Uint32, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
+typedef _DeepD = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint64>, int, int, int, ffi.Pointer<ffi.Uint32>);
+typedef _StorePutC = ffi.Uint64 Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size);
+typedef _StorePutD = int Function(ffi.Pointer<ffi.Uint32>, int, int);
+typedef _StoreFreeC = ffi.Void Function(ffi.Uint64);
+typedef _StoreFreeD = void Function(int);
+typedef _StoreGetC = ffi.Uint32 Function(ffi.Uint64, ffi.Size, ffi.Size);
+typedef _StoreGetD = int Function(int, int, int);
+typedef _StoreReadC = ffi.Void Function(ffi.Uint64, ffi.Size, ffi.Size, ffi.Size, ffi.Pointer<ffi.Uint32>);
+typedef _StoreReadD = void Function(int, int, int, int, ffi.Pointer<ffi.Uint32>);
 typedef _CircleFoldC = ffi.Void Function(
     ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint32>);
 typedef _CircleFoldD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>);
@@ -414,10 +515,9 @@ typedef _LineFoldC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.
 typedef _LineFoldD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _MerklePairsC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint8>);
 typedef _MerklePairsD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint8>);
-typedef _CommitP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>,
-    ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
-typedef _CommitP2D = void Function(
-    ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _CommitP2C = ffi.Uint64 Function(
+    ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Size, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _CommitP2D = int Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _MerklePairsP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _MerklePairsP2D = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _PermuteP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
@@ -425,10 +525,10 @@ typedef _PermuteP2D = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uin
 typedef _ShaC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Pointer<ffi.Uint8>);
 typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>);
 typedef _U32P = ffi.Pointer<ffi.Uint32>;
-typedef _CompC = ffi.Void Function(
-    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
-typedef _CompD = void Function(
-    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
+typedef _CompC = ffi.Void Function(_U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, ffi.Pointer<ffi.Uint64>, ffi.Size,
+    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
+typedef _CompD = void Function(_U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, ffi.Pointer<ffi.Uint64>, int, _U32P,
+    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
 typedef _EvalAtC = ffi.Void Function(_U32P, ffi.Size, ffi.Size, _U32P, _U32P, _U32P);
 typedef _EvalAtD = void Function(_U32P, int, int, _U32P, _U32P, _U32P);
 typedef _LogUpC = ffi.Void Function(_U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
@@ -443,12 +543,13 @@ typedef _KemDecapsD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint
 /// The native kernels (`native/stark_kernels`, built with
 /// `cargo build --release --manifest-path native/stark_kernels/Cargo.toml`).
 ///
-/// Inputs are copied into native memory and results copied back; at the
-/// sizes involved (a few MB per call) the copies are negligible next to the
-/// arithmetic. Every kernel is exact, so [tryLoad] returning null (library
-/// not built) only costs speed.
+/// Inputs are copied into native memory and results copied back, except
+/// the committed value columns, which stay in the native column store
+/// ([NativeColumns]) and are read there by the composition, DEEP and
+/// opening steps. Every kernel is exact, so [tryLoad] returning null
+/// (library not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 3;
+  static const abiVersion = 4;
   static const envVar = 'STARK_KERNELS_LIB';
 
   final ffi.DynamicLibrary _lib;
@@ -467,6 +568,10 @@ class StarkKernels implements ProverKernels {
   late final _CompD _comp = _lib.lookupFunction<_CompC, _CompD>('sk_composition');
   late final _EvalAtD _evalAt = _lib.lookupFunction<_EvalAtC, _EvalAtD>('sk_eval_at');
   late final _LogUpD _logUp = _lib.lookupFunction<_LogUpC, _LogUpD>('sk_logup_columns');
+  late final _StorePutD _storePut = _lib.lookupFunction<_StorePutC, _StorePutD>('sk_store_put');
+  late final _StoreFreeD _storeFree = _lib.lookupFunction<_StoreFreeC, _StoreFreeD>('sk_store_free');
+  late final _StoreGetD _storeGet = _lib.lookupFunction<_StoreGetC, _StoreGetD>('sk_store_get');
+  late final _StoreReadD _storeRead = _lib.lookupFunction<_StoreReadC, _StoreReadD>('sk_store_read');
   late final _KemPkD _kemPk = _lib.lookupFunction<_KemPkC, _KemPkD>('sk_mlkem768_public_key');
   late final _KemEncapsD _kemEncaps = _lib.lookupFunction<_KemEncapsC, _KemEncapsD>('sk_mlkem768_encaps');
   late final _KemDecapsD _kemDecaps = _lib.lookupFunction<_KemDecapsC, _KemDecapsD>('sk_mlkem768_decaps');
@@ -541,7 +646,7 @@ class StarkKernels implements ProverKernels {
 
   static List<Uint32List> _download(ffi.Pointer<ffi.Uint32> p, int k, int len) {
     final view = p.asTypedList(k * len);
-    return [for (int j = 0; j < k; j++) Uint32List.fromList(view.sublist(j * len, (j + 1) * len))];
+    return [for (int j = 0; j < k; j++) Uint32List(len)..setRange(0, len, view, j * len)];
   }
 
   static Uint32List _download1(ffi.Pointer<ffi.Uint32> p, int len) => Uint32List.fromList(p.asTypedList(len));
@@ -565,7 +670,7 @@ class StarkKernels implements ProverKernels {
     final nOut = job.main.outputs.length + (job.aux?.outputs.length ?? 0);
     if (job.weights.length != nOut || job.divSel.length != nOut) throw ArgumentError('one weight and divisor per constraint');
     final desc = _upload1(Uint32List.fromList([
-      job.logC, job.cols.length, job.per.length, job.logPC, job.lin.length, job.divs.length,
+      job.logC, valueColumns(job), job.per.length, job.logPC, job.lin.length, job.divs.length,
       job.main.numInputs, job.main.ops.length, job.main.outputs.length,
       job.aux?.numInputs ?? 0, job.aux?.ops.length ?? 0, job.aux?.outputs.length ?? 0, job.chal.length, job.coefLen,
     ]));
@@ -574,12 +679,14 @@ class StarkKernels implements ProverKernels {
     final auxOps = _upload1(job.aux == null ? Uint32List(0) : CompositionJob.encode(job.aux!)), auxSrc = _upload1(job.auxSrc);
     final auxOut = _upload1(Uint32List.fromList(job.aux?.outputs ?? const []));
     final chal = _upload1(Uint32List.fromList([for (final c in job.chal) ...c.limbs]));
-    final cols = _upload(job.cols, job.coefLen > 0 ? job.coefLen : nC), per = _upload(job.per, nPC), lin = _upload(job.lin, nC), divs = _upload(job.divs, nC);
+    final cols = _upload(job.coefLen > 0 ? job.cols : const [], job.coefLen), per = _upload(job.per, nPC), lin = _upload(job.lin, nC), divs = _upload(job.divs, nC);
+    final (sets, owned) = job.coefLen > 0 ? (const <NativeColumns>[], const <NativeColumns>[]) : _native(job.values);
+    final setIds = _uploadIds(sets);
     final idxNext = _upload1(job.idxNext), idxPer = _upload1(job.idxPer);
     final weights = _upload1(Uint32List.fromList([for (final w in job.weights) ...w.limbs])), divSel = _upload1(job.divSel);
     final out = calloc<ffi.Uint32>(4 * nC);
     try {
-      _comp(desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, per, lin, idxNext, idxPer, weights, divSel, divs, out);
+      _comp(desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, setIds, sets.length, per, lin, idxNext, idxPer, weights, divSel, divs, out);
       final v = out.asTypedList(4 * nC);
       final limbs = List.generate(4, (_) => Uint32List(nC));
       for (int q = 0; q < nC; q++) {
@@ -592,6 +699,51 @@ class StarkKernels implements ProverKernels {
       for (final p in [desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, per, lin, divs, idxNext, idxPer, weights, divSel, out]) {
         calloc.free(p);
       }
+      calloc.free(setIds);
+      for (final c in owned) {
+        c.release();
+      }
+    }
+  }
+
+  /// The column count of the composition job's value sets.
+  static int valueColumns(CompositionJob job) => job.coefLen > 0 ? job.cols.length : job.values.fold(0, (n, c) => n + c.count);
+
+  /// [sets] as native columns: those already native as they are, the others
+  /// copied into the store for the call (returned second, to release).
+  (List<NativeColumns>, List<NativeColumns>) _native(List<Columns> sets) {
+    final all = <NativeColumns>[], owned = <NativeColumns>[];
+    for (final c in sets) {
+      if (c.isEmpty) continue;
+      if (c is NativeColumns) {
+        c._check();
+        all.add(c);
+      } else {
+        final n = storeColumns([for (int j = 0; j < c.count; j++) c.column(j)]) as NativeColumns;
+        all.add(n);
+        owned.add(n);
+      }
+    }
+    return (all, owned);
+  }
+
+  static ffi.Pointer<ffi.Uint64> _uploadIds(List<NativeColumns> sets) {
+    final p = calloc<ffi.Uint64>(sets.isEmpty ? 1 : sets.length);
+    for (int i = 0; i < sets.length; i++) {
+      p[i] = sets[i].id;
+    }
+    return p;
+  }
+
+  @override
+  Columns storeColumns(List<Uint32List> cols) {
+    if (cols.isEmpty) return Columns.empty;
+    final n = cols[0].length;
+    final inp = _upload(cols, n);
+    try {
+      return NativeColumns._(this, _storePut(inp, cols.length, n), cols.length, n);
+    } finally {
+      calloc.free(inp);
     }
   }
 
@@ -762,35 +914,31 @@ class StarkKernels implements ProverKernels {
   }
 
   @override
-  (List<Uint32List>, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
+  (Columns, MerkleCommitment) commitColumns(List<Uint32List> coefs, int m, ProofHash hash) {
     final mm = 1 << m, n = 2 * mm, k = coefs.length, len = _coefLen(coefs, m);
     if (hash is Sha256ProofHash) {
       final inp = _upload(coefs, len);
-      final ev = calloc<ffi.Uint32>(k * n);
       final treeLen = FlatMerkleTree.byteLength(mm);
       final tree = calloc<ffi.Uint8>(treeLen);
       try {
-        _commit(inp, k, len, m, ev, tree);
-        return (_download(ev, k, n), FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), mm));
+        final id = _commit(inp, k, len, m, tree);
+        return (NativeColumns._(this, id, k, n), FlatMerkleTree(Uint8List.fromList(tree.asTypedList(treeLen)), mm));
       } finally {
         calloc.free(inp);
-        calloc.free(ev);
         calloc.free(tree);
       }
     }
     if (hash is Poseidon2ProofHash) {
       final inp = _upload(coefs, len);
       final rc = _upload1(_rc);
-      final ev = calloc<ffi.Uint32>(k * n);
       final treeLen = FlatMerkleTree.laneLength(mm);
       final tree = calloc<ffi.Uint32>(treeLen);
       try {
-        _commitP2(inp, k, len, m, rc, ev, tree);
-        return (_download(ev, k, n), FlatMerkleTree(Uint32List.fromList(tree.asTypedList(treeLen)), mm, unit: 8));
+        final id = _commitP2(inp, k, len, m, rc, tree);
+        return (NativeColumns._(this, id, k, n), FlatMerkleTree(Uint32List.fromList(tree.asTypedList(treeLen)), mm, unit: 8));
       } finally {
         calloc.free(inp);
         calloc.free(rc);
-        calloc.free(ev);
         calloc.free(tree);
       }
     }
@@ -798,22 +946,30 @@ class StarkKernels implements ProverKernels {
   }
 
   @override
-  Uint32List deepQuotients(DeepConstants k, List<Uint32List> cols, int m, {Uint32List? into}) {
-    final n = 1 << (m + 1), kk = cols.length;
-    final consts = qFlat([k.c, k.A, k.B, k.dA, k.dB, k.dC, ...k.weights]);
+  Uint32List deepQuotients(DeepConstants k, List<Columns> sets, int m, {Uint32List? into}) {
+    final n = 1 << (m + 1);
+    final kk = sets.fold(0, (c, s) => c + s.count);
     if (k.weights.length != kk) throw ArgumentError('${k.weights.length} weights for $kk columns');
+    for (final s in sets) {
+      if (!s.isEmpty && s.length != n) throw ArgumentError('columns of ${s.length} values on a domain of $n');
+    }
+    final consts = qFlat([k.c, k.A, k.B, k.dA, k.dB, k.dC, ...k.weights]);
     final cp = _upload1(consts);
-    final inp = _upload(cols, n);
+    final (native, owned) = _native(sets);
+    final ids = _uploadIds(native);
     final out = into == null ? calloc<ffi.Uint32>(4 * n) : _upload1(into);
     try {
-      _deep(cp, inp, kk, m, into == null ? 0 : 1, out);
+      _deep(cp, ids, native.length, m, into == null ? 0 : 1, out);
       final r = _download1(out, 4 * n);
       if (into != null) into.setAll(0, r);
       return into ?? r;
     } finally {
       calloc.free(cp);
-      calloc.free(inp);
+      calloc.free(ids);
       calloc.free(out);
+      for (final c in owned) {
+        c.release();
+      }
     }
   }
 
