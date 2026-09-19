@@ -1,0 +1,62 @@
+schema: spec-driven
+
+context: |
+  TSL1 is a BSV token protocol library in Dart (package tstokenlib). The shielded
+  pool (a Circle-STARK zero-knowledge pool as a TSL1 primitive) lives on the local
+  branch feature/shielded-pool; the OpenSpec specs under openspec/specs describe the
+  pool only (the wider token library is documented later).
+
+  Stack: Dart 3 (lib/, test/ with package:test), the local dartsv dependency at
+  ../../dartsv (full BSV script interpreter: Interpreter().correctlySpends), a Rust
+  crate of native prover kernels at native/stark_kernels (cdylib, FFI via dart:ffi,
+  Rust 1.84, zeroize pinned to 1.8.1, ml-kem 0.2.x). Build the crate with
+  `cargo build --release --manifest-path native/stark_kernels/Cargo.toml`; the Dart
+  side loads target/release/libstark_kernels.dylib (or $STARK_KERNELS_LIB) and falls
+  back to pure Dart when it is absent. Every native kernel is an exact port: proofs
+  must stay byte-identical between the native and Dart kernels
+  (test/stark_kernels_test.dart) and between the FFT prover and the reference prover.
+
+  Layout: lib/src/crypto (M31/QM31 field, circle FFT, provers, verifier, hashes,
+  note encryption, KEM), lib/src/script_gen (AIRs, the pool spend circuit, the
+  Bitcoin-script verifier generators, the PP1_SP state script), lib/src/recursion
+  (verifier AIR, verifier program, aggregation), lib/src/transaction (the coordinator
+  tool, chain reader), lib/src/builder (lock/unlock builders), templates/sp (exported
+  script templates, regenerate with `dart run tool/export_templates.dart` whenever a
+  generator changes; test/template_sync_test.dart checks them), docs/
+  ZK_SHIELDED_POOL_DESIGN.md (the running design record: every built or measured
+  step has a dated section; append, do not rewrite) and docs/SHIELDED_POOL_EXPLAINED.md
+  (plain-language explainer). tool/scratch (excluded from git) holds measurement
+  scripts; keep new ones there.
+
+  Chain limits (BSV runs Teranode): 10 MB per transaction, 1,000,000 ops per script,
+  100 MB per script. Production security target is about 100 bits (queries x
+  log2(blowup) + 16 grind bits). The coordinator budget is under 10 minutes of one
+  12-core machine per 256-transfer round (measured 356 s).
+
+  Conventions: commit only when the user asks, on feature/shielded-pool only; never
+  push, merge or open a PR unless asked; commits end with
+  "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" (adjust the model name to
+  the one doing the work); do not commit tool/scratch, native/stark_kernels/target,
+  .claude/settings.local.json, or docs files you did not write (two untracked docs in
+  docs/ belong to the user). Run `dart analyze lib test` clean before finishing; run
+  the suites that touch what changed (dart test <files>), the full suite takes about
+  90 s. Prefer direct edits to worktree isolation or agent delegation. Doc comments
+  are prose with a "why"; no em dashes in prose.
+
+rules:
+  proposal:
+    - Name the measured numbers a change is meant to move (seconds, bytes, ops) and the budget they must stay inside.
+  specs:
+    - Requirements describe on-chain or prover behaviour a wallet, coordinator or verifier relies on; script layouts, proof formats and parameter sets are behaviour here, class names are not.
+  tasks:
+    - Every task that touches a generator ends with re-exporting templates and running test/template_sync_test.dart; every task that touches a kernel ends with the byte-identity tests.
+    - Every measurement task names the scratch script and the number it records in docs/ZK_SHIELDED_POOL_DESIGN.md.
+
+operations:
+  apply:
+    guidance:
+      - Do not commit; report what changed and the test output, and let the user ask for the commit.
+      - When a design decision turns out wrong in the code, update design.md and say so rather than silently diverging.
+  archive:
+    guidance:
+      - Before archiving, confirm the design doc section for the change exists in docs/ZK_SHIELDED_POOL_DESIGN.md.
