@@ -641,7 +641,7 @@ fn tree_bytes(leaves: usize) -> usize {
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    2
+    3
 }
 
 /// One Poseidon2 permutation of 16 lanes in place, with the round constants
@@ -883,4 +883,108 @@ pub unsafe extern "C" fn sk_sha256(data: *const u8, len: usize, out: *mut u8) {
     let data = std::slice::from_raw_parts(data, len);
     let out = std::slice::from_raw_parts_mut(out, 32);
     out.copy_from_slice(&sha256(data));
+}
+
+// ---------------------------------------------------------------------------
+// ML-KEM-768 (FIPS 203) for the note-encryption KEM, via the `ml-kem` crate.
+// Keys are never stored: both halves are regenerated from a 64-byte seed
+// (d ‖ z) the wallet derives from its viewing key, so the Dart side only
+// ever holds seeds, public keys and ciphertexts.
+// ---------------------------------------------------------------------------
+
+use ml_kem::kem::Decapsulate;
+use ml_kem::{EncapsulateDeterministic, EncodedSizeUser, KemCore, MlKem768, B32};
+
+/// Sizes of the ML-KEM-768 encodings, in bytes.
+pub const MLKEM768_PK: usize = 1184;
+pub const MLKEM768_CT: usize = 1088;
+pub const MLKEM768_SS: usize = 32;
+pub const MLKEM768_SEED: usize = 64;
+
+type Mlkem768Dk = <MlKem768 as KemCore>::DecapsulationKey;
+type Mlkem768Ek = <MlKem768 as KemCore>::EncapsulationKey;
+
+fn mlkem768_from_seed(seed: &[u8]) -> (Mlkem768Dk, Mlkem768Ek) {
+    let d = B32::try_from(&seed[..32]).unwrap();
+    let z = B32::try_from(&seed[32..64]).unwrap();
+    MlKem768::generate_deterministic(&d, &z)
+}
+
+/// The encapsulation key of the pair generated from `seed` (64 bytes: d ‖ z).
+#[no_mangle]
+pub unsafe extern "C" fn sk_mlkem768_public_key(seed: *const u8, pk_out: *mut u8) {
+    let seed = std::slice::from_raw_parts(seed, MLKEM768_SEED);
+    let out = std::slice::from_raw_parts_mut(pk_out, MLKEM768_PK);
+    let (_, ek) = mlkem768_from_seed(seed);
+    out.copy_from_slice(&ek.as_bytes());
+}
+
+/// Encapsulates to `pk` with the 32 random bytes `m`. Returns 0 and fills
+/// `ct_out` (1088 bytes) and `ss_out` (32 bytes), or 1 when `pk` is not a
+/// valid encapsulation key (FIPS 203 §7.2 modulus check: it must re-encode
+/// to itself).
+#[no_mangle]
+pub unsafe extern "C" fn sk_mlkem768_encaps(pk: *const u8, m: *const u8, ct_out: *mut u8, ss_out: *mut u8) -> u32 {
+    let pk = std::slice::from_raw_parts(pk, MLKEM768_PK);
+    let m = std::slice::from_raw_parts(m, 32);
+    let ct_out = std::slice::from_raw_parts_mut(ct_out, MLKEM768_CT);
+    let ss_out = std::slice::from_raw_parts_mut(ss_out, MLKEM768_SS);
+    let enc = ml_kem::Encoded::<Mlkem768Ek>::try_from(pk).unwrap();
+    let ek = Mlkem768Ek::from_bytes(&enc);
+    if ek.as_bytes().as_slice() != pk {
+        return 1;
+    }
+    let m = B32::try_from(m).unwrap();
+    let (ct, ss) = ek.encapsulate_deterministic(&m).unwrap();
+    ct_out.copy_from_slice(&ct);
+    ss_out.copy_from_slice(&ss);
+    0
+}
+
+/// Decapsulates `ct` (1088 bytes) with the pair generated from `seed`.
+/// Always fills `ss_out` (implicit rejection yields a pseudorandom secret
+/// for a malformed ciphertext, as the standard prescribes).
+#[no_mangle]
+pub unsafe extern "C" fn sk_mlkem768_decaps(seed: *const u8, ct: *const u8, ss_out: *mut u8) {
+    let seed = std::slice::from_raw_parts(seed, MLKEM768_SEED);
+    let ct = std::slice::from_raw_parts(ct, MLKEM768_CT);
+    let ss_out = std::slice::from_raw_parts_mut(ss_out, MLKEM768_SS);
+    let (dk, _) = mlkem768_from_seed(seed);
+    let ct = ml_kem::Ciphertext::<MlKem768>::try_from(ct).unwrap();
+    let ss = dk.decapsulate(&ct).unwrap();
+    ss_out.copy_from_slice(&ss);
+}
+
+#[cfg(test)]
+mod mlkem_tests {
+    use super::*;
+
+    #[test]
+    fn mlkem768_round_trip() {
+        let seed: Vec<u8> = (0..64u8).collect();
+        let mut pk = [0u8; MLKEM768_PK];
+        let mut pk2 = [0u8; MLKEM768_PK];
+        unsafe {
+            sk_mlkem768_public_key(seed.as_ptr(), pk.as_mut_ptr());
+            sk_mlkem768_public_key(seed.as_ptr(), pk2.as_mut_ptr());
+        }
+        assert_eq!(pk[..], pk2[..]);
+        let m = [7u8; 32];
+        let mut ct = [0u8; MLKEM768_CT];
+        let mut ss = [0u8; 32];
+        let mut ss2 = [0u8; 32];
+        unsafe {
+            assert_eq!(sk_mlkem768_encaps(pk.as_ptr(), m.as_ptr(), ct.as_mut_ptr(), ss.as_mut_ptr()), 0);
+            sk_mlkem768_decaps(seed.as_ptr(), ct.as_ptr(), ss2.as_mut_ptr());
+        }
+        assert_eq!(ss, ss2);
+        // a tampered ciphertext decapsulates to something else (implicit rejection)
+        ct[5] ^= 1;
+        unsafe { sk_mlkem768_decaps(seed.as_ptr(), ct.as_ptr(), ss2.as_mut_ptr()) };
+        assert_ne!(ss, ss2);
+        // an out-of-range key is refused
+        pk[0] = 0xff;
+        pk[1] = 0xff;
+        unsafe { assert_eq!(sk_mlkem768_encaps(pk.as_ptr(), m.as_ptr(), ct.as_mut_ptr(), ss.as_mut_ptr()), 1) };
+    }
 }

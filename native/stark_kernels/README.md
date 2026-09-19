@@ -4,9 +4,14 @@ Native kernels for the tstokenlib Circle-STARK prover: M31 circle FFT,
 SHA256 Merkle commitments, DEEP quotients and FRI folds. Exact ports of the
 Dart code in `lib/src/crypto/`, so proofs are byte-identical with or without
 the library; the Dart side (`lib/src/crypto/stark_kernels.dart`) keeps the
-transcript and the proof layout.
+transcript and the proof layout. It also hosts ML-KEM-768 (FIPS 203, the
+RustCrypto `ml-kem` crate, the one external dependency) for the shielded
+pool's note-encryption KEM: `sk_mlkem768_public_key`, `sk_mlkem768_encaps`,
+`sk_mlkem768_decaps`, keys regenerated from a 64-byte seed on every call.
+That part has no Dart fallback: `NoteKem` throws when the library is absent.
 
-Build (Rust 1.84 or later, no external crates):
+Build (Rust 1.84 or later; `zeroize` is pinned to 1.8.1 in `Cargo.lock` for
+that toolchain, newer versions want Rust 1.85):
 
     cargo build --release --manifest-path native/stark_kernels/Cargo.toml
 

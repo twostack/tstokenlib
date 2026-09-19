@@ -1485,9 +1485,9 @@ public lanes, so the circuit stays sound at every commit. The wallet layer is
 enumerable by index), `NotePlaintext` (576 bytes with a 512-byte memo),
 `NoteBundle` (recipient ciphertext, outgoing copy, optional issuer copy, the
 commitment it is for) and `NoteEncryption` over X25519, HKDF-SHA256 and
-ChaCha20-Poly1305 from the `cryptography` package; KEM id 1 is X25519 and the
-hybrid takes id 2 when ML-KEM lands. A bundle is 739 bytes; a transfer's
-note-data output `OP_RETURN 'TSLN' <bundles>` for two notes is 1,497 bytes, built
+ChaCha20-Poly1305 from the `cryptography` package; KEM id 1 is X25519, the
+hybrid is id 2 (step 3). An X25519-only bundle is 739 bytes; a transfer's
+note-data output `OP_RETURN 'TSLN' <bundles>` for two such notes is 1,497 bytes, built
 by `ShieldedPoolTool.extras(bundles, payouts)` as the first extra output so
 `outHash` covers it; `PoolRound.noteBundles` returns a round's bundles for
 trial decryption. Tested end to end in `test/note_encryption_test.dart` and the
@@ -1512,6 +1512,33 @@ Tested: a token mint trace with register and public-lane cheats
 (`test/pool_spend_air_test.dart`) and, on chain, a gated mint, a gated transfer
 and a mint signed by the wrong key that the state script refuses
 (`test/shielded_pool_tool_test.dart`).
+
+*Step 3 built.* ML-KEM-768 (FIPS 203) runs in the native crate through the
+RustCrypto `ml-kem` crate (its only dependency; `zeroize` pinned to 1.8.1 for
+Rust 1.84) behind three C functions, `sk_mlkem768_public_key`, `_encaps` and
+`_decaps` (ABI version 3). Keys are never stored: both are regenerated from a
+64-byte seed `d ‖ z`, so the Dart side only ever holds seeds, public keys and
+ciphertexts; encapsulation re-encodes the key and refuses one that does not
+round-trip (the standard's modulus check); decapsulation never fails (implicit
+rejection). `lib/src/crypto/note_kem.dart` defines the KEM ids: 1 is X25519
+alone, 2 (the default for new addresses and issuer keys) the hybrid whose
+public key is the X25519 key followed by the ML-KEM encapsulation key
+(32 + 1,184 bytes), whose ephemeral value is the X25519 ephemeral key followed by
+the ML-KEM ciphertext (32 + 1,088 bytes), and whose shared secret is
+`SHA256("tsl1-pool-hybrid" ‖ ss_ML ‖ ss_X ‖ eph_X ‖ pk_X)`, so both schemes must
+fall and the secret is bound to the exchange. `KemKeyPair.fromSeed(seed, kem:)`
+derives the X25519 pair from the 32-byte seed itself (a hybrid address's X25519
+half is the X25519-only address of the same `(ivk, d)`) and the ML-KEM seed as
+`SHA256("tsl1-pool-mlkem-d" ‖ seed) ‖ SHA256("tsl1-pool-mlkem-z" ‖ seed)`.
+`NoteBundle` prefixes each KEM value with its id, which fixes its length; the
+issuer copy has its own id (zero for none), so issuer keys may use either KEM.
+A hybrid bundle is 1,827 bytes, 3,027 with a hybrid issuer copy; the note-data
+output for two hybrid notes is 3,673 bytes, so a transfer's on-chain data grows
+from about 7.5 KB to about 9.7 KB (about 2.8 MB for a 290-transfer round, well
+inside 10 MB). Tested in `test/note_encryption_test.dart` (deterministic keys,
+round trip, refused keys, tampering of either half opens nothing, X25519-only
+addresses and issuer keys still work) and the chain-reader round now carries a
+hybrid bundle.
 
 ## Open Items
 
@@ -1554,5 +1581,6 @@ and a mint signed by the wrong key that the state script refuses
 - **Node policy.** Teranode defaults: 100 MB per script, 10 MB per transaction,
   1,000,000 ops per script, 100 MB stack memory; `MinMiningTxFee` 0.00000500 with the
   unit unstated. Policy dependencies ZEC never has.
-- **Note encryption KEM.** ECDH matches ZEC; a hash-based or lattice KEM makes
-  privacy post-quantum but adds ciphertext size.
+- **Note encryption KEM.** Built as the X25519 + ML-KEM-768 hybrid (corporate
+  step 3), so note privacy is post-quantum; the cost is about 1.1 KB more
+  ciphertext per note.

@@ -1,9 +1,10 @@
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:cryptography/cryptography.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/note_encryption.dart';
+import 'package:tstokenlib/src/crypto/note_kem.dart';
+import 'package:tstokenlib/src/crypto/stark_kernels.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 
 void main() {
@@ -27,6 +28,54 @@ void main() {
     expect(bob0.pkd, PoolHash.pkd(bob.sk, bob0.d));
     expect(bob0.epk, isNot(bob3.epk));
     expect(NoteAddress.parse(bob3.bytes).bytes, bob3.bytes);
+    // the default address is the hybrid; its X25519 half is the X25519-only address's key
+    expect(bob0.kem, NoteKem.hybrid);
+    expect(bob0.epk.length, 32 + 1184);
+    final classic = await NoteAddress.at(bob.ivk, 0, kem: NoteKem.x25519);
+    expect(classic.epk, bob0.epk.sublist(0, 32));
+    expect(classic.pkd, bob0.pkd);
+    expect(NoteAddress.parse(classic.bytes).bytes, classic.bytes);
+    expect(() => NoteAddress.parse(bob0.bytes.sublist(0, 77)), throwsFormatException);
+  });
+
+  test('ML-KEM-768 in the native crate: deterministic keys, round trip, rejection', () {
+    final k = StarkKernels.tryLoad()!;
+    final seed = List.generate(64, (i) => i * 3 & 0xff);
+    final pk = k.mlkem768PublicKey(seed);
+    expect(pk.length, 1184);
+    expect(k.mlkem768PublicKey(seed), pk);
+    expect(k.mlkem768PublicKey([...seed]..[0] ^= 1), isNot(pk));
+    final (ct, ss) = k.mlkem768Encaps(pk, List.filled(32, 5))!;
+    expect(ct.length, 1088);
+    expect(k.mlkem768Decaps(seed, ct), ss);
+    expect(k.mlkem768Decaps(seed, [...ct]..[100] ^= 1), isNot(ss));
+    expect(k.mlkem768Decaps([...seed]..[10] ^= 1, ct), isNot(ss)); // another d: another key
+    expect(k.mlkem768Decaps([...seed]..[40] ^= 1, ct), ss); // z only shapes implicit rejection
+    // a key with out-of-range coefficients is not an encapsulation key
+    expect(k.mlkem768Encaps([...pk]..[0] = 0xff..[1] = 0xff, List.filled(32, 5)), isNull);
+  });
+
+  test('the hybrid secret needs both halves; X25519-only bundles still open', () async {
+    final note = NotePlaintext(asset: PoolHash.bsvAsset, d: bob0.d, value: 9, rho: lanes(3), rcm: lanes(4));
+    final bundle = await NoteEncryption.encrypt(note, bob0, alice.ovk, rng: rng);
+    expect(bundle.kem, NoteKem.hybrid);
+    expect(bundle.ephemeral.length, 32 + 1088);
+    expect(bundle.bytes.length, NoteBundle.sizeOf(NoteKem.hybrid));
+    expect((await NoteEncryption.decryptIncoming(bundle, bob.ivk, bob0.d))?.bytes, note.bytes);
+    NoteBundle withEph(Uint8List e) => NoteBundle(bundle.cm, bundle.kem, e, bundle.ciphertext, bundle.outgoing);
+    expect(await NoteEncryption.decryptIncoming(withEph(Uint8List.fromList(bundle.ephemeral)..[3] ^= 1), bob.ivk, bob0.d), isNull);
+    expect(await NoteEncryption.decryptIncoming(withEph(Uint8List.fromList(bundle.ephemeral)..[500] ^= 1), bob.ivk, bob0.d), isNull);
+    // the same note to the X25519-only address of the same (ivk, d)
+    final classic = await NoteAddress.at(bob.ivk, 0, kem: NoteKem.x25519);
+    final b1 = await NoteEncryption.encrypt(note, classic, alice.ovk, rng: rng);
+    expect(b1.kem, NoteKem.x25519);
+    expect(b1.cm, bundle.cm);
+    expect(b1.bytes.length, NoteBundle.sizeOf(NoteKem.x25519));
+    expect((await NoteEncryption.decryptIncoming(b1, bob.ivk, bob0.d))?.bytes, note.bytes);
+    expect((await NoteEncryption.decryptOutgoing(b1, alice.ovk))?.$1.bytes, note.bytes);
+    expect(NoteBundle.parse(b1.bytes).bytes, b1.bytes);
+    // a bundle claiming the other KEM id does not parse to the same length
+    expect(() => NoteBundle.parse([...b1.bytes]..[33] = NoteKem.hybrid), throwsFormatException);
   });
 
   test('asset ids: BSV is the constant, others come from the record', () {
@@ -69,11 +118,14 @@ void main() {
   });
 
   test("the sender's auditor opens the outgoing copy; the issuer copy needs the issuer's key", () async {
-    final issuerPair = await X25519().newKeyPairFromSeed(List.generate(32, (i) => 100 + i));
-    final issuerEpk = Uint8List.fromList((await issuerPair.extractPublicKey()).bytes);
+    final issuerPair = await KemKeyPair.fromSeed(List.generate(32, (i) => 100 + i));
+    final issuerKey = await issuerPair.publicKey();
+    expect(KemPublicKey.parse(issuerKey.encoded).bytes, issuerKey.bytes);
     final note = NotePlaintext(asset: record.id, d: bob0.d, value: 77, rho: lanes(3), rcm: lanes(4));
-    final bundle = await NoteEncryption.encrypt(note, bob0, alice.ovk, issuerEpk: issuerEpk, rng: rng);
+    final bundle = await NoteEncryption.encrypt(note, bob0, alice.ovk, issuer: issuerKey, rng: rng);
     expect(bundle.hasIssuerCopy, isTrue);
+    expect(bundle.issuerKem, NoteKem.hybrid);
+    expect(bundle.bytes.length, NoteBundle.sizeOf(NoteKem.hybrid, issuerKem: NoteKem.hybrid));
     expect(NoteBundle.parse(bundle.bytes).bytes, bundle.bytes);
     final out = await NoteEncryption.decryptOutgoing(bundle, alice.ovk);
     expect(out, isNotNull);
@@ -82,8 +134,15 @@ void main() {
     expect(await NoteEncryption.decryptOutgoing(bundle, bob.ovk), isNull);
     final iss = await NoteEncryption.decryptAsIssuer(bundle, issuerPair);
     expect(iss?.$1.value, 77);
-    final otherPair = await X25519().newKeyPairFromSeed(List.generate(32, (i) => 200 + i));
+    final otherPair = await KemKeyPair.fromSeed(List.generate(32, (i) => 200 + i));
     expect(await NoteEncryption.decryptAsIssuer(bundle, otherPair), isNull);
+    // an X25519-only issuer key gives an X25519-only issuer copy
+    final classicIssuer = await KemKeyPair.fromSeed(List.generate(32, (i) => 100 + i), kem: NoteKem.x25519);
+    final b1 = await NoteEncryption.encrypt(note, bob0, alice.ovk, issuer: await classicIssuer.publicKey(), rng: rng);
+    expect(b1.issuerKem, NoteKem.x25519);
+    expect(NoteBundle.parse(b1.bytes).bytes, b1.bytes);
+    expect((await NoteEncryption.decryptAsIssuer(b1, classicIssuer))?.$1.value, 77);
+    expect(await NoteEncryption.decryptAsIssuer(b1, issuerPair), isNull);
   });
 
   test('a tampered bundle, or one claiming another commitment, does not open', () async {
@@ -113,6 +172,7 @@ void main() {
     expect(back[0].bytes, b1.bytes);
     expect(back[1].bytes, b2.bytes);
     expect(NoteBundle.fromScript([0x76, 0xa9]), isNull);
-    print('  note bundle ${b1.bytes.length} B, note-data output for two notes ${out.length} B');
+    print('  note bundle ${b1.bytes.length} B (X25519-only ${NoteBundle.sizeOf(NoteKem.x25519)} B, '
+        'with issuer copy ${NoteBundle.sizeOf(NoteKem.hybrid, issuerKem: NoteKem.hybrid)} B), note-data output for two notes ${out.length} B');
   });
 }

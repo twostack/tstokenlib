@@ -310,6 +310,12 @@ typedef _PermuteP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi
 typedef _PermuteP2D = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _ShaC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Pointer<ffi.Uint8>);
 typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>);
+typedef _KemPkC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
+typedef _KemPkD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
+typedef _KemEncapsC = ffi.Uint32 Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
+typedef _KemEncapsD = int Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
+typedef _KemDecapsC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
+typedef _KemDecapsD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
 
 /// The native kernels (`native/stark_kernels`, built with
 /// `cargo build --release --manifest-path native/stark_kernels/Cargo.toml`).
@@ -319,7 +325,7 @@ typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8
 /// arithmetic. Every kernel is exact, so [tryLoad] returning null (library
 /// not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 2;
+  static const abiVersion = 3;
   static const envVar = 'STARK_KERNELS_LIB';
 
   final ffi.DynamicLibrary _lib;
@@ -335,6 +341,9 @@ class StarkKernels implements ProverKernels {
   late final _CommitP2D _commitP2 = _lib.lookupFunction<_CommitP2C, _CommitP2D>('sk_commit_columns_p2');
   late final _MerklePairsP2D _merklePairsP2 = _lib.lookupFunction<_MerklePairsP2C, _MerklePairsP2D>('sk_merkle_pairs_p2');
   late final _PermuteP2D _permuteP2 = _lib.lookupFunction<_PermuteP2C, _PermuteP2D>('sk_poseidon2_permute');
+  late final _KemPkD _kemPk = _lib.lookupFunction<_KemPkC, _KemPkD>('sk_mlkem768_public_key');
+  late final _KemEncapsD _kemEncaps = _lib.lookupFunction<_KemEncapsC, _KemEncapsD>('sk_mlkem768_encaps');
+  late final _KemDecapsD _kemDecaps = _lib.lookupFunction<_KemDecapsC, _KemDecapsD>('sk_mlkem768_decaps');
   late final Uint32List _rc = Poseidon2ProofHash.roundConstants;
   final DartKernels _fallback = DartKernels();
 
@@ -421,6 +430,61 @@ class StarkKernels implements ProverKernels {
     } finally {
       calloc.free(p);
       calloc.free(out);
+    }
+  }
+
+  // ---- ML-KEM-768 (FIPS 203), for the note-encryption KEM ----
+  static const mlkem768SeedLength = 64, mlkem768PublicKeyLength = 1184, mlkem768CiphertextLength = 1088;
+
+  static ffi.Pointer<ffi.Uint8> _bytes(List<int> b, int expected, String what) {
+    if (b.length != expected) throw ArgumentError('$what is ${b.length} bytes, expected $expected');
+    final p = calloc<ffi.Uint8>(expected);
+    p.asTypedList(expected).setAll(0, b);
+    return p;
+  }
+
+  /// The encapsulation key of the ML-KEM-768 pair generated from [seed]
+  /// (64 bytes, d ‖ z). Keys are regenerated from the seed on every use.
+  Uint8List mlkem768PublicKey(List<int> seed) {
+    final s = _bytes(seed, mlkem768SeedLength, 'seed');
+    final out = calloc<ffi.Uint8>(mlkem768PublicKeyLength);
+    try {
+      _kemPk(s, out);
+      return Uint8List.fromList(out.asTypedList(mlkem768PublicKeyLength));
+    } finally {
+      calloc.free(s);
+      calloc.free(out);
+    }
+  }
+
+  /// Encapsulates to [pk] with the 32 random bytes [m]: (ciphertext, shared
+  /// secret), or null when [pk] is not a valid encapsulation key.
+  (Uint8List, Uint8List)? mlkem768Encaps(List<int> pk, List<int> m) {
+    final p = _bytes(pk, mlkem768PublicKeyLength, 'public key'), mm = _bytes(m, 32, 'm');
+    final ct = calloc<ffi.Uint8>(mlkem768CiphertextLength), ss = calloc<ffi.Uint8>(32);
+    try {
+      if (_kemEncaps(p, mm, ct, ss) != 0) return null;
+      return (Uint8List.fromList(ct.asTypedList(mlkem768CiphertextLength)), Uint8List.fromList(ss.asTypedList(32)));
+    } finally {
+      calloc.free(p);
+      calloc.free(mm);
+      calloc.free(ct);
+      calloc.free(ss);
+    }
+  }
+
+  /// Decapsulates [ct] with the pair generated from [seed]. A malformed
+  /// ciphertext yields a pseudorandom secret (implicit rejection).
+  Uint8List mlkem768Decaps(List<int> seed, List<int> ct) {
+    final s = _bytes(seed, mlkem768SeedLength, 'seed'), c = _bytes(ct, mlkem768CiphertextLength, 'ciphertext');
+    final ss = calloc<ffi.Uint8>(32);
+    try {
+      _kemDecaps(s, c, ss);
+      return Uint8List.fromList(ss.asTypedList(32));
+    } finally {
+      calloc.free(s);
+      calloc.free(c);
+      calloc.free(ss);
     }
   }
 
