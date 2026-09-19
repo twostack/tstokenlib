@@ -1589,6 +1589,92 @@ participants in proportion to their transfers, which fits the corporate
 deployments where participants run servers, and it keeps a phone-only user
 able to transact at the cost of never being asked to fold.
 
+### A prover pool for level 1 (built)
+
+The section above imagined level 1 folded at the edge, by the wallets whose
+transfers are in a node. That framing did not survive contact with the
+numbers, and what was built serves a different purpose, so this section
+supersedes it.
+
+**Why not wallets.** A level-1 node is one proof over sixteen transfers. It is
+not separable: there is no "your sixteenth" of a node for a wallet to prove.
+Folding at the edge therefore means one wallet in sixteen proving the whole
+node, its own transfer plus fifteen strangers', a 9 GB, 10 s job on twelve
+cores or 30 to 40 s on a laptop, landing on a user by draw; a phone user can
+never be asked. And the reason for wanting it is gone: the edge idea dates
+from when a round cost hours, and the kernel work since has brought a round to
+5.9 minutes on one machine, inside the ten-minute budget with nothing handed
+out. What remains true is that level 1 is the part of a round that grows with
+the transfer count (the five proofs above it do not), and that its sixteen
+nodes are independent. So the right home for them is a pool of machines the
+coordinator operates, proving nodes side by side: two more machines take level
+1 from 170 s to about 60 s, with no user involved and no trust question.
+
+**What was built.** A node travels as a `NodeJob`
+(`lib/src/recursion/prover_pool.dart`): the sixteen spend proofs and public
+inputs of one node in order, the level program's identity (its parameters,
+whose trace size fixes the program, and its preprocessed root), the parameters
+the spends were proved with, and the node digest the coordinator expects.
+Nothing else is in it, so a member learns only zero-knowledge proofs over data
+the round transaction publishes anyway. Jobs and results cross a process
+boundary through `lib/src/crypto/proof_codec.dart`, a bare concatenation in
+the order the verifier reads a proof, which is the order
+`StarkVerifierGen.buildUnlock` already pushes on chain; every length follows
+from the parameters and the AIR's column counts, so a truncated or padded
+encoding is refused rather than read part way.
+
+Proving a node is behind `NodeProver`. `LocalNodeProver` is this machine's
+prover, `ProverPool` hands jobs to its members (each a `NodeProver`, in
+process or behind a transport) and falls back to the local prover per node,
+and `PoolAggregation.aggregate` takes either, proving inline when given
+neither. The pool is also the trust boundary: it rebuilds the node's AIR from
+the digest it sent and verifies the returned proof against it with the
+reference verifier, so a member cannot choose the statement its proof is
+about, and anything late, wrong or broken is proved here instead. That is
+defence in depth for the coordinator's own machines and it is what would let a
+participant's server be admitted to the pool in a corporate deployment without
+being trusted. Because a member is a round trip, `aggregate` and
+`ShieldedPoolTool.createAggregatedRoundTxn` are now asynchronous.
+
+**Measured** on one 12-core machine, 256 transfers on the throughput plan,
+with all sixteen level-1 nodes proved by a simulated pool member on the same
+machine and timed apart (`dart run tool/scratch/round_throughput.dart 16 pool`):
+
+| stage | seconds |
+| --- | --- |
+| level 1, 16 nodes, at the member | 168.4 |
+| level 1, jobs and verification, at the coordinator | 1.6 |
+| level 2, 4 nodes | 80.3 |
+| level 3, 2 nodes | 61.8 |
+| level 4, 1 node | 13.9 |
+| root | 15.2 |
+| **round, everything on one machine** | **341.8** |
+| **coordinator's share with level 1 pooled** | **173.4** |
+
+The coordinator's share is the part that does not shrink by adding machines:
+2.9 minutes of a round that costs 5.7 alone. The 0.1 s per node budgeted for
+verification is what it costs, 1.6 s over sixteen nodes. The member's 10.5 s
+per node includes decoding the job and encoding the result; it proves with the
+coordinator's compiled program, since a second copy of the level-1
+preprocessed commitment does not fit beside the round's 24.8 GB peak, and a
+real member pays that setup once, the 20.6 s this run spends before the round
+starts.
+
+The payload per node is 1,019,900 B out and 327,428 B back: 16 x 63,512 B of
+spend proofs plus a 3,708 B header (the arity, the two parameter sets, the
+preprocessed root, the node digest and 16 x 56 public lanes) out, and the
+level-1 proof back, 88 B more than its on-chain size because the codec carries
+the query indices and not the public inputs. A round moves about 16 MB out and
+5 MB back between the coordinator's machines.
+
+**Not here.** The transport between the coordinator's machines and the
+configuration of who is in the pool; both belong to the coordinator service.
+The pool talks to `NodeProver`s, so an in-process member and one behind a
+network are the same to it, and a member that only ever sees the job's bytes
+reproduces the round proof for proof (`test/pool_aggregation_test.dart`).
+Whether to ask two members for the same node and take the first verified
+answer is left until a transport exists to measure it against.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the

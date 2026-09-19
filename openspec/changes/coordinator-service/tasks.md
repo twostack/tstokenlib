@@ -8,6 +8,8 @@
 - [ ] 2.1 Implement the pending round, the full-or-deadline trigger with an injectable clock, and round building through the tool for both modes with a publish callback; verify with a test using a fake clock that a short recursive round is padded and published at the deadline and that an empty round is not built.
 - [ ] 2.2 Keep intake open while a round is being built; verify with a test that a transfer submitted during building lands in the next round.
 
+- [ ] 2.3 Wire the configured prover pool into recursive round building (`ProverPool` over the configured `NodeProver`s as `level1`); verify with a test that a round with one in-process member and one that never answers completes with the same root as the local round.
+
 ## 3. Idle work and recovery
 
 - [ ] 3.1 Implement the idle refill of the padding stock and the warm-up of level programs and preprocessed commitments; verify with a test that the stock returns to its level after a padded round.

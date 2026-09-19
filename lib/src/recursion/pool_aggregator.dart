@@ -18,7 +18,9 @@ import 'dart:math';
 import '../crypto/proof_hash.dart';
 import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
+import '../crypto/stark_verifier_ref.dart';
 import '../script_gen/pool_spend_air.dart';
+import 'prover_pool.dart';
 import 'verifier_air.dart';
 import 'verifier_program.dart';
 
@@ -149,13 +151,23 @@ class PoolAggregation {
   /// root proof; [rootBefore], [rootAfter], [index] and the subtree
   /// [paths] describe the round's tree update. Returns the root proof and
   /// the wide publics it is bound to.
-  (StarkProof, List<int>) aggregate(List<PoolPublicInputs> publics, List<StarkProof> proofs,
+  ///
+  /// Level 1 is the bulk of the round and each of its nodes is independent,
+  /// so it can be spread over the coordinator's machines: with [level1] every
+  /// level-1 node becomes a [NodeJob] handed to that prover (a [ProverPool],
+  /// or a [LocalNodeProver], which is what the inline path amounts to).
+  /// Nothing is folded unverified: a prover that does not promise to have
+  /// checked its own result ([NodeProver.verifies]) has it checked here
+  /// against the digest this coordinator computed, and a proof that fails is
+  /// replaced by one proved here.
+  Future<(StarkProof, List<int>)> aggregate(List<PoolPublicInputs> publics, List<StarkProof> proofs,
       {required List<int> rootBefore,
       required List<int> rootAfter,
       required int index,
       required List<List<List<int>>> paths,
       Random? rng,
-      bool verbose = false}) {
+      NodeProver? level1,
+      bool verbose = false}) async {
     if (publics.length != transfers || proofs.length != transfers) throw ArgumentError('$transfers transfers');
     rng ??= Random();
     final sw = Stopwatch()..start();
@@ -172,9 +184,26 @@ class PoolAggregation {
       final nextShapes = <InnerShape>[], nextProofs = <StarkProof>[], nextDigests = <List<int>>[];
       for (int m = 0; m < curProofs.length ~/ level.arity; m++) {
         final lo = level.arity * m, hi = lo + level.arity;
-        final rows = prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi));
-        final air = prog.air(VerifierProgram.nodeDigest(digests.sublist(lo, hi)));
-        nextProofs.add(StarkProver.prove(level.params, air, rows, rng: rng, hash: p2));
+        final nodeDigest = VerifierProgram.nodeDigest(digests.sublist(lo, hi));
+        final air = prog.air(nodeDigest);
+        StarkProof? pf;
+        if (l == 0 && level1 != null) {
+          final job = NodeJob(
+              spendParams: spendP,
+              levelParams: level.params,
+              levelPreRoot: preRoots[0],
+              publics: publics.sublist(lo, hi),
+              proofs: curProofs.sublist(lo, hi),
+              digest: nodeDigest);
+          pf = await level1.prove(job);
+          if (!level1.verifies && !_accepts(level.params, air, pf)) {
+            if (verbose) print('  [aggregate] level 1 node $m did not verify; proving it here');
+            pf = null;
+          }
+        }
+        pf ??= StarkProver.prove(level.params, air, prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi)),
+            rng: rng, hash: p2);
+        nextProofs.add(pf);
         nextShapes.add(InnerShape(level.params, air));
         nextDigests.add(VerifierProgram.statementDigest(air, preRoots[l]));
       }
@@ -188,5 +217,15 @@ class PoolAggregation {
     final proof = StarkProver.prove(rootP, root.air(wide), rows, rng: rng, hash: sha);
     lap('root');
     return (proof, wide);
+  }
+
+  /// Whether [pf] proves the statement [air] states, with any error counted
+  /// as a refusal: a proof from outside is untrusted input.
+  static bool _accepts(StarkParams params, VerifierAir air, StarkProof pf) {
+    try {
+      return StarkVerifierRef(params, air, hash: p2).check(pf) == null;
+    } catch (_) {
+      return false;
+    }
   }
 }

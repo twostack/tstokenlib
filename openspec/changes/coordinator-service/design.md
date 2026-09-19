@@ -9,7 +9,7 @@ The tool builds one round from a list of transfers and a ledger (`createAggregat
 - The two modes behind one intake and one ledger.
 
 **Non-Goals:**
-- HTTP or P2P transport, authentication of submitters, fee policy, wallet software.
+- HTTP or P2P transport (for submitters and between the coordinator's own machines), authentication of submitters, fee policy, wallet software.
 - Broadcasting to a node (a publish callback is the boundary).
 
 ## Decisions
@@ -19,6 +19,7 @@ The tool builds one round from a list of transfers and a ledger (`createAggregat
 - **Trigger = full or deadline.** Configured `roundDeadline` (from the first pending transfer) and the mode's capacity; a timer per pending round, no polling. Alternative: fixed block cadence, deferred until a node connection exists.
 - **Idle worker.** After each round, a background task refills the padding stock to `paddingStock` and touches the preprocessed commitments (cache capacity is 8, the plan needs 5). Proving padding uses the machine while idle; it is interruptible per transfer.
 - **Recovery through the reader.** The coordinator is given the genesis transaction and a source of round transactions (a callback returning the chain of state spends); it rebuilds with `PoolChainReader` and compares with any persisted snapshot. Alternative: persisting the ledger, rejected as the source of truth is the chain.
+- **Level 1 through the pool.** The recursive-mode configuration lists the coordinator's level-1 provers (`NodeProver`s: this machine, plus members on machines the coordinator operates once a transport exists), and round building passes a `ProverPool` over them as `level1`. Membership is configuration, not discovery; a participant's server can be listed like any other member because the pool verifies every returned node. With no members listed the pool is empty and level 1 is proved here, the measured 5.9-minute round.
 - **Mode as a sealed config.** `CoordinatorConfig.direct(k)` or `.recursive(plan)`; the service checks the pool's state script bytes against the generator for that mode at start.
 
 ## Risks / Trade-offs

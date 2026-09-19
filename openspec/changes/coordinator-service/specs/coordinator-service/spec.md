@@ -29,6 +29,17 @@ Between rounds the coordinator SHALL refill the padding stock to its configured 
 - **WHEN** a round consumed padding and the coordinator is idle
 - **THEN** the stock is back at its configured level before the next round closes
 
+### Requirement: Prover pool
+In recursive mode the coordinator SHALL prove level-1 nodes through a pool of provers it is configured with, this machine included as the fallback, and SHALL run with an empty pool.
+
+#### Scenario: Empty pool
+- **WHEN** no member is configured
+- **THEN** every level-1 node is proved on the coordinator and the round completes
+
+#### Scenario: Member out
+- **WHEN** a configured member does not answer within the timeout
+- **THEN** its node is proved on the coordinator and the round completes
+
 ### Requirement: Recovery
 On start the coordinator SHALL rebuild its ledger from the genesis transaction and every round transaction since, through the chain reader, and SHALL refuse to run if the rebuilt ledger disagrees with the last published state.
 

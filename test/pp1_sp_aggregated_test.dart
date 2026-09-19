@@ -93,7 +93,7 @@ void main() {
     verifyAll(genesisTx, [fundingTx.outputs[0], issuanceTx.outputs[0]], label: 'genesis');
   }, timeout: const Timeout(Duration(minutes: 5)));
 
-  test('a round of four deposits through one aggregated slot; the chain reader agrees', () {
+  test('a round of four deposits through one aggregated slot; the chain reader agrees', () async {
     final depositFunding = coinbaseLike(depositorAddress, [400000]);
     final amounts = [100000, 50000, 25000, 12500];
     final change = ShieldedPoolTool.payout(depositorAddress, 400000 - amounts.reduce((a, b) => a + b) - 800);
@@ -110,7 +110,7 @@ void main() {
     final spent = tool.spentByRound(ledger);
     final vaultBefore = ledger.vault;
     final sw = Stopwatch()..start();
-    roundTx = tool.createAggregatedRoundTxn(ledger, transfers, agg,
+    roundTx = await tool.createAggregatedRoundTxn(ledger, transfers, agg,
         funding: [FundingInput(depositFunding, 0, depositorSigner, depositorPub)], rng: Random(3), verbose: true);
     print('  round built in ${sw.elapsedMilliseconds} ms');
     expect(ledger.vault, vaultBefore + amounts.reduce((a, b) => a + b));
@@ -131,7 +131,7 @@ void main() {
     expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);
   }, timeout: const Timeout(Duration(minutes: 20)));
 
-  test('a short round: one deposit and three padding transfers, two of them from stock', () {
+  test('a short round: one deposit and three padding transfers, two of them from stock', () async {
     final depositFunding = coinbaseLike(depositorAddress, [30000]);
     final change = ShieldedPoolTool.payout(depositorAddress, 30000 - 20000 - 800);
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
@@ -147,12 +147,12 @@ void main() {
     print('  two padding transfers proved ahead in ${sw.elapsedMilliseconds} ms');
     expect(supply.stock, 2);
     // a short round without a supply is refused
-    expect(() => tool.createAggregatedRoundTxn(ledger, [deposit], agg), throwsArgumentError);
+    await expectLater(tool.createAggregatedRoundTxn(ledger, [deposit], agg), throwsArgumentError);
 
     final spent = tool.spentByRound(ledger);
     final vaultBefore = ledger.vault, sizeBefore = ledger.tree.size, nfBefore = ledger.nullifiers.root;
     sw.reset();
-    final tx = tool.createAggregatedRoundTxn(ledger, [deposit], agg,
+    final tx = await tool.createAggregatedRoundTxn(ledger, [deposit], agg,
         funding: [FundingInput(depositFunding, 0, depositorSigner, depositorPub)], padding: supply, rng: Random(4));
     print('  short round built in ${sw.elapsedMilliseconds} ms (one padding transfer proved on the spot)');
     expect(supply.stock, 0);

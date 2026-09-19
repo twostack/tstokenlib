@@ -31,6 +31,7 @@ import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/slot_script_common.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
+import '../recursion/prover_pool.dart';
 import '../recursion/pool_aggregator.dart';
 
 /// A transfer submitted to a round: a spend proof with its publics and the
@@ -215,9 +216,15 @@ class ShieldedPoolTool {
   /// [agg].transfers transfers, a short round filled from [padding], folded
   /// by [agg] into one root proof for the single verifier slot; the round
   /// transaction is input 0 the state, input 1 the slot, then the deposit
-  /// [funding] inputs.
-  Transaction createAggregatedRoundTxn(PoolLedger ledger, List<PoolTransfer> transfers, PoolAggregation agg,
-      {List<FundingInput> funding = const [], PaddingSupply? padding, Random? rng, bool verbose = false}) {
+  /// [funding] inputs. With [level1] the aggregation's level-1 nodes are
+  /// proved through that prover (the coordinator's [ProverPool]) instead of
+  /// inline, which is why building a round is asynchronous.
+  Future<Transaction> createAggregatedRoundTxn(PoolLedger ledger, List<PoolTransfer> transfers, PoolAggregation agg,
+      {List<FundingInput> funding = const [],
+      PaddingSupply? padding,
+      Random? rng,
+      NodeProver? level1,
+      bool verbose = false}) async {
     if (!gen.aggregated) throw StateError('the generator is not in aggregated mode');
     if (agg.transfers != gen.n) throw StateError('the aggregation folds ${agg.transfers} transfers, the round holds ${gen.n}');
     if (transfers.length > gen.n) throw ArgumentError('a round holds at most ${gen.n} transfers');
@@ -259,8 +266,8 @@ class ShieldedPoolTool {
     final next = h.afterRound(rootAfter, ledger.nullifiers.root, leaves: gen.leavesAppended);
     final extras = [for (final t in transfers) if (t.extraOutputs.isNotEmpty) t.extraOutputs];
 
-    final (rootProof, wide) = agg.aggregate([for (final t in transfers) t.publics], [for (final t in transfers) t.proof],
-        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, rng: rng, verbose: verbose);
+    final (rootProof, wide) = await agg.aggregate([for (final t in transfers) t.publics], [for (final t in transfers) t.proof],
+        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, rng: rng, level1: level1, verbose: verbose);
     final outs = gen.roundOutputs(next, vault, [VerifierSlotGen.resultOutput(wide)], extras);
     final stateUnlock = PP1SpUnlockBuilder.roundAggregated(gen,
         extraPrevouts: const [], transfers: full, roundLanes: wide.sublist(agg.tree.roundOffset));

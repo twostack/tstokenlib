@@ -6,6 +6,7 @@ Everything a round needs exists as library calls (`ShieldedPoolTool`, `PoolAggre
 
 - A long-running coordinator: an intake that validates each submitted transfer (outHash, issuer authorisation, proof verified with the reference verifier) and queues it; a round trigger (deadline or full); round building through the existing tool; a publish hook for the round transaction; ledger recovery through the chain reader on start.
 - Idle work between rounds: refill the padding stock to a configured level, keep the level programs and preprocessed commitments cached.
+- In recursive mode the configuration lists the level-1 prover pool (this machine, plus machines the coordinator operates once a transport exists) and round building proves level 1 through it.
 - Configuration selects the mode (direct slots with k transfers, or recursive with a plan) and the parameters; the two modes share intake and ledger but not round building.
 - Rejection reasons are returned to the submitter (bad proof, spent nullifier, unknown anchor, missing authorisation, vault overdraw).
 
