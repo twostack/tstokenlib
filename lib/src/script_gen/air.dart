@@ -113,6 +113,37 @@ abstract class Air {
   /// Base-field fast path for the prover: fills [out] (numConstraints).
   void constraintsM31(Uint32List cur, Uint32List next, Uint32List per, Uint32List lin, Uint32List out);
 
+  /// The main constraints recorded as a straight-line [Program] over inputs
+  /// named `cur{j}`, `next{j}`, `per{k}` and `lin{k}` (an AIR may add
+  /// `pub{i}` for its publics); publics are otherwise baked in as
+  /// constants. Null when the AIR has no generic constraints. The native
+  /// prover evaluates this program instead of [constraintsM31].
+  Program? mainProgram() {
+    final r = ExprRing();
+    final cur = r.inputs('cur', totalCols), next = r.inputs('next', totalCols);
+    final per = r.inputs('per', numPointCols), lin = r.inputs('lin', numLinear);
+    try {
+      return r.program(constraintsG(r, cur, next, per, lin));
+    } on UnimplementedError {
+      return null;
+    }
+  }
+
+  /// The aux constraints as a [Program] over the same inputs plus
+  /// `chal{k}`; null without aux constraints or generic aux constraints.
+  Program? auxProgram() {
+    if (numAuxConstraints == 0) return null;
+    final r = ExprRing();
+    final cur = r.inputs('cur', totalCols), next = r.inputs('next', totalCols);
+    final per = r.inputs('per', numPointCols), lin = r.inputs('lin', numLinear);
+    final chal = r.inputs('chal', numChallenges);
+    try {
+      return r.program(auxConstraintsG(r, cur, next, per, lin, chal));
+    } on UnimplementedError {
+      return null;
+    }
+  }
+
   /// Script: from named limbs [cur], [next], [per], [lin] (all consumed)
   /// leave the constraint values as canonical limbs named [out][j].
   void emitConstraints(StackEmitter e, List<List<String>> cur, List<List<String>> next,
@@ -146,6 +177,11 @@ abstract class Air {
 
   /// The preprocessed column values (numPreCols columns of 2^logTrace rows).
   List<Uint32List> preColumns() => const [];
+
+  /// Identifies the preprocessed columns for the prover's commitment cache:
+  /// AIR instances whose [preColumns] are the same object share one
+  /// commitment. By default the instance itself.
+  Object get preColumnsIdentity => this;
 
   int get totalCols => numCols + numAuxCols + numPreCols;
 

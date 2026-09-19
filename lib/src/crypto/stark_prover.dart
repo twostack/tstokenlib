@@ -23,7 +23,7 @@ import 'stark_kernels.dart';
 import 'stark_prover_ref.dart' show StarkParams, StarkProof, QueryProof, solveQ, embed, composeColumns;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepQuotientRef;
 import '../script_gen/fiat_shamir_script_gen.dart' show TranscriptRef;
-import '../script_gen/air.dart' show Air;
+import '../script_gen/air.dart' show Air, ConstraintGroup;
 
 export 'proof_hash.dart' show ProofHash, Sha256ProofHash, Poseidon2ProofHash;
 export 'stark_kernels.dart' show MerkleTree, MerkleCommitment, ProverKernels, DartKernels, StarkKernels;
@@ -145,20 +145,19 @@ class StarkProver {
     }
     final allCoefs = [...traceCoefs, ...auxCoefs, ...preCoefs];
     final allEv = [...traceEv, ...auxEv, ...preEv];
-    final nAll = allCoefs.length;
     final beta = ts.squeezeQM31();
 
     // ---- 2. composition on D_{t+e} (twin layout of HalfCoset(t+e-1)) ----
     final logC = t + P.logExpand, mC = 1 << (logC - 1), nC = 2 * mC;
     final domC = CosetTables.of(logC - 1);
-    final traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
+    var traceOnC = kernels.evaluateColumns(allCoefs, logC - 1);
     _lap('trace on comp domain');
     final shift = 1 << (logC - t); // p * g_t is a shift by 2^(logC-t) in cyclic order
     // periodic columns on D_{logC}: F_k on D_{logPeriod+logExpand}, index mod its size
     final logPC = air.logPeriod + P.logExpand;
     final perOnC = [for (final c in air.periodicCoefs) CircleFft.evaluate(c, logPC - 1)];
     // public columns on D_logC: extended like trace columns
-    final pubOnC = air.numPubCols == 0
+    var pubOnC = air.numPubCols == 0
         ? <Uint32List>[]
         : kernels.evaluateColumns(PreCommitment.twinCoefs(air.pubColumns(), t, kernels), logC - 1);
     // v_t(x) on the composition domain, batch-inverted
@@ -192,52 +191,17 @@ class StarkProver {
         }
       }
     }
-    final compLimbs = List.generate(4, (_) => Uint32List(nC));
-    final cur = Uint32List(nAll), nxt = Uint32List(nAll), per = Uint32List(air.numPointCols);
-    final nPer = air.numPeriodic;
-    final lin = Uint32List(forms.length);
-    final nBase = air.numConstraints;
-    final cons = Uint32List(nBase);
-    final auxCons = List<QM31>.filled(air.numAuxConstraints, QM31.zero);
-    for (int q = 0; q < nC; q++) {
-      final cyc = CircleFft.cyclicIndex(logC, q);
-      final qn = CircleFft.twinIndex(logC, (cyc + shift) & (nC - 1));
-      final qp = CircleFft.twinIndex(logPC, cyc & ((1 << logPC) - 1));
-      for (int j = 0; j < nAll; j++) {
-        cur[j] = traceOnC[j][q];
-        nxt[j] = traceOnC[j][qn];
-      }
-      for (int k = 0; k < nPer; k++) {
-        per[k] = perOnC[k][qp];
-      }
-      for (int j = 0; j < pubOnC.length; j++) {
-        per[nPer + j] = pubOnC[j][q];
-      }
-      for (int k = 0; k < lin.length; k++) {
-        lin[k] = linOnC[k][q];
-      }
-      air.constraintsM31(cur, nxt, per, lin, cons);
-      if (auxCons.isNotEmpty) air.auxConstraintsM31(cur, nxt, per, lin, chal, auxCons);
-      final li = q < mC ? q : q - mC;
-      var total = QM31.zero;
-      var lo = 0;
-      for (int g = 0; g < groups.length; g++) {
-        final gr = groups[g];
-        var acc = QM31.zero;
-        for (int k = gr.count - 1; k >= 0; k--) {
-          final j = lo + k;
-          acc = acc * beta + (j < nBase ? embed(cons[j]) : auxCons[j - nBase]);
-        }
-        final f = gr.divisor < 0 ? vInv[li] : divInv[gr.divisor]![q];
-        total = total + (groupPow[g] * acc).scale(f);
-        lo += gr.count;
-      }
-      final limbs = total.limbs;
-      for (int k = 0; k < 4; k++) {
-        compLimbs[k][q] = limbs[k];
-      }
+    List<Uint32List>? compLimbs = _nativeComposition(
+        groups, groupPow, beta, chal, traceOnC, pubOnC, perOnC, linOnC, vInv, divInv, logC, logPC, shift);
+    if (compLimbs != null) {
+      _lap('composition values (native)');
+    } else {
+      compLimbs = _compositionInDart(groups, groupPow, beta, chal, traceOnC, pubOnC, perOnC, linOnC, vInv, divInv, logC, logPC, shift);
+      _lap('composition values');
     }
-    _lap('composition values');
+    // the composition-domain values are dead from here (1.3 GB at 2^19)
+    traceOnC = const [];
+    pubOnC = const [];
     final compCoefs = kernels.interpolateColumns(compLimbs, logC - 1);
     final domA = CosetTables.of(P.logCompHalf);
     final mA = domA.size;
@@ -394,6 +358,144 @@ class StarkProver {
     proof.debug.addAll(dbg);
     return proof;
   }
+
+  /// The composition values row by row in Dart: the AIR's base-field
+  /// constraints and QM31 aux constraints, Horner-combined per group and
+  /// divided by the group's divisor.
+  List<Uint32List> _compositionInDart(
+      List<ConstraintGroup> groups,
+      List<QM31> groupPow,
+      QM31 beta,
+      List<QM31> chal,
+      List<Uint32List> traceOnC,
+      List<Uint32List> pubOnC,
+      List<Uint32List> perOnC,
+      List<Uint32List> linOnC,
+      Uint32List vInv,
+      Map<int, Uint32List> divInv,
+      int logC,
+      int logPC,
+      int shift) {
+    final mC = 1 << (logC - 1), nC = 2 * mC, nAll = traceOnC.length;
+    final compLimbs = List.generate(4, (_) => Uint32List(nC));
+    final cur = Uint32List(nAll), nxt = Uint32List(nAll), per = Uint32List(air.numPointCols);
+    final nPer = air.numPeriodic;
+    final lin = Uint32List(linOnC.length);
+    final nBase = air.numConstraints;
+    final cons = Uint32List(nBase);
+    final auxCons = List<QM31>.filled(air.numAuxConstraints, QM31.zero);
+    for (int q = 0; q < nC; q++) {
+      final cyc = CircleFft.cyclicIndex(logC, q);
+      final qn = CircleFft.twinIndex(logC, (cyc + shift) & (nC - 1));
+      final qp = CircleFft.twinIndex(logPC, cyc & ((1 << logPC) - 1));
+      for (int j = 0; j < nAll; j++) {
+        cur[j] = traceOnC[j][q];
+        nxt[j] = traceOnC[j][qn];
+      }
+      for (int k = 0; k < nPer; k++) {
+        per[k] = perOnC[k][qp];
+      }
+      for (int j = 0; j < pubOnC.length; j++) {
+        per[nPer + j] = pubOnC[j][q];
+      }
+      for (int k = 0; k < lin.length; k++) {
+        lin[k] = linOnC[k][q];
+      }
+      air.constraintsM31(cur, nxt, per, lin, cons);
+      if (auxCons.isNotEmpty) air.auxConstraintsM31(cur, nxt, per, lin, chal, auxCons);
+      final li = q < mC ? q : q - mC;
+      var total = QM31.zero;
+      var lo = 0;
+      for (int g = 0; g < groups.length; g++) {
+        final gr = groups[g];
+        var acc = QM31.zero;
+        for (int k = gr.count - 1; k >= 0; k--) {
+          final j = lo + k;
+          acc = acc * beta + (j < nBase ? embed(cons[j]) : auxCons[j - nBase]);
+        }
+        final f = gr.divisor < 0 ? vInv[li] : divInv[gr.divisor]![q];
+        total = total + (groupPow[g] * acc).scale(f);
+        lo += gr.count;
+      }
+      final limbs = total.limbs;
+      for (int k = 0; k < 4; k++) {
+        compLimbs[k][q] = limbs[k];
+      }
+    }
+    return compLimbs;
+  }
+
+  /// The same values from the AIR's recorded programs on the native
+  /// kernels, or null when they are unavailable (Dart kernels, an AIR
+  /// without generic constraints, or a program the kernel cannot run).
+  List<Uint32List>? _nativeComposition(
+      List<ConstraintGroup> groups,
+      List<QM31> groupPow,
+      QM31 beta,
+      List<QM31> chal,
+      List<Uint32List> traceOnC,
+      List<Uint32List> pubOnC,
+      List<Uint32List> perOnC,
+      List<Uint32List> linOnC,
+      Uint32List vInv,
+      Map<int, Uint32List> divInv,
+      int logC,
+      int logPC,
+      int shift) {
+    if (kernels is DartKernels) return null;
+    final main = air.mainProgram();
+    if (main == null || !CompositionJob.baseOnly(main)) return null;
+    final aux = air.auxProgram();
+    if (air.numAuxConstraints > 0 && aux == null) return null;
+    if (main.outputs.length != air.numConstraints || (aux?.outputs.length ?? 0) != air.numAuxConstraints) return null;
+    final nAll = traceOnC.length, nPer = perOnC.length;
+    final mainSrc = CompositionJob.resolve(main, nAll, nPer, air.publicValues);
+    final auxSrc = aux == null ? Uint32List(0) : CompositionJob.resolve(aux, nAll, nPer, air.publicValues);
+    if (mainSrc == null || auxSrc == null) return null;
+    final mC = 1 << (logC - 1), nC = 2 * mC;
+    final idxNext = Uint32List(nC), idxPer = Uint32List(nC);
+    final vInvFull = Uint32List(nC);
+    for (int q = 0; q < nC; q++) {
+      final cyc = CircleFft.cyclicIndex(logC, q);
+      idxNext[q] = CircleFft.twinIndex(logC, (cyc + shift) & (nC - 1));
+      idxPer[q] = CircleFft.twinIndex(logPC, cyc & ((1 << logPC) - 1));
+      vInvFull[q] = vInv[q < mC ? q : q - mC];
+    }
+    final divs = <Uint32List>[vInvFull];
+    final divIndex = <int, int>{};
+    for (final d in divInv.keys) {
+      divIndex[d] = divs.length;
+      divs.add(divInv[d]!);
+    }
+    final weights = <QM31>[];
+    final divSel = <int>[];
+    for (int g = 0; g < groups.length; g++) {
+      var w = groupPow[g];
+      for (int k = 0; k < groups[g].count; k++) {
+        weights.add(w);
+        divSel.add(groups[g].divisor < 0 ? 0 : divIndex[groups[g].divisor]!);
+        w = w * beta;
+      }
+    }
+    final result = kernels.composition(CompositionJob(
+      main: main,
+      aux: aux,
+      mainSrc: mainSrc,
+      auxSrc: auxSrc,
+      cols: [...traceOnC, ...pubOnC],
+      per: perOnC,
+      lin: linOnC,
+      divs: divs,
+      logC: logC,
+      logPC: logPC,
+      idxNext: idxNext,
+      idxPer: idxPer,
+      chal: chal,
+      weights: weights,
+      divSel: Uint32List.fromList(divSel),
+    ));
+    return result;
+  }
 }
 
 /// The commitment of an AIR's preprocessed columns under given parameters
@@ -404,20 +506,29 @@ class PreCommitment {
   final MerkleCommitment tree;
   PreCommitment(this.coefs, this.ev, this.tree);
 
+  /// The most recent commitments, keyed by the columns' identity (see
+  /// [Air.preColumnsIdentity]) and the domain; an entry at 2^19 rows and
+  /// blowup 32 is about 2 GB, so only a few are kept.
   static final Map<String, PreCommitment> _cache = {};
+  static const cacheEntries = 4;
 
   static String _key(Air air, StarkParams P, ProofHash hash) =>
-      '${identityHashCode(air)}:${P.logTrace}:${P.logTraceHalf}:${hash.name}';
+      '${identityHashCode(air.preColumnsIdentity)}:${P.logTrace}:${P.logTraceHalf}:${hash.name}';
 
-  static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) =>
-      _cache.putIfAbsent(_key(air, P, hash), () {
-        final k = kernels ?? ProverKernels.best;
-        final cols = air.preColumns();
-        if (cols.length != air.numPreCols) throw StateError('preColumns returned ${cols.length} columns');
-        final coefs = twinCoefs(cols, P.logTrace, k);
-        final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
-        return PreCommitment(coefs, ev, tree);
-      });
+  static PreCommitment of(Air air, StarkParams P, ProofHash hash, {ProverKernels? kernels}) {
+    final key = _key(air, P, hash);
+    final hit = _cache.remove(key);
+    if (hit != null) return _cache[key] = hit; // re-insert: most recent last
+    final k = kernels ?? ProverKernels.best;
+    final cols = air.preColumns();
+    if (cols.length != air.numPreCols) throw StateError('preColumns returned ${cols.length} columns');
+    final coefs = twinCoefs(cols, P.logTrace, k);
+    final (ev, tree) = k.commitColumns(coefs, P.logTraceHalf, hash);
+    while (_cache.length >= cacheEntries) {
+      _cache.remove(_cache.keys.first);
+    }
+    return _cache[key] = PreCommitment(coefs, ev, tree);
+  }
 
   /// Coefficients of columns given in cyclic row order on the trace domain.
   static List<Uint32List> twinCoefs(List<Uint32List> cols, int t, ProverKernels k) {

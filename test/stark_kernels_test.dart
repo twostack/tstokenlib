@@ -4,7 +4,9 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
+import 'package:tstokenlib/src/crypto/proof_hash.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
+import 'package:tstokenlib/src/recursion/verifier_program.dart';
 import 'package:tstokenlib/src/script_gen/deep_quotient_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
@@ -95,6 +97,33 @@ void main() {
     final pn = StarkProver.prove(p, air, w.rows, rng: Random(3), kernels: native);
     final gen = StarkVerifierGen(p, air);
     expect(gen.buildUnlock(pn).buffer, gen.buildUnlock(pd).buffer);
+  }, skip: skip, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('verifier AIR proofs (aux constraints, pre columns, native composition) are byte-identical', () {
+    const p2 = Poseidon2ProofHash();
+    const inner = StarkParams(
+        logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
+    const outer = StarkParams(logTrace: 14, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
+    final w = witness();
+    final air = PoolSpendAir.air(w.publics);
+    final innerProof = StarkProver.prove(inner, air, w.rows, rng: Random(5), hash: p2);
+    final program = VerifierProgram.compile(InnerShape(inner, air), 14);
+    final rows = program.witness(innerProof);
+    final vAir = program.air(VerifierProgram.nodeDigestOf(air, innerProof.preRoot));
+    expect(vAir.mainProgram(), isNotNull);
+    expect(vAir.auxProgram(), isNotNull);
+    final sw = Stopwatch()..start();
+    final pn = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: native, hash: p2, verbose: true);
+    final tn = sw.elapsedMilliseconds;
+    sw.reset();
+    final pd = StarkProver.prove(outer, vAir, rows, rng: Random(6), kernels: dart, hash: p2);
+    print('  verifier AIR at 2^14: native ${tn} ms, dart ${sw.elapsedMilliseconds} ms');
+    expect(pn.preRoot, pd.preRoot);
+    expect(pn.compRoot, pd.compRoot);
+    expect(pn.compAtZ, pd.compAtZ);
+    expect(pn.friRoots, pd.friRoots);
+    expect(pn.finalCoefs, pd.finalCoefs);
+    expect(pn.nonce, pd.nonce);
   }, skip: skip, timeout: const Timeout(Duration(minutes: 5)));
 
   test('production parameters: byte-identical, timed', () {

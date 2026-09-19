@@ -22,6 +22,7 @@ import 'package:ffi/ffi.dart';
 import 'circle_fft.dart';
 import 'm31.dart';
 import 'proof_hash.dart';
+import '../script_gen/air_ring.dart' show Program, ProgKind;
 import '../script_gen/deep_quotient_script_gen.dart' show DeepConstants;
 
 /// The heavy arithmetic of the prover, behind one interface with two
@@ -64,8 +65,97 @@ abstract class ProverKernels {
   /// leaf i is `hash.leaf` of the 8 limbs of `cur[i]`, `cur[i + h]`.
   MerkleCommitment merklePairs(Uint32List cur, int logLen, ProofHash hash);
 
+  /// Composition values from the AIR's recorded constraint programs (see
+  /// [CompositionJob]), as 4 limb columns over the composition domain, or
+  /// null when this implementation has no such path (the prover then runs
+  /// the AIR's constraints row by row in Dart).
+  List<Uint32List>? composition(CompositionJob job) => null;
+
   /// The default: the native kernels when the library is built, else Dart.
   static ProverKernels get best => StarkKernels.tryLoad() ?? DartKernels();
+}
+
+/// What the composition kernel needs: the main program (over M31) and the
+/// aux program (over QM31, null without aux constraints) with their inputs
+/// resolved to sources; the column values on the composition domain (trace,
+/// aux and pre columns, then public columns; `nC` entries each); the
+/// periodic columns on their own domain (2^logPC entries) with `idxPer[q]`
+/// the periodic index of row q; the linear forms on the domain; `idxNext[q]`
+/// the row of the next-row opening; the QM31 challenges; per constraint
+/// (main outputs then aux outputs) its QM31 weight and the index of its
+/// divisor-inverse column in [divs].
+class CompositionJob {
+  static const srcCur = 0, srcNext = 1, srcPer = 2, srcLin = 3, srcConst = 4, srcChal = 5;
+  final Program main;
+  final Program? aux;
+  final Uint32List mainSrc, auxSrc; // (kind, index) per input
+  final List<Uint32List> cols, per, lin, divs;
+  final int logC, logPC;
+  final Uint32List idxNext, idxPer;
+  final List<QM31> chal;
+  final List<QM31> weights;
+  final Uint32List divSel;
+  CompositionJob({
+    required this.main,
+    required this.aux,
+    required this.mainSrc,
+    required this.auxSrc,
+    required this.cols,
+    required this.per,
+    required this.lin,
+    required this.divs,
+    required this.logC,
+    required this.logPC,
+    required this.idxNext,
+    required this.idxPer,
+    required this.chal,
+    required this.weights,
+    required this.divSel,
+  });
+
+  /// Resolves [prog]'s input names against the layout: `cur{j}`/`next{j}`
+  /// over [nAll] columns, `per{k}` (periodic for k < [nPer], else public
+  /// column k - nPer at index nAll + ...), `lin{k}`, `pub{i}` as the
+  /// constant [publics][i], `chal{k}`. Null for any other name.
+  static Uint32List? resolve(Program prog, int nAll, int nPer, List<int> publics) {
+    final out = Uint32List(2 * prog.numInputs);
+    for (int i = 0; i < prog.numInputs; i++) {
+      final name = prog.inputNames[i];
+      final m = RegExp(r'^(cur|next|per|lin|pub|chal)(\d+)$').firstMatch(name);
+      if (m == null) return null;
+      final k = int.parse(m.group(2)!);
+      final (kind, idx) = switch (m.group(1)) {
+        'cur' => (srcCur, k),
+        'next' => (srcNext, k),
+        'per' => k < nPer ? (srcPer, k) : (srcCur, nAll + k - nPer),
+        'lin' => (srcLin, k),
+        'pub' => (srcConst, publics[k]),
+        _ => (srcChal, k),
+      };
+      out[2 * i] = kind;
+      out[2 * i + 1] = idx;
+    }
+    return out;
+  }
+
+  /// A program the M31 path can run: every constant is an embedded base
+  /// value.
+  static bool baseOnly(Program p) => p.ops.every((o) => o.kind != ProgKind.constant || (o.imm.c0.b == 0 && o.imm.c1.a == 0 && o.imm.c1.b == 0));
+
+  static Uint32List encode(Program p) {
+    final out = Uint32List(7 * p.ops.length);
+    for (int i = 0; i < p.ops.length; i++) {
+      final o = p.ops[i];
+      out[7 * i] = o.kind.index;
+      out[7 * i + 1] = o.a;
+      out[7 * i + 2] = o.b;
+      final l = o.imm.limbs;
+      for (int k = 0; k < 4; k++) {
+        out[7 * i + 3 + k] = l[k];
+      }
+    }
+    return out;
+  }
 }
 
 /// A Merkle tree: root, depth and authentication paths. Digests are
@@ -181,6 +271,9 @@ Uint32List qFlat(List<QM31> vs) {
 class DartKernels implements ProverKernels {
   @override
   String get name => 'dart';
+
+  @override
+  List<Uint32List>? composition(CompositionJob job) => null;
 
   static QM31 foldPair(QM31 f0, QM31 f1, int twiddleInv, QM31 alpha) => (f0 + f1) + alpha * (f0 - f1).scale(twiddleInv);
 
@@ -310,6 +403,11 @@ typedef _PermuteP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi
 typedef _PermuteP2D = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _ShaC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Pointer<ffi.Uint8>);
 typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>);
+typedef _U32P = ffi.Pointer<ffi.Uint32>;
+typedef _CompC = ffi.Void Function(
+    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
+typedef _CompD = void Function(
+    _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P, _U32P);
 typedef _KemPkC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
 typedef _KemPkD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
 typedef _KemEncapsC = ffi.Uint32 Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint8>);
@@ -341,6 +439,7 @@ class StarkKernels implements ProverKernels {
   late final _CommitP2D _commitP2 = _lib.lookupFunction<_CommitP2C, _CommitP2D>('sk_commit_columns_p2');
   late final _MerklePairsP2D _merklePairsP2 = _lib.lookupFunction<_MerklePairsP2C, _MerklePairsP2D>('sk_merkle_pairs_p2');
   late final _PermuteP2D _permuteP2 = _lib.lookupFunction<_PermuteP2C, _PermuteP2D>('sk_poseidon2_permute');
+  late final _CompD _comp = _lib.lookupFunction<_CompC, _CompD>('sk_composition');
   late final _KemPkD _kemPk = _lib.lookupFunction<_KemPkC, _KemPkD>('sk_mlkem768_public_key');
   late final _KemEncapsD _kemEncaps = _lib.lookupFunction<_KemEncapsC, _KemEncapsD>('sk_mlkem768_encaps');
   late final _KemDecapsD _kemDecaps = _lib.lookupFunction<_KemDecapsC, _KemDecapsD>('sk_mlkem768_decaps');
@@ -430,6 +529,42 @@ class StarkKernels implements ProverKernels {
     } finally {
       calloc.free(p);
       calloc.free(out);
+    }
+  }
+
+  @override
+  List<Uint32List> composition(CompositionJob job) {
+    final nC = 1 << job.logC, nPC = 1 << job.logPC;
+    final nOut = job.main.outputs.length + (job.aux?.outputs.length ?? 0);
+    if (job.weights.length != nOut || job.divSel.length != nOut) throw ArgumentError('one weight and divisor per constraint');
+    final desc = _upload1(Uint32List.fromList([
+      job.logC, job.cols.length, job.per.length, job.logPC, job.lin.length, job.divs.length,
+      job.main.numInputs, job.main.ops.length, job.main.outputs.length,
+      job.aux?.numInputs ?? 0, job.aux?.ops.length ?? 0, job.aux?.outputs.length ?? 0, job.chal.length,
+    ]));
+    final mainOps = _upload1(CompositionJob.encode(job.main)), mainSrc = _upload1(job.mainSrc);
+    final mainOut = _upload1(Uint32List.fromList(job.main.outputs));
+    final auxOps = _upload1(job.aux == null ? Uint32List(0) : CompositionJob.encode(job.aux!)), auxSrc = _upload1(job.auxSrc);
+    final auxOut = _upload1(Uint32List.fromList(job.aux?.outputs ?? const []));
+    final chal = _upload1(Uint32List.fromList([for (final c in job.chal) ...c.limbs]));
+    final cols = _upload(job.cols, nC), per = _upload(job.per, nPC), lin = _upload(job.lin, nC), divs = _upload(job.divs, nC);
+    final idxNext = _upload1(job.idxNext), idxPer = _upload1(job.idxPer);
+    final weights = _upload1(Uint32List.fromList([for (final w in job.weights) ...w.limbs])), divSel = _upload1(job.divSel);
+    final out = calloc<ffi.Uint32>(4 * nC);
+    try {
+      _comp(desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, per, lin, idxNext, idxPer, weights, divSel, divs, out);
+      final v = out.asTypedList(4 * nC);
+      final limbs = List.generate(4, (_) => Uint32List(nC));
+      for (int q = 0; q < nC; q++) {
+        for (int k = 0; k < 4; k++) {
+          limbs[k][q] = v[4 * q + k];
+        }
+      }
+      return limbs;
+    } finally {
+      for (final p in [desc, mainOps, mainSrc, mainOut, auxOps, auxSrc, auxOut, chal, cols, per, lin, divs, idxNext, idxPer, weights, divSel, out]) {
+        calloc.free(p);
+      }
     }
   }
 

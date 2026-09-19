@@ -106,6 +106,8 @@ class VerifierAir extends Poseidon2Air {
   int get numPreCols => VerifierProgramColumns.count;
   @override
   List<Uint32List> preColumns() => prog.columns;
+  @override
+  Object get preColumnsIdentity => prog;
   int get auxCol0 => numMainCols;
 
   static const _mainCount = 77;

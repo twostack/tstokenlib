@@ -886,6 +886,200 @@ pub unsafe extern "C" fn sk_sha256(data: *const u8, len: usize, out: *mut u8) {
 }
 
 // ---------------------------------------------------------------------------
+// Composition values from recorded constraint programs.
+//
+// A straight-line program (the AIR's constraints recorded over an
+// expression ring) is run once per row of the composition domain: the main
+// program over M31, the aux program over QM31 (challenges are QM31, every
+// other input an embedded base value). Each output j is weighted by
+// `weights[j]` (a QM31: the group's beta power times beta^k) and by the
+// divisor column `div_sel[j]` at that row, and the weighted sum is the
+// composition value of the row.
+//
+// Encodings (all u32):
+//   desc: [log_c, n_cols, n_per, log_pc, n_lin, n_div,
+//          main_n_inputs, main_n_ops, main_n_out, aux_n_inputs, aux_n_ops, aux_n_out, n_chal]
+//   ops:  7 words per op: kind (0 add, 1 sub, 2 mul, 3 scale, 4 constant), a, b, imm0..imm3
+//   src:  2 words per input: kind (0 cur, 1 next, 2 per, 3 lin, 4 const, 5 chal), index
+//   cols: n_cols x nC (cur at q, next at idx_next[q]); per: n_per x 2^log_pc (at idx_per[q]);
+//   lin: n_lin x nC; chal: 4 words each; divs: n_div x nC; out: nC x 4 (row-major limbs).
+// ---------------------------------------------------------------------------
+
+struct Prog<'a> {
+    n_inputs: usize,
+    ops: &'a [u32],
+    src: &'a [u32],
+    outs: &'a [u32],
+}
+
+impl<'a> Prog<'a> {
+    fn n_nodes(&self) -> usize {
+        self.n_inputs + self.ops.len() / 7
+    }
+}
+
+struct RowCtx<'a> {
+    n_c: usize,
+    n_pc: usize,
+    cols: &'a [u32],
+    per: &'a [u32],
+    lin: &'a [u32],
+    chal: &'a [u32],
+    idx_next: &'a [u32],
+    idx_per: &'a [u32],
+}
+
+impl<'a> RowCtx<'a> {
+    #[inline(always)]
+    fn input(&self, kind: u32, idx: usize, q: usize) -> Q {
+        match kind {
+            0 => [self.cols[idx * self.n_c + q], 0, 0, 0],
+            1 => [self.cols[idx * self.n_c + self.idx_next[q] as usize], 0, 0, 0],
+            2 => [self.per[idx * self.n_pc + self.idx_per[q] as usize], 0, 0, 0],
+            3 => [self.lin[idx * self.n_c + q], 0, 0, 0],
+            4 => [idx as u32, 0, 0, 0],
+            _ => q_at(self.chal, idx),
+        }
+    }
+}
+
+fn run_m31(p: &Prog, ctx: &RowCtx, q: usize, vals: &mut [u32]) {
+    for i in 0..p.n_inputs {
+        vals[i] = ctx.input(p.src[2 * i], p.src[2 * i + 1] as usize, q)[0];
+    }
+    let mut n = p.n_inputs;
+    for op in p.ops.chunks_exact(7) {
+        let (a, b) = (op[1] as usize, op[2] as usize);
+        vals[n] = match op[0] {
+            0 => add(vals[a], vals[b]),
+            1 => sub(vals[a], vals[b]),
+            2 => mul(vals[a], vals[b]),
+            3 => mul(vals[a], op[3]),
+            _ => op[3],
+        };
+        n += 1;
+    }
+}
+
+fn run_q(p: &Prog, ctx: &RowCtx, q: usize, vals: &mut [Q]) {
+    for i in 0..p.n_inputs {
+        vals[i] = ctx.input(p.src[2 * i], p.src[2 * i + 1] as usize, q);
+    }
+    let mut n = p.n_inputs;
+    for op in p.ops.chunks_exact(7) {
+        let (a, b) = (op[1] as usize, op[2] as usize);
+        vals[n] = match op[0] {
+            0 => qadd(&vals[a], &vals[b]),
+            1 => qsub(&vals[a], &vals[b]),
+            2 => qmul(&vals[a], &vals[b]),
+            3 => qscale(&vals[a], op[3]),
+            _ => [op[3], op[4], op[5], op[6]],
+        };
+        n += 1;
+    }
+}
+
+/// Run `f(range, out_slice)` over row ranges across threads; `out` holds
+/// `item_len` words per row.
+fn par_rows<F>(out: &mut [u32], item_len: usize, f: F)
+where
+    F: Fn(std::ops::Range<usize>, &mut [u32]) + Sync,
+{
+    let n = out.len() / item_len;
+    let th = threads();
+    if n < 4096 || th <= 1 {
+        f(0..n, out);
+        return;
+    }
+    let per = (n + th - 1) / th;
+    std::thread::scope(|s| {
+        for (t, block) in out.chunks_mut(per * item_len).enumerate() {
+            let f = &f;
+            s.spawn(move || {
+                let start = t * per;
+                f(start..start + block.len() / item_len, block);
+            });
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn sk_composition(
+    desc: *const u32,
+    main_ops: *const u32,
+    main_src: *const u32,
+    main_out: *const u32,
+    aux_ops: *const u32,
+    aux_src: *const u32,
+    aux_out: *const u32,
+    chal: *const u32,
+    cols: *const u32,
+    per: *const u32,
+    lin: *const u32,
+    idx_next: *const u32,
+    idx_per: *const u32,
+    weights: *const u32,
+    div_sel: *const u32,
+    divs: *const u32,
+    out: *mut u32,
+) {
+    let d = std::slice::from_raw_parts(desc, 13);
+    let (log_c, n_cols, n_per, log_pc, n_lin, n_div) =
+        (d[0], d[1] as usize, d[2] as usize, d[3], d[4] as usize, d[5] as usize);
+    let n_c = 1usize << log_c;
+    let n_pc = 1usize << log_pc;
+    let main = Prog {
+        n_inputs: d[6] as usize,
+        ops: std::slice::from_raw_parts(main_ops, 7 * d[7] as usize),
+        src: std::slice::from_raw_parts(main_src, 2 * d[6] as usize),
+        outs: std::slice::from_raw_parts(main_out, d[8] as usize),
+    };
+    let aux = Prog {
+        n_inputs: d[9] as usize,
+        ops: std::slice::from_raw_parts(aux_ops, 7 * d[10] as usize),
+        src: std::slice::from_raw_parts(aux_src, 2 * d[9] as usize),
+        outs: std::slice::from_raw_parts(aux_out, d[11] as usize),
+    };
+    let n_out = main.outs.len() + aux.outs.len();
+    let ctx = RowCtx {
+        n_c,
+        n_pc,
+        cols: std::slice::from_raw_parts(cols, n_cols * n_c),
+        per: std::slice::from_raw_parts(per, n_per * n_pc),
+        lin: std::slice::from_raw_parts(lin, n_lin * n_c),
+        chal: std::slice::from_raw_parts(chal, 4 * d[12] as usize),
+        idx_next: std::slice::from_raw_parts(idx_next, n_c),
+        idx_per: std::slice::from_raw_parts(idx_per, n_c),
+    };
+    let weights = std::slice::from_raw_parts(weights, 4 * n_out);
+    let div_sel = std::slice::from_raw_parts(div_sel, n_out);
+    let divs = std::slice::from_raw_parts(divs, n_div * n_c);
+    let out = std::slice::from_raw_parts_mut(out, 4 * n_c);
+    par_rows(out, 4, |range, block| {
+        let mut vm = vec![0u32; main.n_nodes()];
+        let mut va = vec![Q_ZERO; aux.n_nodes()];
+        for (r, q) in range.enumerate() {
+            let mut total = Q_ZERO;
+            run_m31(&main, &ctx, q, &mut vm);
+            for (j, &o) in main.outs.iter().enumerate() {
+                let c = mul(vm[o as usize], divs[div_sel[j] as usize * n_c + q]);
+                total = qadd(&total, &qscale(&q_at(weights, j), c));
+            }
+            if !aux.outs.is_empty() {
+                run_q(&aux, &ctx, q, &mut va);
+                let base = main.outs.len();
+                for (j, &o) in aux.outs.iter().enumerate() {
+                    let jj = base + j;
+                    let f = divs[div_sel[jj] as usize * n_c + q];
+                    total = qadd(&total, &qscale(&qmul(&q_at(weights, jj), &va[o as usize]), f));
+                }
+            }
+            block[4 * r..4 * r + 4].copy_from_slice(&total);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // ML-KEM-768 (FIPS 203) for the note-encryption KEM, via the `ml-kem` crate.
 // Keys are never stored: both halves are regenerated from a 64-byte seed
 // (d ‖ z) the wallet derives from its viewing key, so the Dart side only
