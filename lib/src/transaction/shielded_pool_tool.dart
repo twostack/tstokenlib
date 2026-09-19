@@ -21,6 +21,7 @@ import 'package:dartsv/dartsv.dart';
 import '../builder/pp1_sp_lock_builder.dart';
 import '../builder/pp1_sp_unlock_builder.dart';
 import '../crypto/note_commitment_tree.dart';
+import '../crypto/note_encryption.dart';
 import '../crypto/nullifier_set.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../script_gen/pool_spend_air.dart';
@@ -300,13 +301,26 @@ class ShieldedPoolTool {
       ..version = 1
       ..nLockTime = 0;
     t.inputs.addAll(ins);
-    t.outputs.addAll(outs.map(outputFromBytes));
+    t.outputs.addAll(outs.expand(outputsFromBytes));
     return t;
   }
 
-  static TransactionOutput outputFromBytes(Uint8List bytes) {
-    final sats = ByteData.sublistView(bytes, 0, 8).getUint64(0, Endian.little);
-    var i = 8;
+  /// Every output serialised in [bytes], in order (a transfer's extras may
+  /// hold several: its note-data output, then payouts).
+  static List<TransactionOutput> outputsFromBytes(Uint8List bytes) {
+    final out = <TransactionOutput>[];
+    var at = 0;
+    while (at < bytes.length) {
+      final o = outputFromBytes(bytes, at);
+      out.add(o);
+      at += 8 + PP1SpScriptGen.varint(o.script.buffer.length).length + o.script.buffer.length;
+    }
+    return out;
+  }
+
+  static TransactionOutput outputFromBytes(Uint8List bytes, [int at = 0]) {
+    final sats = ByteData.sublistView(bytes, at, at + 8).getUint64(0, Endian.little);
+    var i = at + 8;
     int len;
     if (bytes[i] < 0xfd) {
       len = bytes[i];
@@ -329,4 +343,10 @@ class ShieldedPoolTool {
 
   /// Serialise a P2PKH payout as an extra output.
   static Uint8List payout(Address to, int sats) => SlotScript.output(P2PKHLockBuilder.fromAddress(to).getScriptPubkey().buffer, value: sats);
+
+  /// A transfer's extra outputs: its note-data output (the ciphertexts of
+  /// its output notes) first, then any payouts. The transfer's outHash
+  /// commits to all of it.
+  static Uint8List extras(List<NoteBundle> bundles, [List<Uint8List> payouts = const []]) =>
+      Uint8List.fromList([if (bundles.isNotEmpty) ...NoteBundle.output(bundles), for (final p in payouts) ...p]);
 }

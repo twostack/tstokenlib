@@ -61,19 +61,46 @@ class PoolHash {
   /// The spend circuit derives both from the sk register, so holding ivk
   /// (detect and decrypt incoming notes) or ivk and nk (also see them spent)
   /// discloses a wallet's history without the power to move its funds.
-  static const tagIvk = 1, tagNk = 2;
+  static const tagIvk = 1, tagNk = 2, tagOvk = 3, tagDiv = 4;
   static List<int> ivk(List<int> sk) => _perm8(_pad([...sk, tagIvk], 16));
   static List<int> nk(List<int> sk) => _perm8(_pad([...sk, tagNk], 16));
+
+  /// The outgoing viewing key, wallet-side only: it keys the copy of each
+  /// sent note that lets an auditor of the sender read it.
+  static List<int> ovk(List<int> sk) => _perm8(_pad([...sk, tagOvk], 16));
+
+  /// Diversifier [index] of the wallet behind [ivk]: addresses are
+  /// enumerable from the viewing key, so a viewer can derive every address
+  /// (and its decryption key) without a list from the wallet.
+  static List<int> diversifier(List<int> ivk, int index) => _perm8(_pad([...ivk, index, tagDiv], 16)).sublist(0, dLanes);
+
+  /// Assets: four lanes (124 bits) inside the commitment. BSV is the
+  /// constant below; any other asset is the low 124 bits of the SHA256 of
+  /// its [AssetRecord], so ids are self-certifying and the pool keeps no
+  /// registry.
+  static const assetLanes = 4;
+  static const bsvAsset = [1, 0, 0, 0];
+  static List<int> assetIdOf(List<int> recordBytes) {
+    final h = crypto.sha256.convert(recordBytes).bytes;
+    var acc = BigInt.zero;
+    for (int i = 31; i >= 0; i--) {
+      acc = (acc << 8) | BigInt.from(h[i]);
+    }
+    final mask = (BigInt.one << 31) - BigInt.one;
+    return [for (int k = 0; k < assetLanes; k++) ((acc >> (31 * k)) & mask).toInt()];
+  }
 
   /// pk_d = H(ivk, d): the diversified address.
   static List<int> pkdFromIvk(List<int> ivk, List<int> d) => _perm8(_pad([...ivk, ...d], 16));
   static List<int> pkd(List<int> sk, List<int> d) => pkdFromIvk(ivk(sk), d);
 
-  /// Two-block note commitment: s = H(pk_d, value, rho), cm = H(s, rcm).
-  static (List<int>, List<int>) commit(List<int> pkd, int value, List<int> rho, List<int> rcm) {
+  /// Two-block note commitment: s = H(pk_d, value, rho), cm = H(s, rcm, asset).
+  static (List<int>, List<int>) commit(List<int> pkd, int value, List<int> rho, List<int> rcm,
+      {List<int> asset = bsvAsset}) {
+    if (asset.length != assetLanes) throw ArgumentError('asset lanes');
     final (lo, hi) = limbs(value);
     final s = _perm8(_pad([...pkd, lo, hi, ...rho], 16));
-    return (s, _perm8(_pad([...s, ...rcm], 16)));
+    return (s, _perm8([...s, ...rcm, ...asset]));
   }
 
   /// nf = H(nk, rho).
@@ -93,6 +120,22 @@ class PoolHash {
   }
 }
 
+/// What defines an asset other than BSV: who may mint it (a Rabin key
+/// hash), a nonce, and policy flags. Its id is the low 124 bits of the
+/// SHA256 of these bytes.
+class AssetRecord {
+  static const flagGated = 1;
+  final List<int> issuerKeyHash; // hash160 of the issuer's Rabin key
+  final List<int> nonce; // 32 bytes
+  final int flags;
+  AssetRecord({required this.issuerKeyHash, required this.nonce, this.flags = 0}) {
+    if (issuerKeyHash.length != 20 || nonce.length != 32) throw ArgumentError('record lanes');
+  }
+  bool get gated => flags & flagGated != 0;
+  List<int> get bytes => [...issuerKeyHash, ...nonce, flags & 0xff, (flags >> 8) & 0xff];
+  List<int> get id => PoolHash.assetIdOf(bytes);
+}
+
 /// A note being spent: its secrets and its Merkle path.
 ///
 /// A [dummy] note fills the second input slot of a one-input spend. It has
@@ -100,7 +143,7 @@ class PoolHash {
 /// pin off and forces both value limbs to zero. Its nullifier H(sk, rho) is
 /// published like any other, so [rho] must be fresh for every dummy.
 class SpendNote {
-  final List<int> sk, d, rho, rcm;
+  final List<int> sk, d, rho, rcm, asset;
   final int value;
   final List<List<int>> siblings;
   final int position;
@@ -113,13 +156,15 @@ class SpendNote {
     required this.rcm,
     required this.siblings,
     required this.position,
+    this.asset = PoolHash.bsvAsset,
   }) : dummy = false {
     if (sk.length != PoolHash.skLanes || d.length != PoolHash.dLanes) throw ArgumentError('key lanes');
     if (rho.length != PoolHash.rhoLanes || rcm.length != PoolHash.rcmLanes) throw ArgumentError('note lanes');
+    if (asset.length != PoolHash.assetLanes) throw ArgumentError('asset lanes');
     if (siblings.length != PoolSpendAir.depth) throw ArgumentError('path depth');
   }
 
-  SpendNote.dummy({required this.sk, required this.rho})
+  SpendNote.dummy({required this.sk, required this.rho, this.asset = PoolHash.bsvAsset})
       : d = List.filled(PoolHash.dLanes, 0),
         rcm = List.filled(PoolHash.rcmLanes, 0),
         value = 0,
@@ -129,17 +174,19 @@ class SpendNote {
     if (sk.length != PoolHash.skLanes || rho.length != PoolHash.rhoLanes) throw ArgumentError('lanes');
   }
   List<int> get pkd => PoolHash.pkd(sk, d);
-  List<int> get cm => PoolHash.commit(pkd, value, rho, rcm).$2;
+  List<int> get cm => PoolHash.commit(pkd, value, rho, rcm, asset: asset).$2;
   List<int> get nullifier => PoolHash.nullifier(sk, rho);
   List<int> get root => PoolHash.root(cm, siblings, position);
 }
 
 /// A note being created.
 class OutputNote {
-  final List<int> pkd, rho, rcm;
+  final List<int> pkd, rho, rcm, asset;
   final int value;
-  OutputNote({required this.pkd, required this.value, required this.rho, required this.rcm});
-  List<int> get cm => PoolHash.commit(pkd, value, rho, rcm).$2;
+  OutputNote({required this.pkd, required this.value, required this.rho, required this.rcm, this.asset = PoolHash.bsvAsset}) {
+    if (asset.length != PoolHash.assetLanes) throw ArgumentError('asset lanes');
+  }
+  List<int> get cm => PoolHash.commit(pkd, value, rho, rcm, asset: asset).$2;
 }
 
 /// What the verifier is told, supplied at spend time below the proof in the
@@ -227,12 +274,12 @@ class PoolSpendWitness {
 ///   0        P(sk, tagIvk || 0)       -> ivk           break; register = sk, tag and padding pinned
 ///   1        P(ivk || d, 0)           -> pk_d          padding pinned
 ///   2        P(pk_d || value, rho)    -> s             register = rho; balance += value
-///   3        P(s || rcm)              -> cm
+///   3        P(s || rcm, asset)       -> cm            asset pinned (BSV until the asset lanes go public)
 ///   4..35    32 Merkle steps          -> root          pinned = anchor, gated by the flag
 ///   36       P(sk, tagNk || 0)        -> nk            break; register = sk, tag and padding pinned
 ///   37       P(nk || rho, 0)          -> nf            register = rho, padding pinned; nf public
 ///   38       P(pk_d' || value', rho') -> s'            break; balance -= value'
-///   39       P(s' || rcm')            -> cm'           pinned public
+///   39       P(s' || rcm', asset')    -> cm'           pinned public; asset' pinned
 ///   40..63   filler
 ///
 /// Every lane of a key derivation's input is pinned (the key register, the
@@ -296,6 +343,7 @@ class PoolSpendAir {
   static const cm1RhoLane = 10;
   static const tagLane = PoolHash.skLanes; // the derivation tag beside sk
   static const dLane = 8, nfRhoLane = 8; // the witness half beside the carried key
+  static const assetLane = 8 + PoolHash.rcmLanes; // 12..15 of the commitment's last block
 
   // rows
   static const inValueRow = pCm1 << 5; // 32
@@ -376,6 +424,12 @@ class PoolSpendAir {
           BoundaryExpr.zeroUnless(valueLo, regFlag),
           BoundaryExpr.zeroUnless(valueHi, regFlag),
         ]),
+        // the asset lanes of both commitments: BSV, until step 2 of the corporate
+        // design makes them registers pinned to public lanes
+        BoundaryGroup(Poseidon2ChainAir.inputRow(pCm2),
+            [for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.public(assetLane + i, PoolHash.bsvAsset[i], PoolHash.bsvAsset[i])]),
+        BoundaryGroup(Poseidon2ChainAir.inputRow(pOut2),
+            [for (int i = 0; i < PoolHash.assetLanes; i++) BoundaryExpr.public(assetLane + i, PoolHash.bsvAsset[i], PoolHash.bsvAsset[i])]),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pNk), derive(PoolHash.tagNk)),
         BoundaryGroup(Poseidon2ChainAir.inputRow(pNf), [
           for (int i = 0; i < PoolHash.rhoLanes; i++) BoundaryExpr.equal(regRho + i, nfRhoLane + i),
@@ -403,12 +457,12 @@ class PoolSpendAir {
       ChainStep.fresh(_pad([...sn.sk, PoolHash.tagIvk], 16)),
       ChainStep.chained(_pad(sn.d, 8)),
       ChainStep.chained(_pad([lo, hi, ...sn.rho], 8)),
-      ChainStep.chained(_pad(sn.rcm, 8)),
+      ChainStep.chained([...sn.rcm, ...sn.asset]),
       for (int i = 0; i < depth; i++) ChainStep.chained(sn.siblings[i], swap: (sn.position >> i) & 1 == 1),
       ChainStep.fresh(_pad([...sn.sk, PoolHash.tagNk], 16)),
       ChainStep.chained(_pad(sn.rho, 8)),
       ChainStep.fresh(_pad([...on.pkd, olo, ohi, ...on.rho], 16)),
-      ChainStep.chained(_pad(on.rcm, 8)),
+      ChainStep.chained([...on.rcm, ...on.asset]),
       for (int p = pOut2 + 1; p < half; p++) ChainStep.chained(List.filled(8, 0)),
     ];
   }
@@ -443,6 +497,11 @@ class PoolSpendAir {
       }
     }
     if (a.value + b.value != oa.value + ob.value + publicOut) throw ArgumentError('values do not balance');
+    for (final asset in [a.asset, b.asset, oa.asset, ob.asset]) {
+      for (int i = 0; i < PoolHash.assetLanes; i++) {
+        if (asset[i] != PoolHash.bsvAsset[i]) throw ArgumentError('only BSV notes until the asset lanes are public');
+      }
+    }
 
     final pub = PoolPublicInputs(anchor, a.nullifier, b.nullifier, oa.cm, ob.cm, publicOut,
         outHash: outHash, real1: !a.dummy, real2: !b.dummy);

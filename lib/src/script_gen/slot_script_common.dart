@@ -62,8 +62,10 @@ class SlotScript {
   /// as in a transaction: value, varint length, script).
   static Uint8List output(List<int> script, {int value = 0}) {
     final v = ByteData(8)..setUint64(0, value, Endian.little);
-    if (script.length >= 0xfd) throw ArgumentError('short scripts only');
-    return Uint8List.fromList([...v.buffer.asUint8List(), script.length, ...script]);
+    final n = script.length;
+    if (n >= 0x10000) throw ArgumentError('script too long');
+    final len = n < 0xfd ? [n] : [0xfd, n & 0xff, n >> 8];
+    return Uint8List.fromList([...v.buffer.asUint8List(), ...len, ...script]);
   }
 
   /// `OP_RETURN <32-byte payload>` as an output.

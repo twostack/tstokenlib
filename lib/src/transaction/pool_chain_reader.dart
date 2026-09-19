@@ -18,6 +18,7 @@ import 'package:dartsv/dartsv.dart';
 import '../builder/pp1_sp_lock_builder.dart';
 import '../crypto/nullifier_set.dart';
 import '../crypto/note_commitment_tree.dart';
+import '../crypto/note_encryption.dart';
 import '../script_gen/pool_spend_air.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
@@ -34,6 +35,13 @@ class PoolRound {
   final int subtreeIndex;
   final List<List<int>> commitments;
   PoolRound(this.tx, this.transfers, this.subtreeIndex, this.commitments);
+
+  /// The note ciphertexts the round carries (its transfers' note-data
+  /// outputs, in output order). Wallets trial-decrypt them; each names the
+  /// commitment it is for.
+  List<NoteBundle> get noteBundles => [
+        for (final o in tx.outputs) ...?NoteBundle.fromScript(o.script.buffer),
+      ];
 }
 
 /// Rebuilds a [PoolLedger] from the pool's transactions as they appear on

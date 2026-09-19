@@ -1475,6 +1475,25 @@ registers and public lanes, then the state script's per-asset rules (mint, burn,
 gate), tool and chain reader; (3) ML-KEM in the native crate. None of it changes
 the recursion or the round sizing beyond four public lanes per transfer.
 
+*Step 1 built.* `PoolHash.commit` takes the asset (`cm = H(s ‖ rcm ‖ asset)`,
+BSV = `(1,0,0,0)`), `ovk`, `diversifier(ivk, i)` and `assetIdOf`; `AssetRecord`;
+`SpendNote`/`OutputNote` carry an asset. The circuit's commitment blocks carry
+the asset lanes and pin them to BSV until step 2 makes them registers with
+public lanes, so the circuit stays sound at every commit. The wallet layer is
+`lib/src/crypto/note_encryption.dart`: `PoolWalletKeys`, `NoteAddress`
+(`(d, pk_d, epk)`, KEM key pair from `SHA256("tsl1-pool-kem" ‖ ivk ‖ d)`,
+enumerable by index), `NotePlaintext` (576 bytes with a 512-byte memo),
+`NoteBundle` (recipient ciphertext, outgoing copy, optional issuer copy, the
+commitment it is for) and `NoteEncryption` over X25519, HKDF-SHA256 and
+ChaCha20-Poly1305 from the `cryptography` package; KEM id 1 is X25519 and the
+hybrid takes id 2 when ML-KEM lands. A bundle is 739 bytes; a transfer's
+note-data output `OP_RETURN 'TSLN' <bundles>` for two notes is 1,497 bytes, built
+by `ShieldedPoolTool.extras(bundles, payouts)` as the first extra output so
+`outHash` covers it; `PoolRound.noteBundles` returns a round's bundles for
+trial decryption. Tested end to end in `test/note_encryption_test.dart` and the
+chain-reader test (a round carrying a bundle, opened by the recipient's viewing
+key and the sender's outgoing key).
+
 ## Open Items
 
 - ~~**Deposits bloat the nullifier set.**~~ Done: the public `real1`/`real2` flags

@@ -4,6 +4,7 @@ import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
+import 'package:tstokenlib/src/crypto/note_encryption.dart';
 import 'package:tstokenlib/src/crypto/nullifier_set.dart';
 import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
@@ -142,7 +143,7 @@ void main() {
     expect(() => reader.apply(onChain(round1Tx)), throwsA(isA<FormatException>()));
   }, timeout: const Timeout(Duration(minutes: 5)));
 
-  test('round 2 (a spend and an unshield): the reader follows; a tampered round is caught', () {
+  test('round 2 (a spend and an unshield): the reader follows; a tampered round is caught', () async {
     // the wallet spends note A using the reader's tree, not the tool's
     // note A was the first output of slot 1 in subtree 0: position 2
     final path = reader.ledger.tree.path(2);
@@ -152,11 +153,19 @@ void main() {
     final oa = OutputNote(pkd: lanes(8), value: 200000, rho: lanes(3), rcm: lanes(4));
     final ob = OutputNote(pkd: lanes(8), value: 70000, rho: lanes(3), rcm: lanes(4));
     final payee = ShieldedPoolTool.payout(operatorAddress, 29000);
-    final w = PoolSpendAir.witness(a, dummy, oa, ob, noteA.value - oa.value - ob.value,
-        anchor: reader.ledger.anchor, outHash: PoolPublicInputs.outHashLanes(payee));
+    // the note ciphertexts ride in the transfer's note-data output, under its outHash
+    final sender = PoolWalletKeys(lanes(5)), recipient = PoolWalletKeys(lanes(5));
+    final to = await NoteAddress.at(recipient.ivk, 1);
+    final oaTo = OutputNote(pkd: to.pkd, value: oa.value, rho: oa.rho, rcm: oa.rcm);
+    final bundle = await NoteEncryption.encrypt(
+        NotePlaintext(asset: PoolHash.bsvAsset, d: to.d, value: oa.value, rho: oa.rho, rcm: oa.rcm, memo: NotePlaintext.memoOf('round 2')),
+        to, sender.ovk, rng: rng);
+    final extras = ShieldedPoolTool.extras([bundle], [payee]);
+    final w = PoolSpendAir.witness(a, dummy, oaTo, ob, noteA.value - oa.value - ob.value,
+        anchor: reader.ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
     final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(2));
     final spent = tool.spentByRound(ledger);
-    round2Tx = tool.createRoundTxn(ledger, [PoolTransfer(w.publics, proof, payee), null]);
+    round2Tx = tool.createRoundTxn(ledger, [PoolTransfer(w.publics, proof, extras), null]);
     verifyAll(round2Tx, spent);
 
     // a round whose slot unlock claims other publics than the results carry
@@ -173,6 +182,14 @@ void main() {
     final round = reader.apply(onChain(round2Tx));
     expectSameLedger(reader.ledger, ledger);
     expect(round.transfers[0]!.publicOut, 30000);
+    // the recipient finds its note in the round; the sender's auditor too
+    final bundles = round.noteBundles;
+    expect(bundles.length, 1);
+    expect(bundles[0].cm, round.transfers[0]!.cmOut1);
+    final got = await NoteEncryption.scanIncoming(bundles[0], recipient.ivk, [for (int i = 0; i < 3; i++) PoolHash.diversifier(recipient.ivk, i)]);
+    expect(got?.$1.value, oa.value);
+    expect(got?.$2, to.d);
+    expect((await NoteEncryption.decryptOutgoing(bundles[0], sender.ovk))?.$2, to.pkd);
     expect(round.transfers[1], isNull);
     expect(round.subtreeIndex, 1);
     expect(reader.ledger.tree.size, 64);
