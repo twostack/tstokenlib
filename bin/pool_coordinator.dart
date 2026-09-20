@@ -18,7 +18,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/transaction/pool_coordinator.dart';
-import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 /// Runs a shielded pool from a configuration file.
 ///
@@ -70,7 +70,7 @@ Future<int> run(List<String> args, {void Function(String) out = print}) async {
   try {
     coordinator = PoolCoordinator(
       config: described.config,
-      tool: ShieldedPoolTool(described.gen),
+      tool: ShieldedPoolLegacyTool(described.gen),
       ledger: ledger,
       publish: (tx) async {
         published.add(tx);

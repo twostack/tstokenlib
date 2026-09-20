@@ -141,7 +141,7 @@ Inductive step: Transfer — PP1 verifies the parent had valid outputs[1-4],
 > That ties the base case to an outpoint that can be spent once and makes the
 > replay useless.
 >
-> **Implemented in PP1_SP only** (`_emitCreateFunnel`, Phase 0), on the
+> **Implemented in PP1_SP only** (`_emitCreate`, Phase 0), on the
 > shielded-pool branch, with regression tests in `test/sp_token_test.dart`.
 > PP1_SM, PP1_NFT, PP1_FT, PP1_RFT, PP1_RNFT and PP1_AT are unchanged and still
 > carry the unanchored branch. Fixing them changes their script bytes and so the

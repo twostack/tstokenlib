@@ -17,7 +17,6 @@
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 import '../builder/partial_witness_lock_builder.dart';
@@ -27,15 +26,18 @@ import '../builder/pp1_sp_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
-import '../crypto/rabin.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
+import '../shielded_pool/pool_header.dart';
 import 'utils.dart';
 
-/// High-level API for creating State Machine Token (PP1_SP) transactions.
+/// High-level API for building shielded pool (PP1_SP) transactions.
 ///
-/// Supports: create, enroll, confirm, convert, settle, timeout, burn.
-/// Dual authority: operator signs enroll/settle/timeout; both operator + counterparty
-/// sign confirm/convert. Owner (whoever is "next expected actor") signs burn.
+/// Two operations: `create`, the TSL1 issuance that is the pool's genesis, and
+/// `round`, the inductive transfer that advances the pool header. Each is a
+/// pair of transactions, the token transaction and its witness, exactly as in
+/// every other TSL1 archetype.
+///
+/// There is no burn and no state machine lifecycle. See [PP1SpScriptGen].
 class ShieldedPoolTool {
   final NetworkType networkType;
   final BigInt defaultFee;
@@ -53,27 +55,24 @@ class ShieldedPoolTool {
     return outputWriter.toBytes();
   }
 
-  /// Creates an SM issuance transaction with 5-output structure:
-  /// Change, PP1_SP, PP2, PartialWitness, Metadata.
+  /// Creates the pool's genesis token transaction, with the standard TSL1
+  /// 5-output structure: change, PP1_SP, PP2, PartialWitness, metadata.
   ///
-  /// [tokenFundingTx] funds the issuance; its txid becomes the initial tokenId.
-  /// [operatorAddress] is the initial owner (operator creates the funnel).
-  /// [operatorPKH] 20-byte hash160 of the operator's public key.
-  /// [counterpartyPKH] 20-byte hash160 of the counterparty's public key.
-  /// [transitionBitmask] bitmask controlling which transitions are enabled.
-  /// [timeoutDelta] timeout delta in seconds.
-  /// [witnessFundingTxId] txid of the tx that will fund the first witness.
+  /// [tokenFundingTx] funds the issuance and its txid becomes the tokenId.
+  /// [ownerAddress] is the coordinator.
+  /// [genesisHeader] is the pool's starting state. It is baked into every PP1_SP
+  ///   of this pool as a hash, and the create branch refuses any other starting
+  ///   header, so the coordinator cannot open with a commitment tree that
+  ///   already holds notes nobody deposited for.
+  /// [nextSlot] pins the verifier slot the first round must spend; null for a
+  ///   pool being exercised without the verifier wired in.
   Transaction createTokenIssuanceTxn(
       Transaction tokenFundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
-      Address operatorAddress,
-      List<int> operatorPKH,
-      List<int> counterpartyPKH,
-      int transitionBitmask,
-      int timeoutDelta,
+      Address ownerAddress,
+      PoolHeader genesisHeader,
       List<int> witnessFundingTxId,
-      List<int> rabinPubKeyHash,
       {int fundingVout = 1,
        int witnessFundingVout = 1,
        List<int>? metadataBytes,
@@ -90,78 +89,63 @@ class ShieldedPoolTool {
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var tokenTxBuilder = TransactionBuilder();
     var tokenId = tokenFundingTx.hash;
+    var encodedGenesis = genesisHeader.encode();
 
-    var initialCommitmentHash = List<int>.filled(32, 0);
-
-    // ownerPKH = operatorPKH at creation (operator is first actor)
-    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout,
+        TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
     tokenTxBuilder.withFeePerKb(100);
 
     var pp1Locker = PP1SpLockBuilder(
-        operatorAddress, tokenId, operatorPKH, counterpartyPKH, rabinPubKeyHash,
-        0, 0, initialCommitmentHash, transitionBitmask, timeoutDelta);
+        ownerAddress, tokenId, genesisHeader, encodedGenesis);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
-    // PP2 output
     var pp2Locker = PP2LockBuilder(
         getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
-        hex.decode(operatorAddress.pubkeyHash160), 1,
-        hex.decode(operatorAddress.pubkeyHash160));
+        hex.decode(ownerAddress.pubkeyHash160), 1,
+        hex.decode(ownerAddress.pubkeyHash160));
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
 
-    // PartialWitness output
     // nextSlot makes PP3 refuse to be spent unless the verifier slot it names is
     // also an input of the spending round. Null for plain TSL1 tokens.
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(operatorAddress.pubkeyHash160),
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(ownerAddress.pubkeyHash160),
         nextSlot: nextSlot);
     tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
 
-    // Metadata OP_RETURN output
     var metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
     tokenTxBuilder.spendToLockBuilder(metadataLocker, BigInt.zero);
 
-    tokenTxBuilder.sendChangeToPKH(operatorAddress);
+    tokenTxBuilder.sendChangeToPKH(ownerAddress);
     return tokenTxBuilder.build(false);
   }
 
-  /// Creates a witness transaction for a single-sig SM operation (enroll, settle, timeout).
+  /// Creates the witness transaction that carries a token transaction's
+  /// inductive proof.
   ///
-  /// [action] must be ENROLL, SETTLE, or TIMEOUT.
-  /// [operatorPubkey] operator's public key (signs).
-  /// [eventData] operation-specific data (enroll event, settlement data, etc.)
-  /// [counterpartyShareAmount] required for SETTLE.
-  /// [operatorShareAmount] required for SETTLE.
-  /// [recoveryAmount] required for TIMEOUT.
-  /// [nLockTime] required for TIMEOUT (must match token tx nLockTime).
+  /// [action] selects which PP1_SP branch runs. For [ShieldedPoolAction.ROUND],
+  /// [newOwnerPKH] and [newHeader] must describe the PP1_SP output the token
+  /// transaction actually built, because PP1 rebuilds that output from them and
+  /// compares the result against its own outpoint's txid.
   Transaction createWitnessTxn(
       TransactionSigner signer,
       Transaction fundingTx,
       Transaction tokenTx,
       List<int> parentTokenTxBytes,
-      SVPublicKey operatorPubkey,
+      SVPublicKey ownerPubkey,
       String tokenChangePKH,
       ShieldedPoolAction action,
       {int fundingVout = 1,
-      List<int>? eventData,
-      BigInt? counterpartyShareAmount,
-      BigInt? operatorShareAmount,
-      BigInt? recoveryAmount,
+      List<int>? newOwnerPKH,
+      List<int>? newHeader,
       int? nLockTime,
       int pp1OutputIndex = 1,
-      int pp2OutputIndex = 2,
-      List<int>? rabinN,
-      List<int>? rabinS,
-      int? rabinPadding,
-      List<int>? identityTxId,
-      List<int>? ed25519PubKey}) {
+      int pp2OutputIndex = 2}) {
 
-    var signerAddress = Address.fromPublicKey(operatorPubkey, networkType);
+    var signerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash);
     var witnessLocker = ModP2PKHLockBuilder.fromAddress(signerAddress);
-    var fundingUnlocker = P2PKHUnlockBuilder(operatorPubkey);
+    var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
 
-    // For TIMEOUT, nSequence must be < MAX to enable nLockTime
     var seqNum = nLockTime != null
         ? TransactionInput.MAX_SEQ_NUMBER - 1
         : TransactionInput.MAX_SEQ_NUMBER;
@@ -185,31 +169,28 @@ class ShieldedPoolTool {
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
     // CREATE anchors the base case, so PP1 needs THIS token transaction's own
-    // bytes to check that its input 0 spends (tokenId, 1). Every other action
-    // is an inductive step and needs the parent's bytes instead.
+    // bytes to check that its input 0 spends (tokenId, 1). A round is an
+    // inductive step and needs the parent's bytes instead.
     var pp1ParentBytes = action == ShieldedPoolAction.CREATE
         ? hex.decode(tokenTx.serialize())
         : parentTokenTxBytes;
 
-    // Rabin signature is pre-computed by the caller. The tool never sees the private key.
     var fundingOutpoint = Uint8List(36);
     fundingOutpoint.setAll(0, fundingTx.hash);
     fundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
-    var pp1UnlockBuilder = PP1SpUnlockBuilder(
-        preImagePP1!, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, pp1ParentBytes, paddingBytes,
+    PP1SpUnlockBuilder unlockerFor(Uint8List padding) => PP1SpUnlockBuilder(
+        preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH,
+        tokenChangeAmount, tokenTxLHS, pp1ParentBytes, padding,
         action, fundingOutpoint,
-        eventData: eventData,
-        counterpartyShareAmount: counterpartyShareAmount,
-        operatorShareAmount: operatorShareAmount,
-        recoveryAmount: recoveryAmount,
-        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
-        identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
+        newOwnerPKH: newOwnerPKH, newHeader: newHeader);
 
+    // Two passes: the padding that makes PP3's partial hash land on a 64-byte
+    // boundary depends on the witness's own size, so the witness is built once
+    // to measure it and once for real.
     var witnessBuilder1 = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, fundingVout, seqNum, fundingUnlocker)
-        .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, pp1UnlockBuilder)
+        .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, unlockerFor(paddingBytes))
         .spendFromTxn(tokenTx, pp2OutputIndex, seqNum, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one);
     if (nLockTime != null) witnessBuilder1.lockUntilBlockHeight(nLockTime);
@@ -217,20 +198,9 @@ class ShieldedPoolTool {
 
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
-    pp1UnlockBuilder = PP1SpUnlockBuilder(
-        preImagePP1, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, pp1ParentBytes, paddingBytes,
-        action, fundingOutpoint,
-        eventData: eventData,
-        counterpartyShareAmount: counterpartyShareAmount,
-        operatorShareAmount: operatorShareAmount,
-        recoveryAmount: recoveryAmount,
-        rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding,
-        identityTxId: identityTxId, ed25519PubKey: ed25519PubKey);
-
     var witnessBuilder2 = TransactionBuilder()
         .spendFromTxnWithSigner(signer, fundingTx, fundingVout, seqNum, fundingUnlocker)
-        .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, pp1UnlockBuilder)
+        .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, unlockerFor(paddingBytes))
         .spendFromTxn(tokenTx, pp2OutputIndex, seqNum, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one);
     if (nLockTime != null) witnessBuilder2.lockUntilBlockHeight(nLockTime);
@@ -239,550 +209,116 @@ class ShieldedPoolTool {
     return witnessTx;
   }
 
-  /// Creates a witness transaction for a dual-sig SM operation (confirm, convert).
+  /// Creates round N+1's token transaction: the 5-output structure carrying the
+  /// new pool header.
   ///
-  /// Two-pass: builds tx to compute sighash, signs with both keys, rebuilds.
-  /// [action] must be CONFIRM or CONVERT.
-  /// [eventData] checkpoint data or conversion data.
-  Transaction createDualWitnessTxn(
-      TransactionSigner operatorSigner,
-      TransactionSigner counterpartySigner,
-      Transaction fundingTx,
-      Transaction tokenTx,
-      List<int> parentTokenTxBytes,
-      SVPublicKey operatorPubkey,
-      SVPublicKey counterpartyPubkey,
-      String tokenChangePKH,
-      ShieldedPoolAction action,
-      List<int> eventData,
-      {int fundingVout = 1}) {
-
-    var signerAddress = Address.fromPublicKey(operatorPubkey, networkType);
-    var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash);
-    var witnessLocker = ModP2PKHLockBuilder.fromAddress(signerAddress);
-    var fundingUnlocker = P2PKHUnlockBuilder(operatorPubkey);
-    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-
-    // First pass: build tx to get sighash preimage
-    var preImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(operatorSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(operatorSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
-        .spendToLockBuilder(witnessLocker, BigInt.one)
-        .withFee(BigInt.from(100))
-        .build(false);
-
-    var subscript1 = tokenTx.outputs[1].script;
-    var preImagePP1 = Sighash().createSighashPreImage(preImageTxn, sigHashAll, 1, subscript1, BigInt.one);
-
-    // Compute counterparty signature off-chain (same sighash preimage)
-    var counterpartySig = counterpartySigner.signPreimage(Uint8List.fromList(preImagePP1!));
-    var counterpartySigBytes = hex.decode(counterpartySig.toTxFormat());
-
-    var tsl1 = TransactionUtils();
-    var tokenTxLHS = tsl1.getTxLHS(tokenTx);
-    var paddingBytes = Uint8List(1);
-    var pp2Output = tokenTx.outputs[2].serialize();
-    var tokenChangeAmount = tokenTx.outputs[0].satoshis;
-
-    var dualFundingOutpoint = Uint8List(36);
-    dualFundingOutpoint.setAll(0, fundingTx.hash);
-    dualFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
-
-    var pp1UnlockBuilder = PP1SpUnlockBuilder(
-        preImagePP1, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, dualFundingOutpoint,
-        eventData: eventData,
-        counterpartyPubKey: counterpartyPubkey,
-        counterpartySigBytes: counterpartySigBytes);
-
-    var witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(operatorSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(operatorSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
-        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
-        .spendToLockBuilder(witnessLocker, BigInt.one)
-        .build(false);
-
-    paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
-
-    pp1UnlockBuilder = PP1SpUnlockBuilder(
-        preImagePP1, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
-        action, dualFundingOutpoint,
-        eventData: eventData,
-        counterpartyPubKey: counterpartyPubkey,
-        counterpartySigBytes: counterpartySigBytes);
-
-    witnessTx = TransactionBuilder()
-        .spendFromTxnWithSigner(operatorSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(operatorSigner, tokenTx, 1, TransactionInput.MAX_SEQ_NUMBER, pp1UnlockBuilder)
-        .spendFromTxn(tokenTx, 2, TransactionInput.MAX_SEQ_NUMBER, pp2Unlocker)
-        .spendToLockBuilder(witnessLocker, BigInt.one)
-        .build(false);
-
-    return witnessTx;
-  }
-
-  /// Creates an enroll token transaction (INIT→ACTIVE).
+  /// It spends the previous witness's ModP2PKH output and the previous token
+  /// transaction's PP3, which is the spend that carries the induction forward.
   ///
-  /// Merchant signs. 5-output structure: Change, PP1_SP, PP2, PP3, Metadata.
-  /// ownerPKH updates to counterpartyPKH.
-  Transaction createEnrollTxn(
+  /// [newOwnerPKH] defaults to the current owner; supply it to rotate the
+  /// coordinator's key.
+  /// [nextSlot] pins the verifier slot that round N+2 must spend.
+  Transaction createRoundTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
-      SVPublicKey operatorPubkey,
-      Transaction fundingTx,
-      TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey,
-      List<int> witnessFundingTxId,
-      List<int> eventData,
-      {int fundingVout = 1,
-       int witnessFundingVout = 1}) {
-
-    var operatorAddress = Address.fromPublicKey(operatorPubkey, networkType);
-    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
-
-    // New ownerPKH = counterpartyPKH (counterparty acts next)
-    var counterpartyAddress = Address.fromPubkeyHash(
-        hex.encode(prevPP1.counterpartyPKH!), networkType);
-
-    // Compute new commitment hash off-chain:
-    // eventDigest = SHA256(eventData)
-    // newCommitHash = SHA256(parentCommitHash || eventDigest)
-    var parentCommitHash = prevPP1.commitmentHash!;
-    var eventDigest = crypto.sha256.convert(eventData).bytes;
-    var newCommitHash = crypto.sha256.convert(
-        [...parentCommitHash, ...eventDigest]).bytes;
-
-    var pp1Locker = PP1SpLockBuilder(
-        counterpartyAddress, prevPP1.tokenId!, prevPP1.operatorPKH!,
-        prevPP1.counterpartyPKH!, prevPP1.rabinPubKeyHash!,
-        1, 0, // state=ACTIVE, mc unchanged
-        List<int>.from(newCommitHash),
-        prevPP1.transitionBitmask, prevPP1.timeoutDelta);
-
-    var pp2Locker = PP2LockBuilder(
-        getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
-        hex.decode(counterpartyAddress.pubkeyHash160), 1,
-        hex.decode(counterpartyAddress.pubkeyHash160));
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(counterpartyAddress.pubkeyHash160));
-
-    var metadataScript = prevTokenTx.outputs[4].script;
-    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
-
-    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(operatorPubkey);
-    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-
-    var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(operatorAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    var pp3Subscript = prevTokenTx.outputs[3].script;
-    var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
-
-    var tsl1 = TransactionUtils();
-    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
-        hex.decode(prevWitnessTx.serialize()), 2);
-
-    var enrollFundingOutpoint = Uint8List(36);
-    enrollFundingOutpoint.setAll(0, fundingTx.hash);
-    enrollFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
-
-    var sha256Unlocker = PartialWitnessUnlockBuilder(
-        sigPreImageChildTx!,
-        partialHash,
-        witnessPartialPreImage,
-        enrollFundingOutpoint);
-
-    var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(operatorAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    return childTxn;
-  }
-
-  /// Creates a state transition token transaction.
-  ///
-  /// Generic method for confirm, convert, settle, timeout transitions.
-  /// Spends PP3 from prevTokenTx, creates 5-output structure.
-  ///
-  /// [newState] the post-transition state value.
-  /// [newOwnerPKH] 20-byte PKH for the next expected actor.
-  /// [incrementMilestone] if true, checkpointCount is incremented.
-  /// [eventData] operation-specific data (null for timeout).
-  Transaction createTransitionTxn(
-      Transaction prevWitnessTx,
-      Transaction prevTokenTx,
-      SVPublicKey signerPubkey,
-      Transaction fundingTx,
-      TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey,
-      List<int> witnessFundingTxId,
-      int newState,
-      List<int> newOwnerPKH,
-      {int fundingVout = 1,
-      int witnessFundingVout = 1,
-      bool incrementMilestone = false,
-      List<int>? eventData}) {
-
-    var signerAddress = Address.fromPublicKey(signerPubkey, networkType);
-    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
-
-    var newOwnerAddress = Address.fromPubkeyHash(
-        hex.encode(newOwnerPKH), networkType);
-
-    // Compute new commitment hash off-chain
-    List<int> newCommitHash;
-    if (eventData != null) {
-      var parentCommitHash = prevPP1.commitmentHash!;
-      var eventDigest = crypto.sha256.convert(eventData).bytes;
-      newCommitHash = List<int>.from(
-          crypto.sha256.convert([...parentCommitHash, ...eventDigest]).bytes);
-    } else {
-      newCommitHash = prevPP1.commitmentHash!;
-    }
-
-    var newMC = incrementMilestone ? prevPP1.checkpointCount + 1 : prevPP1.checkpointCount;
-
-    var pp1Locker = PP1SpLockBuilder(
-        newOwnerAddress, prevPP1.tokenId!, prevPP1.operatorPKH!,
-        prevPP1.counterpartyPKH!, prevPP1.rabinPubKeyHash!,
-        newState, newMC, newCommitHash,
-        prevPP1.transitionBitmask, prevPP1.timeoutDelta);
-
-    var pp2Locker = PP2LockBuilder(
-        getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
-        hex.decode(newOwnerAddress.pubkeyHash160), 1,
-        hex.decode(newOwnerAddress.pubkeyHash160));
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(newOwnerAddress.pubkeyHash160));
-
-    var metadataScript = prevTokenTx.outputs[4].script;
-    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
-
-    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(signerPubkey);
-    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-
-    var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    var pp3Subscript = prevTokenTx.outputs[3].script;
-    var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
-
-    var tsl1 = TransactionUtils();
-    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
-        hex.decode(prevWitnessTx.serialize()), 2);
-
-    var transitionFundingOutpoint = Uint8List(36);
-    transitionFundingOutpoint.setAll(0, fundingTx.hash);
-    transitionFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
-
-    var sha256Unlocker = PartialWitnessUnlockBuilder(
-        sigPreImageChildTx!,
-        partialHash,
-        witnessPartialPreImage,
-        transitionFundingOutpoint);
-
-    var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    return childTxn;
-  }
-
-  /// Creates a settle token transaction (CONVERTING→SETTLED, 7-output topology).
-  ///
-  /// 7-output structure: Change(0), CustomerReward(1), MerchantPayment(2),
-  /// PP1_SP(3), PP2(4), PP3(5), Metadata(6).
-  ///
-  /// Counterparty share and operator share are P2PKH outputs using the immutable
-  /// counterpartyPKH and operatorPKH from the PP1_SP header.
-  Transaction createSettleTxn(
-      Transaction prevWitnessTx,
-      Transaction prevTokenTx,
-      SVPublicKey signerPubkey,
-      Transaction fundingTx,
-      TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey,
-      List<int> witnessFundingTxId,
-      BigInt counterpartyShareAmount,
-      BigInt operatorShareAmount,
-      {int fundingVout = 1,
-       int witnessFundingVout = 1,
-       List<int>? eventData}) {
-
-    var signerAddress = Address.fromPublicKey(signerPubkey, networkType);
-    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
-
-    // Merchant owns settled token (terminal state)
-    var newOwnerPKH = prevPP1.operatorPKH!;
-    var newOwnerAddress = Address.fromPubkeyHash(
-        hex.encode(newOwnerPKH), networkType);
-
-    // Compute new commitment hash off-chain
-    List<int> newCommitHash;
-    if (eventData != null) {
-      var parentCommitHash = prevPP1.commitmentHash!;
-      var eventDigest = crypto.sha256.convert(eventData).bytes;
-      newCommitHash = List<int>.from(
-          crypto.sha256.convert([...parentCommitHash, ...eventDigest]).bytes);
-    } else {
-      newCommitHash = prevPP1.commitmentHash!;
-    }
-
-    // P2PKH outputs for counterparty share and operator share
-    var counterpartyShareAddress = Address.fromPubkeyHash(
-        hex.encode(prevPP1.counterpartyPKH!), networkType);
-    var operatorShareAddress = Address.fromPubkeyHash(
-        hex.encode(prevPP1.operatorPKH!), networkType);
-    var counterpartyShareLocker = P2PKHLockBuilder.fromAddress(counterpartyShareAddress);
-    var operatorShareLocker = P2PKHLockBuilder.fromAddress(operatorShareAddress);
-
-    var pp1Locker = PP1SpLockBuilder(
-        newOwnerAddress, prevPP1.tokenId!, prevPP1.operatorPKH!,
-        prevPP1.counterpartyPKH!, prevPP1.rabinPubKeyHash!,
-        4, prevPP1.checkpointCount, newCommitHash,
-        prevPP1.transitionBitmask, prevPP1.timeoutDelta);
-
-    var pp2Locker = PP2LockBuilder(
-        getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
-        hex.decode(newOwnerAddress.pubkeyHash160), 1,
-        hex.decode(newOwnerAddress.pubkeyHash160));
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(newOwnerAddress.pubkeyHash160));
-
-    var metadataScript = prevTokenTx.outputs[4].script;
-    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
-
-    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(signerPubkey);
-    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-
-    // First build to compute PP3 spending sighash
-    var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
-        .spendToLockBuilder(counterpartyShareLocker, counterpartyShareAmount)
-        .spendToLockBuilder(operatorShareLocker, operatorShareAmount)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    var pp3Subscript = prevTokenTx.outputs[3].script;
-    var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
-
-    var tsl1 = TransactionUtils();
-    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
-        hex.decode(prevWitnessTx.serialize()), 2);
-
-    var settleFundingOutpoint = Uint8List(36);
-    settleFundingOutpoint.setAll(0, fundingTx.hash);
-    settleFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
-
-    var sha256Unlocker = PartialWitnessUnlockBuilder(
-        sigPreImageChildTx!,
-        partialHash,
-        witnessPartialPreImage,
-        settleFundingOutpoint);
-
-    var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
-        .spendToLockBuilder(counterpartyShareLocker, counterpartyShareAmount)
-        .spendToLockBuilder(operatorShareLocker, operatorShareAmount)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .build(false);
-
-    return childTxn;
-  }
-
-  /// Creates a timeout token transaction (any non-terminal → EXPIRED, 6-output topology).
-  ///
-  /// 6-output structure: Change(0), MerchantRefund(1), PP1_SP(2), PP2(3), PP3(4), Metadata(5).
-  ///
-  /// Merchant refund is a P2PKH output using the immutable operatorPKH from the header.
-  /// nLockTime is set to [nLockTime] (must be >= header's timeoutDelta).
-  Transaction createTimeoutTxn(
-      Transaction prevWitnessTx,
-      Transaction prevTokenTx,
-      SVPublicKey signerPubkey,
-      Transaction fundingTx,
-      TransactionSigner fundingTxSigner,
-      SVPublicKey fundingPubKey,
-      List<int> witnessFundingTxId,
-      BigInt recoveryAmount,
-      int nLockTime,
-      {int fundingVout = 1,
-       int witnessFundingVout = 1}) {
-
-    var signerAddress = Address.fromPublicKey(signerPubkey, networkType);
-    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
-
-    // Merchant owns expired token (terminal state)
-    var newOwnerPKH = prevPP1.operatorPKH!;
-    var newOwnerAddress = Address.fromPubkeyHash(
-        hex.encode(newOwnerPKH), networkType);
-
-    // Timeout preserves parent's commitment hash (no update)
-    var parentCommitHash = prevPP1.commitmentHash!;
-
-    // Merchant refund P2PKH output
-    var operatorRecoveryAddress = Address.fromPubkeyHash(
-        hex.encode(prevPP1.operatorPKH!), networkType);
-    var operatorRecoveryLocker = P2PKHLockBuilder.fromAddress(operatorRecoveryAddress);
-
-    var pp1Locker = PP1SpLockBuilder(
-        newOwnerAddress, prevPP1.tokenId!, prevPP1.operatorPKH!,
-        prevPP1.counterpartyPKH!, prevPP1.rabinPubKeyHash!,
-        5, prevPP1.checkpointCount, parentCommitHash,
-        prevPP1.transitionBitmask, prevPP1.timeoutDelta);
-
-    var pp2Locker = PP2LockBuilder(
-        getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
-        hex.decode(newOwnerAddress.pubkeyHash160), 1,
-        hex.decode(newOwnerAddress.pubkeyHash160));
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(newOwnerAddress.pubkeyHash160));
-
-    var metadataScript = prevTokenTx.outputs[4].script;
-    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
-
-    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(signerPubkey);
-    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-
-    // nSequence must be < MAX for nLockTime to be enforced
-    var lockTimeSeq = TransactionInput.MAX_SEQ_NUMBER - 1;
-
-    // First build to compute PP3 spending sighash
-    var childPreImageTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, lockTimeSeq, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, lockTimeSeq, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, lockTimeSeq, emptyUnlocker)
-        .spendToLockBuilder(operatorRecoveryLocker, recoveryAmount)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .lockUntilBlockHeight(nLockTime)
-        .build(false);
-
-    var pp3Subscript = prevTokenTx.outputs[3].script;
-    var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
-
-    var tsl1 = TransactionUtils();
-    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
-        hex.decode(prevWitnessTx.serialize()), 2);
-
-    var timeoutFundingOutpoint = Uint8List(36);
-    timeoutFundingOutpoint.setAll(0, fundingTx.hash);
-    timeoutFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
-
-    var sha256Unlocker = PartialWitnessUnlockBuilder(
-        sigPreImageChildTx!,
-        partialHash,
-        witnessPartialPreImage,
-        timeoutFundingOutpoint);
-
-    var childTxn = TransactionBuilder()
-        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, lockTimeSeq, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, lockTimeSeq, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, lockTimeSeq, sha256Unlocker)
-        .spendToLockBuilder(operatorRecoveryLocker, recoveryAmount)
-        .spendToLockBuilder(pp1Locker, BigInt.one)
-        .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
-        .sendChangeToPKH(signerAddress)
-        .withFee(defaultFee)
-        .lockUntilBlockHeight(nLockTime)
-        .build(false);
-
-    return childTxn;
-  }
-
-  /// Creates a burn transaction for an SM token in terminal state (SETTLED or EXPIRED).
-  ///
-  /// Owner signs. Spends PP1_SP, PP2, and PartialWitness outputs.
-  /// [pp1OutputIndex], [pp2OutputIndex], [pp3OutputIndex] specify the output
-  /// positions in [tokenTx] (default 1,2,3 for standard topology; settle uses 3,4,5).
-  Transaction createBurnTokenTxn(
-      Transaction tokenTx,
-      TransactionSigner ownerSigner,
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
+      List<int> witnessFundingTxId,
+      PoolHeader newHeader,
       {int fundingVout = 1,
-       int pp1OutputIndex = 1,
-       int pp2OutputIndex = 2,
-       int pp3OutputIndex = 3}) {
+       int witnessFundingVout = 1,
+       List<int>? newOwnerPKH,
+       List<int>? nextSlot}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
-    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
-    var pp1BurnUnlocker = PP1SpUnlockBuilder.forBurn(ownerPubkey);
-    var pp2BurnUnlocker = PP2UnlockBuilder.forBurn(ownerPubkey);
-    var pwBurnUnlocker = PartialWitnessUnlockBuilder.forBurn(ownerPubkey);
+    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
 
-    var burnTx = TransactionBuilder()
+    var nextOwnerPKH = newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160);
+    var nextOwnerAddress =
+        Address.fromPubkeyHash(hex.encode(nextOwnerPKH), networkType);
+
+    // The genesis header is immutable, so it comes straight off the parent.
+    var pp1Locker = PP1SpLockBuilder(
+        nextOwnerAddress, prevPP1.tokenId!, newHeader, prevPP1.genesisHeader!);
+
+    // PP1 rebuilds the next script as parent[0:1] + newPKH + parent[21:294] +
+    // newHeader + parent[530:], so anything the generator would change outside
+    // those two windows makes the round unspendable. Catch it here, where the
+    // error says what happened, rather than in the interpreter.
+    var rebuilt = pp1Locker.getScriptPubkey().buffer;
+    var parent = prevTokenTx.outputs[1].script.buffer;
+    if (rebuilt.length != parent.length ||
+        !_sameRange(rebuilt, parent, PP1SpScriptGen.scriptBodyStart, parent.length) ||
+        !_sameRange(rebuilt, parent, PP1SpScriptGen.immutableMidStart,
+            PP1SpScriptGen.headerDataStart)) {
+      throw ArgumentError(
+          'The regenerated PP1_SP script differs from the parent outside the '
+          'two mutable windows, so PP1 cannot rebuild it.');
+    }
+
+    var pp2Locker = PP2LockBuilder(
+        getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
+        nextOwnerPKH, 1, nextOwnerPKH);
+    var shaLocker = PartialWitnessLockBuilder(nextOwnerPKH, nextSlot: nextSlot);
+
+    var metadataScript = prevTokenTx.outputs[4].script;
+    var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
+
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
+    var prevWitnessUnlocker = ModP2PKHUnlockBuilder(ownerPubkey);
+    var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+
+    var childPreImageTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(ownerSigner, tokenTx, pp1OutputIndex, TransactionInput.MAX_SEQ_NUMBER, pp1BurnUnlocker)
-        .spendFromTxnWithSigner(ownerSigner, tokenTx, pp2OutputIndex, TransactionInput.MAX_SEQ_NUMBER, pp2BurnUnlocker)
-        .spendFromTxnWithSigner(ownerSigner, tokenTx, pp3OutputIndex, TransactionInput.MAX_SEQ_NUMBER, pwBurnUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
+        .spendToLockBuilder(pp1Locker, BigInt.one)
+        .spendToLockBuilder(pp2Locker, BigInt.one)
+        .spendToLockBuilder(shaLocker, BigInt.one)
+        .spendToLockBuilder(metadataLocker, BigInt.zero)
         .sendChangeToPKH(ownerAddress)
         .withFee(defaultFee)
         .build(false);
 
-    return burnTx;
+    var pp3Subscript = prevTokenTx.outputs[3].script;
+    var sigPreImageChildTx = Sighash().createSighashPreImage(
+        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
+
+    var tsl1 = TransactionUtils();
+    var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
+        hex.decode(prevWitnessTx.serialize()), 2);
+
+    var roundFundingOutpoint = Uint8List(36);
+    roundFundingOutpoint.setAll(0, fundingTx.hash);
+    roundFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
+
+    var sha256Unlocker = PartialWitnessUnlockBuilder(
+        sigPreImageChildTx!,
+        partialHash,
+        witnessPartialPreImage,
+        roundFundingOutpoint);
+
+    var childTxn = TransactionBuilder()
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
+        .spendToLockBuilder(pp1Locker, BigInt.one)
+        .spendToLockBuilder(pp2Locker, BigInt.one)
+        .spendToLockBuilder(shaLocker, BigInt.one)
+        .spendToLockBuilder(metadataLocker, BigInt.zero)
+        .sendChangeToPKH(ownerAddress)
+        .withFee(defaultFee)
+        .build(false);
+
+    return childTxn;
+  }
+
+  static bool _sameRange(List<int> a, List<int> b, int start, int end) {
+    for (var i = start; i < end; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }

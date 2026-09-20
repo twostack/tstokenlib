@@ -17,34 +17,27 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
+import '../shielded_pool/pool_header.dart';
 
-/// The type of action being performed on a state machine token.
+/// What a spend of a PP1_SP output is doing.
 enum ShieldedPoolAction {
-  /// Initial funnel creation.
+  /// TSL1 issuance: the pool's genesis.
   CREATE,
-  /// Enroll a counterparty (INIT→ACTIVE).
-  ENROLL,
-  /// Confirm a checkpoint (ACTIVE/PROGRESSING→PROGRESSING).
-  CONFIRM,
-  /// Convert to settlement phase (PROGRESSING→CONVERTING).
-  CONVERT,
-  /// Settle with reward/payment outputs (CONVERTING→SETTLED).
-  SETTLE,
-  /// Timeout expiration (any→EXPIRED).
-  TIMEOUT,
-  /// Burn the token (terminal states only).
-  BURN
+
+  /// One round of the pool: the inductive transfer that advances the header.
+  ROUND,
 }
 
 /// Builds the unlocking script (scriptSig) for spending the PP1_SP output.
 ///
-/// Dispatch selectors:
-/// - OP_0 = create, OP_1 = enroll, OP_2 = confirm, OP_3 = convert,
-///   OP_4 = settle, OP_5 = timeout, OP_6 = burn
+/// Dispatch selectors: OP_0 = create, OP_1 = round.
+///
+/// There is no burn. A pool's PP3 holds every depositor's money, so nothing
+/// releases it on a signature alone; see [PP1SpScriptGen].
 class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _preImage;
   List<int>? _pp2Output;
-  SVPublicKey? _operatorPubKey;
+  SVPublicKey? _ownerPubKey;
   String? _changePKH;
   BigInt? _changeAmount;
   List<int>? _tokenLHS;
@@ -53,36 +46,22 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   ShieldedPoolAction? action;
   List<int>? _fundingOutpoint;
 
-  // Enroll-specific
-  List<int>? _eventData;
-
-  // Confirm/Convert-specific (dual-sig)
-  SVPublicKey? _counterpartyPubKey;
-  List<int>? _counterpartySigBytes;
-
-  // Settle-specific
-  BigInt? _counterpartyShareAmount;
-  BigInt? _operatorShareAmount;
-
-  // Timeout-specific
-  BigInt? _recoveryAmount;
+  // Round-specific
+  List<int>? _newOwnerPKH;
+  List<int>? _newHeader;
 
   List<int>? _sigBytes;
 
-  // Rabin identity fields (used for CREATE only)
-  List<int>? _rabinN;
-  List<int>? _rabinS;
-  int? _rabinPadding;
-  List<int>? _identityTxId;
-  List<int>? _ed25519PubKey;
-
   List<int>? get preImage => _preImage;
 
-  /// Full constructor for standard operations (enroll, confirm, convert, settle, timeout).
+  /// Unlock for a round.
+  ///
+  /// [prevTokenTx] is the parent token transaction, whose bytes PP1 rebuilds to
+  /// prove which ancestor this round spends.
   PP1SpUnlockBuilder(
       this._preImage,
       this._pp2Output,
-      this._operatorPubKey,
+      this._ownerPubKey,
       this._changePKH,
       this._changeAmount,
       this._tokenLHS,
@@ -90,36 +69,13 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       this._witnessPadding,
       this.action,
       this._fundingOutpoint,
-      {List<int>? eventData,
-      SVPublicKey? counterpartyPubKey,
-      List<int>? counterpartySigBytes,
-      BigInt? counterpartyShareAmount,
-      BigInt? operatorShareAmount,
-      BigInt? recoveryAmount,
-      List<int>? rabinN,
-      List<int>? rabinS,
-      int? rabinPadding,
-      List<int>? identityTxId,
-      List<int>? ed25519PubKey})
-      : _eventData = eventData,
-        _counterpartyPubKey = counterpartyPubKey,
-        _counterpartySigBytes = counterpartySigBytes,
-        _counterpartyShareAmount = counterpartyShareAmount,
-        _operatorShareAmount = operatorShareAmount,
-        _recoveryAmount = recoveryAmount,
-        _rabinN = rabinN,
-        _rabinS = rabinS,
-        _rabinPadding = rabinPadding,
-        _identityTxId = identityTxId,
-        _ed25519PubKey = ed25519PubKey;
-
-  /// Creates a PP1_SP unlock builder for burning a token.
-  PP1SpUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
-      : _operatorPubKey = ownerPubKey,
-        action = ShieldedPoolAction.BURN;
+      {List<int>? newOwnerPKH,
+      List<int>? newHeader})
+      : _newOwnerPKH = newOwnerPKH,
+        _newHeader = newHeader;
 
   PP1SpUnlockBuilder.fromScript(SVScript script,
-      {ShieldedPoolAction this.action = ShieldedPoolAction.ENROLL})
+      {ShieldedPoolAction this.action = ShieldedPoolAction.ROUND})
       : super.fromScript(script);
 
   @override
@@ -133,141 +89,48 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       return ScriptBuilder().build();
     }
 
-    List<int> sigBytes = [];
     if (signature != null) {
-      sigBytes = hex.decode(signatures.first.toTxFormat());
+      _sigBytes = hex.decode(signature.toTxFormat());
     }
 
     var result = ScriptBuilder();
 
     switch (action!) {
       case ShieldedPoolAction.CREATE:
-        // Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding, rabinN,
-        //         rabinS, rabinPadding, identityTxId, ed25519PubKey, OP_0]
+        // Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding, OP_0]
+        //
         // tokenRawTx is first so it lands at the bottom, leaving every other
         // stack index unchanged for the phases after the anchor check.
         result.addData(Uint8List.fromList(_prevTokenTx!));
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_fundingOutpoint!));
         result.addData(Uint8List.fromList(_witnessPadding!));
-        result.addData(Uint8List.fromList(_rabinN!));
-        result.addData(Uint8List.fromList(_rabinS!));
-        result.number(_rabinPadding!);
-        result.addData(Uint8List.fromList(_identityTxId!));
-        result.addData(Uint8List.fromList(_ed25519PubKey!));
-        break;
-
-      case ShieldedPoolAction.ENROLL:
-        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
-        //   operatorSig, eventData, scriptLHS, parentRawTx, padding, OP_1]
-        result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
-        result.number(_changeAmount!.toInt());
-        result.addData(Uint8List.fromList(sigBytes));
-        result.addData(Uint8List.fromList(_eventData!));
-        result.addData(Uint8List.fromList(_tokenLHS!));
-        result.addData(Uint8List.fromList(_prevTokenTx!));
-        result.addData(Uint8List.fromList(_witnessPadding!));
-        break;
-
-      case ShieldedPoolAction.CONFIRM:
-        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
-        //   operatorSig, counterpartyPK, counterpartySig, checkpointData,
-        //   scriptLHS, parentRawTx, padding, OP_2]
-        result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
-        result.number(_changeAmount!.toInt());
-        result.addData(Uint8List.fromList(sigBytes));
-        result.addData(Uint8List.fromList(hex.decode(_counterpartyPubKey!.toHex())));
-        result.addData(Uint8List.fromList(_counterpartySigBytes!));
-        result.addData(Uint8List.fromList(_eventData!));
-        result.addData(Uint8List.fromList(_tokenLHS!));
-        result.addData(Uint8List.fromList(_prevTokenTx!));
-        result.addData(Uint8List.fromList(_witnessPadding!));
-        break;
-
-      case ShieldedPoolAction.CONVERT:
-        // Same layout as confirm with conversionData
-        result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
-        result.number(_changeAmount!.toInt());
-        result.addData(Uint8List.fromList(sigBytes));
-        result.addData(Uint8List.fromList(hex.decode(_counterpartyPubKey!.toHex())));
-        result.addData(Uint8List.fromList(_counterpartySigBytes!));
-        result.addData(Uint8List.fromList(_eventData!));
-        result.addData(Uint8List.fromList(_tokenLHS!));
-        result.addData(Uint8List.fromList(_prevTokenTx!));
-        result.addData(Uint8List.fromList(_witnessPadding!));
-        break;
-
-      case ShieldedPoolAction.SETTLE:
-        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
-        //   operatorSig, counterpartyShareAmt, operatorShareAmt, settlementData,
-        //   scriptLHS, parentRawTx, padding, OP_4]
-        result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
-        result.number(_changeAmount!.toInt());
-        result.addData(Uint8List.fromList(sigBytes));
-        result.number(_counterpartyShareAmount!.toInt());
-        result.number(_operatorShareAmount!.toInt());
-        result.addData(Uint8List.fromList(_eventData!));
-        result.addData(Uint8List.fromList(_tokenLHS!));
-        result.addData(Uint8List.fromList(_prevTokenTx!));
-        result.addData(Uint8List.fromList(_witnessPadding!));
-        break;
-
-      case ShieldedPoolAction.TIMEOUT:
-        // Stack: [preImage, pp2Out, operatorPK, changePkh, changeAmt,
-        //   operatorSig, recoveryAmount, scriptLHS, parentRawTx, padding, OP_5]
-        result.addData(Uint8List.fromList(_preImage!));
-        result.addData(Uint8List.fromList(_pp2Output!));
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
-        result.number(_changeAmount!.toInt());
-        result.addData(Uint8List.fromList(sigBytes));
-        result.number(_recoveryAmount!.toInt());
-        result.addData(Uint8List.fromList(_tokenLHS!));
-        result.addData(Uint8List.fromList(_prevTokenTx!));
-        result.addData(Uint8List.fromList(_witnessPadding!));
-        break;
-
-      case ShieldedPoolAction.BURN:
-        // Stack: [ownerPubKey, ownerSig, OP_6]
-        result.addData(Uint8List.fromList(hex.decode(_operatorPubKey!.toHex())));
-        result.addData(Uint8List.fromList(sigBytes));
-        break;
-    }
-
-    // Append dispatch selector opcode
-    switch (action!) {
-      case ShieldedPoolAction.CREATE:
         result.opCode(OpCodes.OP_0);
         break;
-      case ShieldedPoolAction.ENROLL:
+
+      case ShieldedPoolAction.ROUND:
+        // Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
+        //         newOwnerPKH, newHeader, scriptLHS, parentRawTx, padding, OP_1]
+        if (_newHeader == null || _newHeader!.length != PoolHeader.byteSize) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "A round needs a ${PoolHeader.byteSize}-byte header");
+        }
+        if (_newOwnerPKH == null || _newOwnerPKH!.length != 20) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "A round needs a 20-byte newOwnerPKH");
+        }
+        result.addData(Uint8List.fromList(_preImage!));
+        result.addData(Uint8List.fromList(_pp2Output!));
+        result.addData(Uint8List.fromList(hex.decode(_ownerPubKey!.toHex())));
+        result.addData(Uint8List.fromList(hex.decode(_changePKH!)));
+        result.number(_changeAmount!.toInt());
+        result.addData(Uint8List.fromList(_sigBytes!));
+        result.addData(Uint8List.fromList(_newOwnerPKH!));
+        result.addData(Uint8List.fromList(_newHeader!));
+        result.addData(Uint8List.fromList(_tokenLHS!));
+        result.addData(Uint8List.fromList(_prevTokenTx!));
+        result.addData(Uint8List.fromList(_witnessPadding!));
         result.opCode(OpCodes.OP_1);
-        break;
-      case ShieldedPoolAction.CONFIRM:
-        result.opCode(OpCodes.OP_2);
-        break;
-      case ShieldedPoolAction.CONVERT:
-        result.opCode(OpCodes.OP_3);
-        break;
-      case ShieldedPoolAction.SETTLE:
-        result.opCode(OpCodes.OP_4);
-        break;
-      case ShieldedPoolAction.TIMEOUT:
-        result.opCode(OpCodes.OP_5);
-        break;
-      case ShieldedPoolAction.BURN:
-        result.opCode(OpCodes.OP_6);
         break;
     }
 
@@ -279,17 +142,19 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
     var chunkList = script.chunks;
     _preImage = chunkList[0].buf;
     _pp2Output = chunkList[1].buf;
-    _operatorPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);
+    _ownerPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);
     _changePKH = hex.encode(chunkList[3].buf ?? [00]);
     _changeAmount = castToBigInt(chunkList[4].buf ?? [], true);
     _sigBytes = chunkList[5].buf;
-    _tokenLHS = chunkList[6].buf;
-    _prevTokenTx = chunkList[7].buf;
-    _witnessPadding = chunkList[8].buf;
+    _newOwnerPKH = chunkList[6].buf;
+    _newHeader = chunkList[7].buf;
+    _tokenLHS = chunkList[8].buf;
+    _prevTokenTx = chunkList[9].buf;
+    _witnessPadding = chunkList[10].buf;
   }
 
   List<int>? get pp2Output => _pp2Output;
-  SVPublicKey? get operatorPubKey => _operatorPubKey;
+  SVPublicKey? get ownerPubKey => _ownerPubKey;
   BigInt? get changeAmount => _changeAmount;
   List<int>? get tokenLHS => _tokenLHS;
   List<int>? get prevTokenTx => _prevTokenTx;
@@ -297,10 +162,6 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get fundingOutpoint => _fundingOutpoint;
   String? get changePKH => _changePKH;
   List<int>? get sigBytes => _sigBytes;
-  List<int>? get eventData => _eventData;
-  SVPublicKey? get counterpartyPubKey => _counterpartyPubKey;
-  List<int>? get counterpartySigBytes => _counterpartySigBytes;
-  BigInt? get counterpartyShareAmount => _counterpartyShareAmount;
-  BigInt? get operatorShareAmount => _operatorShareAmount;
-  BigInt? get recoveryAmount => _recoveryAmount;
+  List<int>? get newOwnerPKH => _newOwnerPKH;
+  List<int>? get newHeader => _newHeader;
 }

@@ -30,7 +30,7 @@ Background: [ARCHITECTURE.md](ARCHITECTURE.md), the note under "The Inductive Ar
 | PP1_RNFT | `_emitIssueToken` | 8 items | 8 |
 | PP1_SM | `_emitCreateFunnel` | 8 items | 8 |
 | PP1_AT | `_emitIssueToken` | 10 items | 10 |
-| PP1_SP | `_emitCreateFunnel` | 9 items | **done** |
+| PP1_SP | `_emitCreate` | 4 items | **done** |
 
 All six have `ownerPKH` on top of the altstack with `tokenId` directly beneath it at issuance, and five of the six have an identical main stack. The work is therefore close to mechanical.
 
@@ -47,7 +47,7 @@ The first check needs no output rebuild, which is the part that makes this cheap
 
 Pinning the index to 1 matches the protocol convention that issuance is funded from output 1 of the funding transaction, and it is what makes `(tokenId, 1)` spendable once. Checking only the txid would let a funding transaction with two unspent outputs produce two issuances under one `tokenId`.
 
-Take `_emitCreateFunnel` Phase 0 in `lib/src/script_gen/pp1_sp_script_gen.dart` as the reference. Three properties of it are deliberate and should be preserved when transplanting:
+Take `_emitCreate` Phase 0 in `lib/src/script_gen/pp1_sp_script_gen.dart` as the reference. Note that PP1_SP has since dropped the Rabin attestation, so its issuance stack is four items and its D is 3; the six archetypes below keep theirs and use the D from the table. Three properties of the block are deliberate and should be preserved when transplanting:
 
 1. **`tokenRawTx` is pushed at the bottom of the issuance stack**, so no later phase's `OP_PICK` index moves. Phase 0 consumes it and restores the original layout, which keeps the diff purely additive.
 2. **The input-count varint must be a single byte.** Without that check an attacker uses 253 or more inputs to make the varint three bytes and shifts the parse off the real outpoint. The check appends `0x00` before `OP_BIN2NUM`, because a bare `0xfd` byte reads as negative under script-number encoding and would pass a naive comparison.
@@ -57,7 +57,7 @@ So for five archetypes the block transplants verbatim, and for PP1_AT the four o
 
 ### Per archetype, the work
 
-1. **Script generator.** Insert Phase 0 at the top of the issuance branch, with D set from the table. About 45 lines.
+1. **Script generator.** Insert Phase 0 at the top of the issuance branch, with D set from the table. About 45 lines. In PP1_SP the stack index used for both `OP_PICK`s is D; the second `PICK` reads `preImage`, which sits at D-1 until the first push shifts it to D.
 2. **Unlock builder.** Push `tokenRawTx` first in the issuance case, so it lands at the bottom. One line, plus a comment saying why it is first.
 3. **Tool.** Supply the token transaction's own serialized bytes to the issuance unlock, not the parent's. The witness builders already receive the token transaction, so this is local. Take care not to change the dual-signature or transfer paths, which legitimately need the parent's bytes.
 4. **Funding vout guard.** Each tool's issuance entry point must reject a `fundingVout` other than 1, so a caller gets a clear error rather than an issuance whose witness can never be created. Verify each tool's current default.
@@ -69,7 +69,7 @@ So for five archetypes the block transplants verbatim, and for PP1_AT the four o
 
 `test/template_sync_test.dart` round-trips the NFT and FT templates against generator output, so those tests fail until the templates are regenerated. `templates/sm/pp1_sm.json` is not covered by that test and would go stale silently, which is worth fixing at the same time by adding it to the expected-files list.
 
-`tool/scratch/regen_sp_template.dart` shows the approach used for PP1_SP: keep the header placeholder string, replace the body with fresh hex from the generator, and correct the `metadata.generatedBy` and `metadata.sourceFile` fields.
+`tool/scratch/regen_sp_template.dart` shows the approach used for PP1_SP: keep the header placeholder string, replace the body with fresh hex from the generator, and correct the `metadata.generatedBy` and `metadata.sourceFile` fields. It also checks that the placeholder string covers exactly as many bytes as the header, which an earlier version did not: it sliced the body at 140 while the header was 161, silently duplicating 21 bytes.
 
 ### What this breaks
 

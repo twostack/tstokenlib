@@ -107,22 +107,54 @@ Single output: ModP2PKH to the coordinator, as today. Input order is whatever th
 
 ### 5.1 Header
 
-Mutable SM fields, about 240 bytes:
+**BUILT 2026-09-20.** The state machine's nine-field header is gone and PP1_SP now carries the pool's own, as `PoolHeader` in `lib/src/shielded_pool/pool_header.dart`.
 
-| Field | Bytes | Meaning |
-|---|---|---|
-| cmRoot | 32 | commitment tree root after this round |
-| nfRoot | 32 | sorted nullifier tree root after this round |
-| ring | 4 x 32 | recent cmRoots that spend proofs may anchor to |
-| size | 4 | leaves in the commitment tree |
-| balance | 8 | satoshis held by PP3 |
-| outHash | 32 | hash of this round's ciphertext bundles |
+The mutable state is 236 bytes:
 
-Immutable: tokenId, carried in PP1 as in every TSL1 token. The Rabin key of PP1_SP is not needed. Genesis is TSL1 issuance, and ownership is the witness key.
+| Field | Offset | Bytes | Meaning |
+|---|---|---|---|
+| cmRoot | 0 | 32 | commitment tree root after this round |
+| nfRoot | 32 | 32 | sorted nullifier tree root after this round |
+| ring | 64 | 4 x 32 | recent cmRoots that spend proofs may anchor to, newest first |
+| size | 192 | 4 | leaves in the commitment tree, LE32 |
+| balance | 196 | 8 | satoshis held by PP3, LE64 |
+| outHash | 204 | 32 | hash of this round's ciphertext bundles |
+
+It is **one push, not six**. Both places that touch the header want it whole. PP1's rebuild replaces the entire region in a single fixed-window substitution instead of threading six push prefixes through the altstack, which is what made the state machine's rebuild the longest routine in the generator. And V embeds the same blob, so binding V to header_{N+1} is one rebuild of `push(header) + body` and one hash comparison, rather than reassembling six pushes in the right order. Fields that script needs individually, `balance` and `outHash`, are read by splitting the blob at the offsets above.
+
+The ring rotation is a circuit constraint, not a script one. The proof relates header_N to header_{N+1}, so V is what checks that the new ring is `[cmRoot_{N+1}, ring_N[0..2]]`. PP1 carries the field and never interprets it.
+
+The script header is therefore:
+
+```
+[0:1]     0x14       [1:21]    ownerPKH      (20,  mutable)
+[21:22]   0x20       [22:54]   tokenId       (32,  immutable)
+[54:56]   0x4c 0xec  [56:292]  genesisHeader (236, immutable)
+[292:294] 0x4c 0xec  [294:530] header        (236, mutable)
+[530:]    script body (immutable)
+```
+
+Both header pushes carry a two-byte `OP_PUSHDATA1` prefix, because 236 is past the 75-byte direct-push limit. Everything else is a direct push.
+
+**Why genesisHeader is carried in full.** It was first baked into the create branch as a 32-byte SHA-256 commitment, which is 200 bytes cheaper per round. That was wrong on two counts. A depositor needs to know the pool opened on an empty commitment tree before putting money in, and with only a commitment they have to be handed the preimage and trust it; carried in full, the opening state is readable straight off the chain. And a commitment in the body makes every pool's body different, so no single template can serve them, and `templates/sp/pp1_sp.json` would have to be regenerated per pool. The 236 bytes buy a publicly checkable genesis and one template. They are paid three times per round under section 2's rule, about 700 bytes against a 1.5 MB verifier.
+
+What the field does not buy is honesty: a coordinator still picks their own genesis. It fixes it at issuance and publishes it, which is what lets anyone else check it.
+
+Immutable: `tokenId`, carried in PP1 as in every TSL1 token, and `genesisHeader`.
+
+**No Rabin key.** For a state machine token the Rabin attestation binds the token to a registered issuer identity. For a pool, who the coordinator is *is* `ownerPKH`, and what makes the chain unique is the funding outpoint that create anchors to (11.5). Attesting the coordinator's off-chain identity, if a deployment wants it, belongs in the metadata output rather than in the covenant. Dropping it removes four parameters and five phases from the create branch.
+
+**Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
+
+**Measured.** Script 2,995 bytes: 530 header, 2,465 body. The state machine it came from was 10,537 bytes, of which 10,376 was body. The verifier work in 5.2 is still to come, so this is a floor rather than a final number.
+
+Tests: `test/sp_token_test.dart`, groups "Pool header codec", "SP lock builder parse roundtrip", "SP script generation", "SP create witness" and "SP round". 34 tests, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, and a selector that names no branch.
 
 ### 5.2 PP1, pool variant
 
-Everything the SM generator does today, plus, when run in witness N+1 over round N+1:
+The round branch does the ordinary TSL1 inductive transfer: it rebuilds round N+1 byte for byte from the witness's pushes, checks the result hashes to its own outpoint's txid, and substitutes `ownerPKH` and `header` into the next PP1. **BUILT 2026-09-20** together with the header; `_emitRebuildPP1Pool` is two fixed-window substitutions where the state machine's was four, because the header is one push.
+
+Authorisation is the owner's signature, as in every other archetype's transfer branch. That says the coordinator wants this round; it is not what makes the round *correct*. Correctness comes from the verifier slot, and the three mechanisms that tie the round to it are built but not yet wired into this branch:
 
 1. Input 3 of round N+1 (from lhs) equals the `nextSlot` embedded in PP3_N, read from the pushed parent.
 2. **BUILT 2026-09-20**, as `PP1SpScriptGen.emitVerifySlotIsVerifier`. PP3's pin proves only that *something* at the named outpoint was spent; an `OP_TRUE` would satisfy it while skipping verification entirely. PP1 closes that. Rather than parse Y to find its output, which needs variable-length walking over inputs and outputs, it **rebuilds** Y from parts, which is the pattern already used everywhere else in TSL1:
@@ -137,7 +169,7 @@ Only `yInput` and `V` are free; the script emits every structural byte, reusing 
 
 The txid is what binds the claim. Supplying the genuine V alongside a Y that does not contain it fails, because the rebuild then hashes to a different txid. Four tests cover it: the honest slot, a slot holding a decoy, a decoy slot with the verifier falsely claimed, and a pin naming an output other than 0.
 
-Still to add here: splitting V into header pushes and body, so the check also binds header_{N+1}. Today it binds only the body hash, which proves the slot holds the verifier but not yet that it holds the right *state*. That arrives with the pool header.
+Still to add here: splitting V into a header push and a body, so the check also binds header_{N+1}. Today it binds only the body hash, which proves the slot holds the verifier but not yet that it holds the right *state*. The header being a single 236-byte push is what makes that cheap: the rebuild is `push(header_{N+1}) ‖ bakedBody`, one CAT and one SHA256, with `header_{N+1}` already on the stack because the round branch pushes it.
 3. PP3_{N+1}'s value equals header_{N+1}.balance.
 4. The pushed ciphertext bundles hash to header_{N+1}.outHash.
 5. Deposit receipts and withdrawals are accepted as a variable tail of outputs; see 11.4.
@@ -195,6 +227,8 @@ V does not push round N. It knows header_N because it embeds it, and it knows he
 ### 5.6 Burn
 
 TSL1's burn spends PP1, PP2 and PP3 with the owner's signature. For the pool the owner is the coordinator and PP3 holds everyone's money. The burn branch is removed from all three pool variants. If a shutdown path is wanted it must be a proved transition to an empty pool, not a signature.
+
+**DONE for PP1 2026-09-20**, along with the state machine's enroll, confirm, convert, settle and timeout, which are escrow lifecycle with no pool meaning. The dispatch now recognises only `OP_0` create and `OP_1` round and fails on anything else, rather than falling through to a branch the spender did not name; there is a test for that. Removing burn from PP2 and PP3 is still open.
 
 ### 5.7 Variable inputs and outputs inside PP1's rebuild
 
@@ -456,8 +490,10 @@ Until both are done this document is arithmetic.
 
 Carries over unchanged: the spend circuit, key hierarchy, aggregation levels and prover pool, the verifier program and `ProgramScriptGen`, the append slot, `PoolChainReader`'s leaf placement, the hybrid KEM bundles.
 
-Carries over with changes: `PP1SmScriptGen` gains the pool checks in 5.2 and loses burn; `PartialWitnessLockBuilder` gains `nextSlot` and the input-3 check; the verifier slot generator gains the header embedding and the tail in 5.5; `ShieldedPoolTool` becomes a thin layer over `StateMachineTool` that also builds Y and the deposit covenant.
+Carries over with changes: `PartialWitnessLockBuilder` gains `nextSlot` and the input-3 check (DONE); the verifier slot generator gains the header embedding and the tail in 5.5; `ShieldedPoolTool` builds Y and the deposit covenant as well as the two transaction pairs.
 
-Retired: `PP1SpScriptGen`, its header, the Rabin create funnel, the in-script nullifier insertion, `extraPrevouts`.
+The pool archetype is `PP1SpScriptGen`, cloned from `PP1SmScriptGen` and since diverged: its own header (5.1, DONE), two branches instead of seven (5.1 and 5.6, DONE), the anchored base case (11.5, DONE), and the verifier checks in 5.2 still to wire in. `PP1SmScriptGen` itself is untouched, so the state machine archetype keeps its full lifecycle.
 
-Not started: the sorted-insertion nullifier AIR, the deposit covenant script, the pool PP3 variant.
+Retired: the original pool scripts, now `PP1SpLegacyScriptGen` and `ShieldedPoolLegacyTool`, along with their in-script nullifier insertion and their `extraPrevouts` weakness. The Rabin create funnel is retired from the pool only; every other archetype keeps it.
+
+Not started: the sorted-insertion nullifier AIR, the deposit covenant script, the variable output tail (5.7).

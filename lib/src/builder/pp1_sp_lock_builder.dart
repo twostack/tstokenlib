@@ -18,50 +18,37 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
 import '../script_gen/pp1_sp_script_gen.dart';
+import '../shielded_pool/pool_header.dart';
 
-/// Builds the locking script for the PP1_SP (State Machine Token) output.
+/// Builds the locking script for the PP1_SP (shielded pool) output.
 ///
-/// Header layout (140 bytes):
+/// Header layout (530 bytes):
 /// ```
-/// [0:1]     0x14  [1:21]    ownerPKH (mutable — "next expected actor")
-/// [21:22]   0x20  [22:54]   tokenId (immutable)
-/// [54:55]   0x14  [55:75]   operatorPKH (immutable)
-/// [75:76]   0x14  [76:96]   counterpartyPKH (immutable)
-/// [96:97]   0x01  [97:98]   currentState (mutable — 0x00-0x05)
-/// [98:99]   0x01  [99:100]  checkpointCount (mutable)
-/// [100:101] 0x20  [101:133] commitmentHash (mutable — rolling SHA256)
-/// [133:134] 0x01  [134:135] transitionBitmask (immutable)
-/// [135:136] 0x04  [136:140] timeoutDelta (immutable — 4-byte LE)
-/// [140:]    script body (immutable)
+/// [0:1]     0x14       [1:21]    ownerPKH      (20,  mutable)
+/// [21:22]   0x20       [22:54]   tokenId       (32,  immutable)
+/// [54:56]   0x4c 0xec  [56:292]  genesisHeader (236, immutable)
+/// [292:294] 0x4c 0xec  [294:530] header        (236, mutable) — see PoolHeader
+/// [530:]    script body (immutable)
 /// ```
+///
+/// The genesis header is carried in full rather than as a commitment, so a
+/// script parsed off the chain is enough to regenerate the next round's and to
+/// check what state the pool opened on.
 class PP1SpLockBuilder extends LockingScriptBuilder {
   Address? _ownerAddress;
   List<int>? _tokenId;
-  List<int>? _operatorPKH;
-  List<int>? _counterpartyPKH;
-  List<int>? _rabinPubKeyHash;
-  int _currentState;
-  int _checkpointCount;
-  List<int>? _commitmentHash;
-  int _transitionBitmask;
-  int _timeoutDelta;
+  PoolHeader? _header;
+  List<int>? _genesisHeader;
   NetworkType? networkType;
 
   PP1SpLockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST})
-      : _currentState = 0, _checkpointCount = 0, _transitionBitmask = 0,
-        _timeoutDelta = 0, super.fromScript(script);
+      : super.fromScript(script);
 
   PP1SpLockBuilder(
       this._ownerAddress,
       this._tokenId,
-      this._operatorPKH,
-      this._counterpartyPKH,
-      this._rabinPubKeyHash,
-      this._currentState,
-      this._checkpointCount,
-      this._commitmentHash,
-      this._transitionBitmask,
-      this._timeoutDelta,
+      this._header,
+      this._genesisHeader,
       {this.networkType}) {
     if (_ownerAddress == null) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Owner address is required");
@@ -69,17 +56,12 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     if (_tokenId == null || _tokenId!.length != 32) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Token ID must be 32 bytes");
     }
-    if (_operatorPKH == null || _operatorPKH!.length != 20) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Operator PKH must be 20 bytes");
+    if (_header == null) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Pool header is required");
     }
-    if (_counterpartyPKH == null || _counterpartyPKH!.length != 20) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Counterparty PKH must be 20 bytes");
-    }
-    if (_rabinPubKeyHash == null || _rabinPubKeyHash!.length != 20) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin pubkey hash must be 20 bytes");
-    }
-    if (_commitmentHash == null || _commitmentHash!.length != 32) {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Commitment hash must be 32 bytes");
+    if (_genesisHeader == null || _genesisHeader!.length != PoolHeader.byteSize) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+          "Genesis header must be ${PoolHeader.byteSize} bytes");
     }
   }
 
@@ -89,14 +71,8 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     return PP1SpScriptGen.generate(
       ownerPKH: ownerPKH,
       tokenId: _tokenId!,
-      operatorPKH: _operatorPKH!,
-      counterpartyPKH: _counterpartyPKH!,
-      rabinPubKeyHash: _rabinPubKeyHash!,
-      currentState: _currentState,
-      checkpointCount: _checkpointCount,
-      commitmentHash: _commitmentHash!,
-      transitionBitmask: _transitionBitmask,
-      timeoutDelta: _timeoutDelta,
+      header: _header!.encode(),
+      genesisHeader: _genesisHeader!,
     );
   }
 
@@ -110,31 +86,27 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     if (buf[0] != 0x14) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Expected 0x14 pushdata at byte 0");
     }
+    // A header is 236 bytes, past the 75-byte direct-push limit, so each push
+    // is OP_PUSHDATA1 followed by the length.
+    for (var at in [PP1SpScriptGen.genesisPushStart, PP1SpScriptGen.headerPushStart]) {
+      if (buf[at] != 0x4c || buf[at + 1] != PoolHeader.byteSize) {
+        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+            "Expected OP_PUSHDATA1 ${PoolHeader.byteSize} at byte $at");
+      }
+    }
 
     _ownerAddress = Address.fromPubkeyHash(
         hex.encode(buf.sublist(PP1SpScriptGen.pkhDataStart, PP1SpScriptGen.pkhDataEnd).toList()),
         networkType ?? NetworkType.TEST);
     _tokenId = buf.sublist(PP1SpScriptGen.tokenIdDataStart, PP1SpScriptGen.tokenIdDataEnd).toList();
-    _operatorPKH = buf.sublist(PP1SpScriptGen.operatorPKHDataStart, PP1SpScriptGen.operatorPKHDataEnd).toList();
-    _counterpartyPKH = buf.sublist(PP1SpScriptGen.counterpartyPKHDataStart, PP1SpScriptGen.counterpartyPKHDataEnd).toList();
-    _rabinPubKeyHash = buf.sublist(PP1SpScriptGen.rabinPKHDataStart, PP1SpScriptGen.rabinPKHDataEnd).toList();
-    _currentState = buf[PP1SpScriptGen.currentStateDataStart];
-    _checkpointCount = buf[PP1SpScriptGen.checkpointCountDataStart];
-    _commitmentHash = buf.sublist(PP1SpScriptGen.commitmentHashDataStart, PP1SpScriptGen.commitmentHashDataEnd).toList();
-    _transitionBitmask = buf[PP1SpScriptGen.transitionBitmaskDataStart];
-
-    var tdBytes = buf.sublist(PP1SpScriptGen.timeoutDeltaDataStart, PP1SpScriptGen.timeoutDeltaDataEnd).toList();
-    _timeoutDelta = tdBytes[0] | (tdBytes[1] << 8) | (tdBytes[2] << 16) | (tdBytes[3] << 24);
+    _genesisHeader =
+        buf.sublist(PP1SpScriptGen.genesisDataStart, PP1SpScriptGen.genesisDataEnd).toList();
+    _header = PoolHeader.decode(
+        buf.sublist(PP1SpScriptGen.headerDataStart, PP1SpScriptGen.headerDataEnd).toList());
   }
 
   Address? get ownerAddress => _ownerAddress;
   List<int>? get tokenId => _tokenId;
-  List<int>? get operatorPKH => _operatorPKH;
-  List<int>? get counterpartyPKH => _counterpartyPKH;
-  List<int>? get rabinPubKeyHash => _rabinPubKeyHash;
-  int get currentState => _currentState;
-  int get checkpointCount => _checkpointCount;
-  List<int>? get commitmentHash => _commitmentHash;
-  int get transitionBitmask => _transitionBitmask;
-  int get timeoutDelta => _timeoutDelta;
+  PoolHeader? get header => _header;
+  List<int>? get genesisHeader => _genesisHeader;
 }
