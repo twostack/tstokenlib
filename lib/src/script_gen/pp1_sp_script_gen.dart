@@ -1787,6 +1787,71 @@ class PP1SpScriptGen {
   // Validate PP2
   // =========================================================================
 
+  /// Verifies that the slot outpoint PP3 pins actually holds the verifier.
+  ///
+  /// PP3 only proves that *something* at that outpoint was spent by the round.
+  /// Anything would do, including an OP_TRUE, which would let a coordinator
+  /// satisfy the pin while skipping verification entirely. This closes that by
+  /// rebuilding the slot transaction from its parts and matching its txid
+  /// against the pinned one, then hashing the script it carries.
+  ///
+  /// The slot transaction Y is required to be canonical:
+  ///
+  ///   version=1 ‖ 0x01 ‖ yInput ‖ 0x01 ‖ output(V, 1 sat) ‖ nLockTime=0
+  ///
+  /// Only yInput and V are free; this script emits every structural byte. One
+  /// input and one output means V is necessarily output 0, so a forged Y cannot
+  /// park the real verifier somewhere inert and put an OP_TRUE at output 0. The
+  /// coordinator builds Y, so meeting this shape costs nothing.
+  ///
+  /// Pre:  [yInput, vScript, nextSlot]   (nextSlot on top)
+  /// Post: []   (all three consumed; the script fails if anything mismatches)
+  static void emitVerifySlotIsVerifier(ScriptBuilder b, {required List<int> bodyHash}) {
+    if (bodyHash.length != 32) {
+      throw ArgumentError.value(bodyHash.length, 'bodyHash', 'must be a 32-byte SHA256');
+    }
+
+    // The pin must name output 0, which is where the canonical shape puts V.
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 32);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    b.addData(Uint8List.fromList([0x00, 0x00, 0x00, 0x00]));
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+
+    // Keep the pinned txid for the end.
+    OpcodeHelpers.pushInt(b, 32);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_TOALTSTACK);
+
+    // The script at that output is the verifier, not something that merely runs.
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_SHA256);
+    b.addData(Uint8List.fromList(bodyHash));
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+
+    // output = value(8 LE) ‖ varint(len) ‖ V, at the protocol dust value.
+    b.opCode(OpCodes.OP_1);
+    PP1FtScriptGen.emitBuildOutput(b);
+
+    // Y = version ‖ inputCount ‖ yInput ‖ outputCount ‖ output ‖ nLockTime
+    b.opCode(OpCodes.OP_SWAP);
+    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00, 0x01]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    // OP_1 rather than addData([0x01]): dartsv rejects a single-byte push in
+    // 1..16 as non-minimal, and OP_1 puts the same [0x01] on the stack.
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.addData(Uint8List.fromList([0x00, 0x00, 0x00, 0x00]));
+    b.opCode(OpCodes.OP_CAT);
+
+    b.opCode(OpCodes.OP_HASH256);
+    b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+  }
+
   /// Rebuilds a pool PP3 script with a new ownerPKH **and** a new nextSlot.
   ///
   /// A pool PP3 begins `<0x14> ownerPKH(20) <0x24> nextSlot(36) OP_DROP ...`,

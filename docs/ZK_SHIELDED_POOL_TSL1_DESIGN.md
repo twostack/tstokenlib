@@ -125,7 +125,19 @@ Immutable: tokenId, carried in PP1 as in every TSL1 token. The Rabin key of PP1_
 Everything the SM generator does today, plus, when run in witness N+1 over round N+1:
 
 1. Input 3 of round N+1 (from lhs) equals the `nextSlot` embedded in PP3_N, read from the pushed parent.
-2. Y_{N+1} is pushed raw. SHA256d of it equals the txid in PP3_{N+1}'s `nextSlot` (PP3_{N+1} is one of the outputs PP1 rebuilds). Its out0 script is the pushes of header_{N+1} followed by a body whose SHA-256 equals the hash baked into PP1.
+2. **BUILT 2026-09-20**, as `PP1SpScriptGen.emitVerifySlotIsVerifier`. PP3's pin proves only that *something* at the named outpoint was spent; an `OP_TRUE` would satisfy it while skipping verification entirely. PP1 closes that. Rather than parse Y to find its output, which needs variable-length walking over inputs and outputs, it **rebuilds** Y from parts, which is the pattern already used everywhere else in TSL1:
+
+```
+Y = version=1 ‖ 0x01 ‖ yInput ‖ 0x01 ‖ output(V, 1 sat) ‖ nLockTime=0
+SHA256d(Y) == nextSlot[0:32]      and      nextSlot[32:36] == 0
+SHA256(V)  == bakedBodyHash
+```
+
+Only `yInput` and `V` are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for the value and varint. Requiring exactly one input and one output is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing.
+
+The txid is what binds the claim. Supplying the genuine V alongside a Y that does not contain it fails, because the rebuild then hashes to a different txid. Four tests cover it: the honest slot, a slot holding a decoy, a decoy slot with the verifier falsely claimed, and a pin naming an output other than 0.
+
+Still to add here: splitting V into header pushes and body, so the check also binds header_{N+1}. Today it binds only the body hash, which proves the slot holds the verifier but not yet that it holds the right *state*. That arrives with the pool header.
 3. PP3_{N+1}'s value equals header_{N+1}.balance.
 4. The pushed ciphertext bundles hash to header_{N+1}.outHash.
 5. Deposit receipts and withdrawals are accepted as a variable tail of outputs; see 11.4.

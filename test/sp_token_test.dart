@@ -605,6 +605,60 @@ void main() {
     });
   });
 
+  group('SP the pinned slot must hold the verifier', () {
+    // PP3 proves only that *something* at the pinned outpoint was spent. An
+    // OP_TRUE would satisfy it while skipping verification entirely. PP1 closes
+    // that by rebuilding the slot transaction and matching its txid, then
+    // hashing the script it carries.
+    var verifier = ScriptBuilder().opCode(OpCodes.OP_NOP).opCode(OpCodes.OP_1).build();
+    var decoy = ScriptBuilder().opCode(OpCodes.OP_1).build();
+    var bodyHash = crypto.sha256.convert(verifier.buffer).bytes;
+
+    Transaction slotTx(SVScript carried) => Transaction()
+      ..version = 1
+      ..nLockTime = 0
+      ..addInput(TransactionInput('11' * 32, 3, 0xffffffff))
+      ..addOutput(TransactionOutput(BigInt.one, carried));
+
+    void check({required SVScript carried, required SVScript claimed, int vout = 0}) {
+      var y = slotTx(carried);
+      var slot = Uint8List(36)..setAll(0, y.hash);
+      slot.buffer.asByteData().setUint32(32, vout, Endian.little);
+      var sig = ScriptBuilder()
+          .addData(Uint8List.fromList(y.inputs[0].serialize()))
+          .addData(Uint8List.fromList(claimed.buffer))
+          .addData(slot)
+          .build();
+      var b = ScriptBuilder();
+      PP1SpScriptGen.emitVerifySlotIsVerifier(b, bodyHash: bodyHash);
+      b.opCode(OpCodes.OP_1);
+      var tx = Transaction()
+        ..addInput(TransactionInput('00' * 32, 0, 0xffffffff))
+        ..addOutput(TransactionOutput(BigInt.one, SVScript()));
+      Interpreter().correctlySpends(sig, b.build(), tx, 0,
+          {VerifyFlag.UTXO_AFTER_GENESIS}, Coin.valueOf(BigInt.one));
+    }
+
+    test('accepts a slot that really holds the verifier', () {
+      check(carried: verifier, claimed: verifier);
+    });
+
+    test('rejects a slot holding something else', () {
+      expect(() => check(carried: decoy, claimed: decoy), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects claiming the verifier is there when it is not', () {
+      // The txid binds the claim, so the decoy cannot be passed off as the
+      // verifier even though the hash of what is claimed would check out.
+      expect(() => check(carried: decoy, claimed: verifier), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a pin that names any output but 0', () {
+      expect(() => check(carried: verifier, claimed: verifier, vout: 1),
+          throwsA(isA<ScriptException>()));
+    });
+  });
+
   group('SP enroll', () {
     test('enroll lifecycle: issue → create witness → enroll → enroll witness', () {
       var service = ShieldedPoolTool();
