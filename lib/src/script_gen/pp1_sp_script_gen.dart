@@ -1787,6 +1787,45 @@ class PP1SpScriptGen {
   // Validate PP2
   // =========================================================================
 
+  /// Rebuilds a pool PP3 script with a new ownerPKH **and** a new nextSlot.
+  ///
+  /// A pool PP3 begins `<0x14> ownerPKH(20) <0x24> nextSlot(36) OP_DROP ...`,
+  /// so the slot the next round must spend is a fixed 36-byte window at
+  /// offset 22. Each round names a different slot, so unlike the plain
+  /// [PP1FtScriptGen.emitRebuildPP3] the rebuild has to substitute two fields:
+  ///
+  ///   rebuilt = parent[0:1] + newPKH + parent[21:22] + newSlot + parent[58:]
+  ///
+  /// Pre:  [parentPP3Script, newOwnerPKH, newNextSlot]  (newNextSlot on top)
+  /// Post: [rebuiltPP3Script]
+  static void emitRebuildPP3WithNextSlot(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_ROT);            // parent, newSlot, newPKH
+
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT);          // rest1, pkhPushOp, ...
+    OpcodeHelpers.pushInt(b, 20);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_NIP);            // drop the old ownerPKH
+    // parent[21:], pkhPushOp, newSlot, newPKH
+
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT);          // rest3, slotPushOp, ...
+    OpcodeHelpers.pushInt(b, 36);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_NIP);            // drop the old nextSlot
+    // tail, slotPushOp, pkhPushOp, newSlot, newPKH
+
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // pkhPushOp up
+    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ROLL);   // newPKH up
+    b.opCode(OpCodes.OP_CAT);            // pkhPushOp + newPKH
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // slotPushOp up
+    b.opCode(OpCodes.OP_CAT);            // + slotPushOp
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // newSlot up
+    b.opCode(OpCodes.OP_CAT);            // + newSlot
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);            // + tail
+  }
+
   static void _emitValidatePP2NFT(ScriptBuilder b) {
     b.opCode(OpCodes.OP_SWAP);
 

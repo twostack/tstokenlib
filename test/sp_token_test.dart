@@ -558,9 +558,50 @@ void main() {
       expect(() => spendPP3(round(withSlot: false)), throwsA(isA<ScriptException>()));
     });
 
-    test('costs 79 bytes over a plain PP3', () {
+    test('costs 46 bytes over a plain PP3', () {
       var plain = PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash)).getScriptPubkey();
-      expect(pp3Script.buffer.length - plain.buffer.length, 79);
+      expect(pp3Script.buffer.length - plain.buffer.length, 46);
+    });
+
+    test('nextSlot appears exactly once, so the rebuild can substitute it', () {
+      // PP1 rebuilds PP3 as a fixed-window substitution. A second copy of
+      // nextSlot buried in the body would be left stale by that rebuild.
+      var slot = outpoint(slotTx.hash, 0);
+      var occurrences = 0;
+      for (var i = 0; i + 36 <= pp3Script.buffer.length; i++) {
+        var match = true;
+        for (var j = 0; j < 36; j++) {
+          if (pp3Script.buffer[i + j] != slot[j]) { match = false; break; }
+        }
+        if (match) occurrences++;
+      }
+      expect(occurrences, 1);
+      expect(pp3Script.buffer[21], 0x24);   // 36-byte push opcode
+    });
+
+    test('in-script rebuild reproduces the builder output exactly', () {
+      var oldPKH = hex.decode(operatorPubkeyHash);
+      var newPKH = hex.decode(counterpartyPubkeyHash);
+      var oldSlot = outpoint(List<int>.filled(32, 0x10), 0);
+      var newSlot = outpoint(List<int>.filled(32, 0x90), 7);
+      var parent = PartialWitnessLockBuilder(oldPKH, nextSlot: oldSlot).getScriptPubkey();
+      var want = PartialWitnessLockBuilder(newPKH, nextSlot: newSlot).getScriptPubkey();
+
+      var sig = ScriptBuilder()
+          .addData(Uint8List.fromList(parent.buffer))
+          .addData(Uint8List.fromList(newPKH))
+          .addData(Uint8List.fromList(newSlot))
+          .build();
+      var b = ScriptBuilder();
+      PP1SpScriptGen.emitRebuildPP3WithNextSlot(b);
+      b.addData(Uint8List.fromList(want.buffer));
+      b.opCode(OpCodes.OP_EQUAL);
+
+      var tx = Transaction()
+        ..addInput(TransactionInput('00' * 32, 0, 0xffffffff))
+        ..addOutput(TransactionOutput(BigInt.one, SVScript()));
+      Interpreter().correctlySpends(sig, b.build(), tx, 0,
+          {VerifyFlag.UTXO_AFTER_GENESIS}, Coin.valueOf(BigInt.one));
     });
   });
 

@@ -57,11 +57,12 @@ class WitnessCheckScriptGen {
     // Push constructor params as data (for parseability)
     b.addData(Uint8List.fromList(ownerPKH));
     if (nextSlot != null) {
-      // Pushed here only so parse() can read it as chunks[1]; the copy the
-      // script actually uses is emitted inline where the outpoints are built,
-      // which keeps it off the altstack and out of the burn path.
+      // Exactly one copy of nextSlot exists in the script, here, so PP1's
+      // rebuild can substitute it as a single fixed window at offset 22.
+      // It is parked on the altstack rather than re-pushed where it is used;
+      // everything in the unlock path pushes and pops above it.
       b.addData(Uint8List.fromList(nextSlot));
-      b.opCode(OpCodes.OP_DROP);
+      b.opCode(OpCodes.OP_TOALTSTACK);
     }
 
     // Function selector: scriptSig puts selector on top of stack.
@@ -279,12 +280,18 @@ class WitnessCheckScriptGen {
       // could skip verification entirely, be mined, and pay out withdrawals
       // against a claim nothing ever checked. PP1 cannot enforce this because it
       // runs in the witness, after the round is already mined.
-      b.addData(Uint8List.fromList(nextSlot));
-      b.opCode(OpCodes.OP_CAT);
-      // Inputs 4.. are deposit covenants, opaque here. They enforce themselves
-      // and no input can create a token output, so they need no pinning.
-      b.opCode(OpCodes.OP_FROMALTSTACK);
-      b.opCode(OpCodes.OP_CAT);
+      //
+      // Altstack holds [nextSlot, extraPrevouts]; pop both and reorder, since
+      // the outpoints run nextSlot first. Inputs 4.. are deposit covenants,
+      // opaque here: they enforce themselves through their own SIGHASH_SINGLE
+      // binding, and no input can create a token output.
+      b.opCode(OpCodes.OP_FROMALTSTACK);   // extraPrevouts
+      b.opCode(OpCodes.OP_FROMALTSTACK);   // nextSlot
+      b.opCode(OpCodes.OP_ROT);            // allOutpoints up
+      b.opCode(OpCodes.OP_SWAP);
+      b.opCode(OpCodes.OP_CAT);            // allOutpoints || nextSlot
+      b.opCode(OpCodes.OP_SWAP);
+      b.opCode(OpCodes.OP_CAT);            // || extraPrevouts
     }
 
     // calcHashPrevOuts = sha256(sha256(allOutpoints))

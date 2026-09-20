@@ -152,11 +152,19 @@ hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ myOutpoint ‖ 
 
 `nextSlot` is embedded in the locking script, so input 3 is fixed at the time the round before it was built. `extraPrevouts` is supplied in the unlock and covers inputs 4 and up, the deposit covenants. Those stay opaque to PP3 on purpose: each covenant enforces itself through its own SIGHASH_SINGLE binding, V's balance equation accounts for them, and no input can create a token output. This is not the `extraPrevouts` weakness of the legacy PP1_SP, where extra inputs were invisible to a script that was supposed to be authorising them.
 
-`nextSlot` is also pushed once at the front of the script and immediately dropped, purely so `PartialWitnessLockBuilder.parse` can read it as `chunks[1]`. The copy the script uses is emitted inline, which keeps it off the altstack and out of the burn path.
+`nextSlot` is pushed once, at the front, and parked on the altstack for the body to use. That single-copy property is not cosmetic. PP1 rebuilds PP3 by fixed-window substitution, so a second copy buried in the body would be left stale by the rebuild, and the round after it would pin the wrong slot. A first attempt did emit it twice, once at the front for `parse` and once inline where it is used, and the rebuild silently produced a script whose first 58 bytes were right and whose body still named the old slot. There is a test asserting the byte pattern occurs exactly once.
 
-Measured: PP3 grows from 49,110 to 49,189 bytes, 79 bytes. With `nextSlot` null the script is byte-identical to before, so every other archetype is untouched; the NFT, FT, RFT, RNFT, AT and SM suites pass unchanged.
+**The rebuild.** `PP1SpScriptGen.emitRebuildPP3WithNextSlot` produces
 
-Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a round spending the named slot at input 3 is accepted, and the same round with that input removed is rejected.
+```
+rebuilt = parent[0:1] ‖ newPKH ‖ parent[21:22] ‖ newSlot ‖ parent[58:]
+```
+
+which is the same shape of surgery `PP1FtScriptGen._emitRebuildPP3WithPP2Idx` already does for the split-transfer case, so the pattern is established. It is tested against the builder's own output: the in-script result must equal `PartialWitnessLockBuilder(newPKH, nextSlot: newSlot)` byte for byte.
+
+Measured: PP3 grows from 49,110 to 49,156 bytes, 46 bytes. With `nextSlot` null the script is byte-identical to before, so every other archetype is untouched; the NFT, FT, RFT, RNFT, AT and SM suites pass unchanged.
+
+Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a round spending the named slot at input 3 is accepted, the same round with that input removed is rejected, the 46 bytes are asserted, `nextSlot` occurs exactly once, and the in-script rebuild matches the builder byte for byte.
 
 The burn branch removal is still pending; see 5.6.
 
