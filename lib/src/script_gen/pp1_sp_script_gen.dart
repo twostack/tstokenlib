@@ -144,9 +144,10 @@ class IssuerAuth {
   IssuerAuth(this.record, this.n, this.sig) {
     if (record.length != AssetRecord.length) throw ArgumentError('asset record');
   }
-  static BigInt message(PoolPublicInputs publics) => Rabin.sha256ToScriptInt(SlotScript.lanesBytes(publics.toLanes()));
-  static IssuerAuth sign(AssetRecord record, PoolPublicInputs publics, {required BigInt p, required BigInt q}) =>
-      IssuerAuth(Uint8List.fromList(record.bytes), p * q, Rabin.sign(message(publics), p, q));
+  static BigInt message(PoolPublicInputs publics, {bool aggregated = false}) =>
+      Rabin.sha256ToScriptInt(SlotScript.lanesBytes(aggregated ? publics.toReducedLanes() : publics.toLanes()));
+  static IssuerAuth sign(AssetRecord record, PoolPublicInputs publics, {required BigInt p, required BigInt q, bool aggregated = false}) =>
+      IssuerAuth(Uint8List.fromList(record.bytes), p * q, Rabin.sign(message(publics, aggregated: aggregated), p, q));
 }
 
 /// The PP1_SP state script: header, then a two-way dispatch on the selector
@@ -190,16 +191,23 @@ class PP1SpScriptGen {
 
   /// Aggregated mode: [n] transfers per round, all verified by ONE slot
   /// (the aggregation's root verifier) whose publics are every transfer's
-  /// lanes (padded to [laneChunk]) then the [roundLanes]; the root proof
-  /// also proves the tree update, so there is no append slot and the size
-  /// grows by [leavesAppended]. 0 = slot mode (K slots + append slot).
+  /// reduced lanes ([PoolPublicInputs.toReducedLanes]: the anchor and the
+  /// commitments stay inside the proofs) then the [roundLanes]; the root
+  /// proof also proves the tree update, so there is no append slot and the
+  /// size grows by [leavesAppended]. 0 = slot mode (K slots + append slot).
   final int n;
   final int leavesAppended;
   bool get aggregated => n > 0;
-  static const laneChunk = 8 * ((PoolPublicInputs.count + 7) ~/ 8);
-  static const roundLanes = 24;
-  int get lanesPerTransfer => aggregated ? laneChunk : PoolPublicInputs.count;
+
+  /// The round lanes: rootBefore, rootAfter, [index, 0 x 7], then the ring
+  /// the proofs checked anchors against, which must be this state's.
+  static const roundLanes = 24 + 8 * ringSize;
+  int get lanesPerTransfer => aggregated ? PoolPublicInputs.reducedCount : PoolPublicInputs.count;
   static String rc(int j) => 'rc$j';
+
+  /// The issuer's message for a transfer in this script's mode: SHA256 of
+  /// the lanes the script reads, which is what its Rabin check hashes.
+  BigInt issuerMessage(PoolPublicInputs publics) => IssuerAuth.message(publics, aggregated: aggregated);
 
   PP1SpScriptGen(this.P, {this.k = 2})
       : verifierSlot = VerifierSlotGen(P),
@@ -216,7 +224,7 @@ class PP1SpScriptGen {
       : k = 0,
         n = transfers {
     if (n <= 0 || leavesAppended % NoteCommitmentTree.subtreeLeaves != 0 || leavesAppended < 2 * n) throw ArgumentError('transfers / leaves');
-    if (verifierSlot.numPublics != n * laneChunk + roundLanes) throw ArgumentError('the slot must take the wide statement');
+    if (verifierSlot.numPublics != n * PoolPublicInputs.reducedCount + roundLanes) throw ArgumentError('the slot must take the wide statement');
     verifierBytes = Uint8List.fromList(verifierSlot.lock().buffer);
     appendBytes = Uint8List(0);
     verifierHash = Uint8List.fromList(crypto.sha256.convert(verifierBytes).bytes);
@@ -247,7 +255,7 @@ class PP1SpScriptGen {
           'preimage', 'vBytes', 'extraPrevouts',
           for (int t = n - 1; t >= 0; t--) ...[
             'x$t',
-            for (int j = 0; j < laneChunk; j++) pub(t, j),
+            for (int j = 0; j < PoolPublicInputs.reducedCount; j++) pub(t, j),
             ...nullifierNames(2 * t),
             ...nullifierNames(2 * t + 1),
             ...authNames(t),
@@ -450,43 +458,59 @@ class PP1SpScriptGen {
     }
   }
 
+  /// Lane indices in this script's mode: the full statement in direct-slot
+  /// mode, the reduced lanes in aggregated mode.
+  int get _iNf1 => aggregated ? PoolPublicInputs.rIdxNf1 : PoolPublicInputs.idxNf1;
+  int get _iNf2 => aggregated ? PoolPublicInputs.rIdxNf2 : PoolPublicInputs.idxNf2;
+  int get _iPubLo => aggregated ? PoolPublicInputs.rIdxPubLo : PoolPublicInputs.idxPubLo;
+  int get _iPubHi => aggregated ? PoolPublicInputs.rIdxPubHi : PoolPublicInputs.idxPubHi;
+  int get _iOutHash => aggregated ? PoolPublicInputs.rIdxOutHash : PoolPublicInputs.idxOutHash;
+  int get _iReal1 => aggregated ? PoolPublicInputs.rIdxReal1 : PoolPublicInputs.idxReal1;
+  int get _iReal2 => aggregated ? PoolPublicInputs.rIdxReal2 : PoolPublicInputs.idxReal2;
+  int get _iAsset => aggregated ? PoolPublicInputs.rIdxAsset : PoolPublicInputs.idxAsset;
+
   /// Transfer [t], used.
   void _transfer(StackEmitter e, int t) {
     String p(int j) => pub(t, j);
-    _canonical(e, p, PoolPublicInputs.idxAnchor, 8);
-    _canonical(e, p, PoolPublicInputs.idxNf1, 16);
-    _canonical(e, p, PoolPublicInputs.idxPubLo, 2);
-    _canonical(e, p, PoolPublicInputs.idxReal1, 2);
-    _canonical(e, p, PoolPublicInputs.idxAsset, PoolHash.assetLanes);
+    if (!aggregated) _canonical(e, p, PoolPublicInputs.idxAnchor, 8);
+    _canonical(e, p, _iNf1, 16);
+    _canonical(e, p, _iPubLo, 2);
+    _canonical(e, p, _iReal1, 2);
+    _canonical(e, p, _iAsset, PoolHash.assetLanes);
     // the public lanes as bytes: the issuer's message, then the statement / result
-    SlotScript.lanesToBytes(e, [for (int j = 0; j < PoolPublicInputs.count; j++) p(j)], as: 'tb');
-    // anchor in the ring, unless neither input is real: the proof then
-    // pinned both notes as dummies, the anchor protects nothing, and the
-    // transfer (a deposit, a mint or the coordinator's padding) can be
-    // proved against any anchor, long before the round it lands in
-    SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) p(PoolPublicInputs.idxAnchor + j)], as: 'anchorB');
-    for (int r = 0; r < ringSize; r++) {
-      e.pick('anchorB');
-      e.pick('h_ring$r');
-      _op(e, OpCodes.OP_EQUAL);
-      if (r > 0) _op(e, OpCodes.OP_BOOLOR);
+    SlotScript.lanesToBytes(e, [for (int j = 0; j < lanesPerTransfer; j++) p(j)], as: 'tb');
+    if (!aggregated) {
+      // anchor in the ring, unless neither input is real: the proof then
+      // pinned both notes as dummies, the anchor protects nothing, and the
+      // transfer (a deposit, a mint or the coordinator's padding) can be
+      // proved against any anchor, long before the round it lands in. In
+      // aggregated mode the level-1 proofs make this check against the
+      // ring the round chunks carry (see [_roundChunk]) and the anchor is
+      // not a public lane.
+      SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) p(PoolPublicInputs.idxAnchor + j)], as: 'anchorB');
+      for (int r = 0; r < ringSize; r++) {
+        e.pick('anchorB');
+        e.pick('h_ring$r');
+        _op(e, OpCodes.OP_EQUAL);
+        if (r > 0) _op(e, OpCodes.OP_BOOLOR);
+      }
+      e.pick(p(PoolPublicInputs.idxReal1));
+      e.pick(p(PoolPublicInputs.idxReal2));
+      _op(e, OpCodes.OP_BOOLOR);
+      _op(e, OpCodes.OP_NOT, pops: 1, pushes: 1);
+      _op(e, OpCodes.OP_BOOLOR);
+      _verify(e);
+      e.dropNamed('anchorB');
     }
-    e.pick(p(PoolPublicInputs.idxReal1));
-    e.pick(p(PoolPublicInputs.idxReal2));
-    _op(e, OpCodes.OP_BOOLOR);
-    _op(e, OpCodes.OP_NOT, pops: 1, pushes: 1);
-    _op(e, OpCodes.OP_BOOLOR);
-    _verify(e);
-    e.dropNamed('anchorB');
     // the value leaving, signed: lo + 2^28 hi
-    _signedLane(e, p(PoolPublicInputs.idxPubHi));
+    _signedLane(e, p(_iPubHi));
     e.pushConst(1 << PoolHash.limbBits);
     _op(e, OpCodes.OP_MUL);
-    _signedLane(e, p(PoolPublicInputs.idxPubLo));
+    _signedLane(e, p(_iPubLo));
     _op(e, OpCodes.OP_ADD, as: 'delta');
     // only BSV (the constant (1,0,0,0)) moves the vault: vout -= isBsv * delta
     for (int i = 0; i < PoolHash.assetLanes; i++) {
-      e.pick(p(PoolPublicInputs.idxAsset + i));
+      e.pick(p(_iAsset + i));
       e.pushConst(PoolHash.bsvAsset[i]);
       _op(e, OpCodes.OP_NUMEQUAL);
       if (i > 0) _op(e, OpCodes.OP_BOOLAND);
@@ -502,7 +526,7 @@ class PP1SpScriptGen {
     e.pick('delta');
     e.pushConst(0);
     _op(e, OpCodes.OP_LESSTHAN);
-    e.pick(p(PoolPublicInputs.idxAsset + 3));
+    e.pick(p(_iAsset + 3));
     e.pushConst(PoolHash.gatedBit);
     _op(e, OpCodes.OP_GREATERTHANOREQUAL);
     _op(e, OpCodes.OP_BOOLOR);
@@ -518,8 +542,8 @@ class PP1SpScriptGen {
     }
     // nullifiers: inserted for a real input note, skipped for a dummy (the
     // flag is a public the proof pinned to the circuit's flag register)
-    _insertIfReal(e, 2 * t, p, PoolPublicInputs.idxNf1, PoolPublicInputs.idxReal1, 'nfRoot');
-    _insertIfReal(e, 2 * t + 1, p, PoolPublicInputs.idxNf2, PoolPublicInputs.idxReal2, 'nfRoot');
+    _insertIfReal(e, 2 * t, p, _iNf1, _iReal1, 'nfRoot');
+    _insertIfReal(e, 2 * t + 1, p, _iNf2, _iReal2, 'nfRoot');
     // outHash of this transfer's extra outputs
     e.pick('x$t');
     _op(e, OpCodes.OP_SHA256, pops: 1, pushes: 1);
@@ -531,7 +555,7 @@ class PP1SpScriptGen {
       e.pushData(const [0xff, 0xff, 0xff, 0x7f]);
       _op(e, OpCodes.OP_AND);
       _op(e, OpCodes.OP_BIN2NUM, pops: 1, pushes: 1);
-      e.pick(p(PoolPublicInputs.idxOutHash + j));
+      e.pick(p(_iOutHash + j));
       e.numEqualVerify();
     }
     if (aggregated) {
@@ -564,8 +588,10 @@ class PP1SpScriptGen {
   }
 
   /// The round lanes of an aggregated round: rootBefore must be ring[0],
-  /// rootAfter becomes `raB`, the index is size / 32, the rest zero; then
-  /// the one result output `OP_RETURN SHA256(all lanes)`.
+  /// rootAfter becomes `raB`, the index is size / 32, the rest of that
+  /// chunk zero, and the ring the proofs checked anchors against must be
+  /// this state's ring; then the one result output `OP_RETURN SHA256(all
+  /// lanes)`.
   void _roundChunk(StackEmitter e) {
     _canonical(e, rc, 0, roundLanes);
     SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) rc(j)], as: 'rbB');
@@ -585,10 +611,16 @@ class PP1SpScriptGen {
     _op(e, OpCodes.OP_DIV);
     e.pick(rc(16));
     e.numEqualVerify();
-    for (int j = 17; j < roundLanes; j++) {
+    for (int j = 17; j < 24; j++) {
       e.pick(rc(j));
       e.pushConst(0);
       e.numEqualVerify();
+    }
+    for (int r = 0; r < ringSize; r++) {
+      SlotScript.lanesToBytes(e, [for (int j = 0; j < 8; j++) rc(24 + 8 * r + j)], as: 'ringB');
+      e.roll('ringB');
+      e.pick('h_ring$r');
+      _equalVerify(e);
     }
     e.roll('pb');
     SlotScript.lanesToBytes(e, [for (int j = 0; j < roundLanes; j++) rc(j)], as: 'rcB');
@@ -642,7 +674,7 @@ class PP1SpScriptGen {
         _op(e, OpCodes.OP_MUL);
         _op(e, OpCodes.OP_ADD);
       }
-      e.pick(p(PoolPublicInputs.idxAsset + j));
+      e.pick(p(_iAsset + j));
       e.numEqualVerify();
     }
     _op(e, OpCodes.OP_DROP, pops: 1, pushes: 0); // the hash's remaining 16 bytes
@@ -1085,8 +1117,7 @@ class PP1SpScriptGen {
       for (int t = n - 1; t >= 0; t--) {
         final tr = transfers[t]!;
         b.addData(tr.extraOutputs);
-        final lanes = tr.publics.toLanes();
-        for (final v in [...lanes, ...List.filled(laneChunk - lanes.length, 0)]) {
+        for (final v in tr.publics.toReducedLanes()) {
           _pushNum(b, v);
         }
         _pushInsertion(b, tr.nf1 ?? dummyInsertion());

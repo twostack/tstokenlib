@@ -44,20 +44,23 @@ void main() {
       publics.add(p);
       proofs.add(pf);
     }
-    program = VerifierProgram.compileAll([for (int i = 0; i < arity; i++) InnerShape(spendP, PoolSpendAir.air(publics[i]))], levelP.logTrace);
+    program = VerifierProgram.compileAll([for (int i = 0; i < arity; i++) InnerShape(spendP, PoolSpendAir.air(publics[i]))], levelP.logTrace,
+        ring: AnchorRing.pool);
     final preRoot = PreCommitment.root(program.air(List.filled(8, 0)), levelP, p2);
     jobs = [
       for (int m = 0; m < 2; m++)
         (() {
           final ps = publics.sublist(arity * m, arity * (m + 1));
-          final digest =
-              VerifierProgram.nodeDigest([for (final p in ps) VerifierProgram.statementDigest(PoolSpendAir.air(p), const [])]);
+          final ring = [lanes(8), lanes(8), lanes(8), lanes(8)];
+          final digest = VerifierProgram.nodeDigest([for (final p in ps) VerifierProgram.statementDigest(PoolSpendAir.air(p), const [])],
+              ring: ring);
           return NodeJob(
               spendParams: spendP,
               levelParams: levelP,
               levelPreRoot: preRoot,
               publics: ps,
               proofs: proofs.sublist(arity * m, arity * (m + 1)),
+              ring: ring,
               digest: digest);
         })()
     ];
@@ -71,6 +74,7 @@ void main() {
     final back = NodeJob.decode(bytes);
     expect(back.arity, job.arity);
     expect(back.digest, job.digest);
+    expect(back.ring, job.ring);
     expect(back.levelPreRoot, job.levelPreRoot);
     expect(back.levelParams.logTrace, job.levelParams.logTrace);
     expect(back.spendParams.numQueries, job.spendParams.numQueries);

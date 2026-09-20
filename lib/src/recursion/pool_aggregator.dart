@@ -20,6 +20,7 @@ import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../crypto/stark_verifier_ref.dart';
 import '../script_gen/pool_spend_air.dart';
+import '../script_gen/pp1_sp_script_gen.dart' show PP1SpHeader;
 import 'prover_pool.dart';
 import 'verifier_air.dart';
 import 'verifier_program.dart';
@@ -62,18 +63,34 @@ class PoolAggregation {
   late final AggregationTree tree;
   late final VerifierProgram root;
 
+  /// The anchor check level 1 makes: each real spend's anchor is one of the
+  /// state header's four roots, which the round takes as public input once.
+  static const anchorRing = AnchorRing.pool;
+
+  /// Whether level 1 checks anchors (production: yes; off only to size the
+  /// check, see the design record).
+  final bool anchorCheck;
+
   /// Compiles every level's program and the root's. With [dryRun] the
   /// levels' preprocessed roots are zeros instead of real commitments
   /// (gigabytes at production size), which is enough to size the programs
   /// (periods, transfers) but not to prove.
-  PoolAggregation({required this.spendP, required this.levelSpec, required this.rootP, required this.rootLog, bool dryRun = false}) {
+  PoolAggregation(
+      {required this.spendP,
+      required this.levelSpec,
+      required this.rootP,
+      required this.rootLog,
+      bool dryRun = false,
+      this.anchorCheck = true}) {
     if (levelSpec.isEmpty || levelSpec.any((l) => l.arity < 1)) throw ArgumentError('at least one level, arities >= 1');
+    assert(anchorRing.size == PP1SpHeader.ringSize, 'the in-circuit ring is the header\'s');
     var shape = InnerShape(spendP, PoolSpendAir.air(PoolPublicInputs.zero()));
     levels = [];
     levelShapes = [];
     preRoots = [];
-    for (final level in levelSpec) {
-      final prog = VerifierProgram.compileAll(List.filled(level.arity, shape), level.logTrace);
+    for (int l = 0; l < levelSpec.length; l++) {
+      final level = levelSpec[l];
+      final prog = VerifierProgram.compileAll(List.filled(level.arity, shape), level.logTrace, ring: l == 0 ? ring : null);
       final air = prog.air(List.filled(VerifierAir.numPublicLanes, 0));
       levels.add(prog);
       shape = InnerShape(level.params, air);
@@ -81,9 +98,13 @@ class PoolAggregation {
       preRoots.add(dryRun ? List.filled(8, 0) : PreCommitment.root(air, level.params, p2));
     }
     tree = AggregationTree(PoolPublicInputs.count, const [], [for (int l = 0; l < levelSpec.length; l++) (levelShapes[l], preRoots[l])],
-        [for (final l in levelSpec) l.arity]);
+        [for (final l in levelSpec) l.arity],
+        ring: ring);
     root = VerifierProgram.compileWide(tree, rootLog);
   }
+
+  /// The ring check as configured, null when off.
+  AnchorRing? get ring => anchorCheck ? anchorRing : null;
 
   /// The same [arity] and one parameter set per level, as the first
   /// aggregated rounds were built.
@@ -154,7 +175,7 @@ class PoolAggregation {
 
   int get transfers => tree.transfers;
   int get depth => levelSpec.length;
-  int get widePublicsCount => tree.roundOffset + 8 * AggregationTree.roundChunks;
+  int get widePublicsCount => tree.roundOffset + 8 * tree.roundChunks;
 
   /// Periods used by each level's program and by the root's, of the
   /// periods its trace holds.
@@ -169,8 +190,9 @@ class PoolAggregation {
 
   /// Aggregate the transfers' [proofs] (over [publics], in order) into the
   /// root proof; [rootBefore], [rootAfter], [index] and the subtree
-  /// [paths] describe the round's tree update. Returns the root proof and
-  /// the wide publics it is bound to.
+  /// [paths] describe the round's tree update and [ring] is the state's
+  /// ring of roots every real spend's anchor must be in. Returns the root
+  /// proof and the wide publics it is bound to.
   ///
   /// Level 1 is the bulk of the round and each of its nodes is independent,
   /// so it can be spread over the coordinator's machines: with [level1] every
@@ -185,10 +207,13 @@ class PoolAggregation {
       required List<int> rootAfter,
       required int index,
       required List<List<List<int>>> paths,
+      required List<List<int>> ring,
       Random? rng,
       NodeProver? level1,
       bool verbose = false}) async {
     if (publics.length != transfers || proofs.length != transfers) throw ArgumentError('$transfers transfers');
+    if (ring.length != anchorRing.size || ring.any((r) => r.length != 8)) throw ArgumentError('a ring of ${anchorRing.size} roots');
+    final ringOrNull = anchorCheck ? ring : null;
     rng ??= Random();
     final sw = Stopwatch()..start();
     void lap(String what) {
@@ -204,7 +229,7 @@ class PoolAggregation {
       final nextShapes = <InnerShape>[], nextProofs = <StarkProof>[], nextDigests = <List<int>>[];
       for (int m = 0; m < curProofs.length ~/ level.arity; m++) {
         final lo = level.arity * m, hi = lo + level.arity;
-        final nodeDigest = VerifierProgram.nodeDigest(digests.sublist(lo, hi));
+        final nodeDigest = VerifierProgram.nodeDigest(digests.sublist(lo, hi), ring: l == 0 ? ringOrNull : null);
         final air = prog.air(nodeDigest);
         StarkProof? pf;
         if (l == 0 && level1 != null) {
@@ -214,6 +239,7 @@ class PoolAggregation {
               levelPreRoot: preRoots[0],
               publics: publics.sublist(lo, hi),
               proofs: curProofs.sublist(lo, hi),
+              ring: ring,
               digest: nodeDigest);
           pf = await level1.prove(job);
           if (!level1.verifies && !_accepts(level.params, air, pf)) {
@@ -221,7 +247,8 @@ class PoolAggregation {
             pf = null;
           }
         }
-        pf ??= StarkProver.prove(level.params, air, prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi)),
+        pf ??= StarkProver.prove(
+            level.params, air, prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi), ring: l == 0 ? ringOrNull : null),
             rng: rng, hash: p2);
         nextProofs.add(pf);
         nextShapes.add(InnerShape(level.params, air));
@@ -232,8 +259,9 @@ class PoolAggregation {
       digests = nextDigests;
       lap('level ${l + 1}: ${curProofs.length} proofs');
     }
-    final wide = tree.widePublics([for (final p in publics) p.toLanes()], rootBefore: rootBefore, rootAfter: rootAfter, index: index);
-    final rows = root.witnessAll(curProofs, shapes: shapes, widePublics: wide, subtreePaths: paths);
+    final spendLanes = [for (final p in publics) p.toLanes()];
+    final wide = tree.widePublics(spendLanes, rootBefore: rootBefore, rootAfter: rootAfter, index: index, ring: ringOrNull);
+    final rows = root.witnessAll(curProofs, shapes: shapes, widePublics: wide, spendLanes: spendLanes, subtreePaths: paths);
     final proof = StarkProver.prove(rootP, root.air(wide), rows, rng: rng, hash: sha);
     lap('root');
     return (proof, wide);

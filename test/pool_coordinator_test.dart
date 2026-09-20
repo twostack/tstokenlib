@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
+import 'package:tstokenlib/src/crypto/note_encryption.dart';
 import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
@@ -84,16 +85,29 @@ void main() {
 
   /// A deposit of [sats] with its funding input and change. [sk] and [d],
   /// when given, own the first output note so a later test can spend it.
-  (PoolTransfer, FundingInput, OutputNote) deposit(PoolLedger ledger, int sats, int seed, {List<int>? sk, List<int>? d}) {
+  /// A deposit with its note-data output, as a wallet publishes it: the
+  /// reader takes an aggregated round's commitments from the bundles.
+  Future<(PoolTransfer, FundingInput, OutputNote)> deposit(PoolLedger ledger, int sats, int seed, {List<int>? sk, List<int>? d}) async {
     final funding = coinbaseLike(depositorAddress, [sats + 2000]);
     final change = ShieldedPoolTool.payout(depositorAddress, 1200);
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
-    final pkd = sk == null ? lanes(8) : PoolHash.pkd(sk, d!);
-    final oa = OutputNote(pkd: pkd, value: sats - 7, rho: lanes(3), rcm: lanes(4));
-    final ob = OutputNote(pkd: lanes(8), value: 7, rho: lanes(3), rcm: lanes(4));
-    final w = PoolSpendAir.witness(da, db, oa, ob, -sats, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(change));
+    final ta = sk == null ? await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0) : await NoteAddress.derive(PoolWalletKeys(sk).ivk, d!);
+    final tb = await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0);
+    final oa = OutputNote(pkd: ta.pkd, value: sats - 7, rho: lanes(3), rcm: lanes(4));
+    final ob = OutputNote(pkd: tb.pkd, value: 7, rho: lanes(3), rcm: lanes(4));
+    final ovk = PoolWalletKeys(lanes(5)).ovk;
+    final bundles = [
+      await NoteEncryption.encrypt(
+          NotePlaintext(asset: PoolHash.bsvAsset, d: ta.d, value: oa.value, rho: oa.rho, rcm: oa.rcm, memo: NotePlaintext.memoOf('')), ta, ovk,
+          rng: Random(seed)),
+      await NoteEncryption.encrypt(
+          NotePlaintext(asset: PoolHash.bsvAsset, d: tb.d, value: ob.value, rho: ob.rho, rcm: ob.rcm, memo: NotePlaintext.memoOf('')), tb, ovk,
+          rng: Random(seed)),
+    ];
+    final extras = ShieldedPoolTool.extras(bundles, [change]);
+    final w = PoolSpendAir.witness(da, db, oa, ob, -sats, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
     final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: Random(seed), hash: p2);
-    return (PoolTransfer(w.publics, proof, change), FundingInput(funding, 0, depositorSigner, depositorPub), oa);
+    return (PoolTransfer(w.publics, proof, extras), FundingInput(funding, 0, depositorSigner, depositorPub), oa);
   }
 
   /// Where [note] sits in the tree, found by the only property that pins it
@@ -135,27 +149,27 @@ void main() {
 
   // ---------------------------------------------------------------- 1.2
 
-  test('intake: what it accepts and the reason it gives for what it does not', () {
+  test('intake: what it accepts and the reason it gives for what it does not', () async {
     final (tool, ledger, _) = freshPool(vault: 2000);
     final co = PoolCoordinator(
         config: recursiveConfig(), tool: tool, ledger: ledger, publish: (_) async {}, clock: FakeClock(), rng: Random(2));
 
-    final (good, goodFunding, _) = deposit(ledger, 30000, 40);
+    final (good, goodFunding, _) = await deposit(ledger, 30000, 40);
     expect(co.submit(good, funding: goodFunding), isNull, reason: 'a well formed deposit is accepted');
     expect(co.pending, 1);
 
     // a deposit without the input that funds it
-    final (unfunded, _, _) = deposit(ledger, 1000, 41);
+    final (unfunded, _, _) = await deposit(ledger, 1000, 41);
     expect(co.submit(unfunded)?.reason, RejectReason.funding);
 
     // extra outputs that do not hash to the committed outHash
-    final (t3, f3, _) = deposit(ledger, 1000, 42);
+    final (t3, f3, _) = await deposit(ledger, 1000, 42);
     final tampered = PoolTransfer(t3.publics, t3.proof, Uint8List.fromList([...t3.extraOutputs, 7]));
     expect(co.submit(tampered, funding: f3)?.reason, RejectReason.outHash);
 
     // a proof that does not verify: the publics say one thing, the proof another
-    final (t4, f4, _) = deposit(ledger, 1000, 43);
-    final (t5, _, _) = deposit(ledger, 1234, 44);
+    final (t4, f4, _) = await deposit(ledger, 1000, 43);
+    final (t5, _, _) = await deposit(ledger, 1234, 44);
     expect(co.submit(PoolTransfer(t5.publics, t4.proof, t5.extraOutputs), funding: f4)?.reason, RejectReason.proof);
 
     expect(co.pending, 1, reason: 'nothing rejected reached the pending round');
@@ -175,7 +189,7 @@ void main() {
 
     // round 1 puts a note this test owns into the tree
     final sk = lanes(5), d = lanes(3);
-    final (dep, depFunding, note) = deposit(ledger, 40000, 46, sk: sk, d: d);
+    final (dep, depFunding, note) = await deposit(ledger, 40000, 46, sk: sk, d: d);
     expect(co.submit(dep, funding: depFunding), isNull);
     await co.closeRound();
     final at = positionOf(ledger, sk, d, note);
@@ -212,7 +226,7 @@ void main() {
         config: recursiveConfig(stock: 4), tool: tool, ledger: ledger, publish: (_) async {}, clock: FakeClock(), rng: Random(9));
     await co.runIdleWork();
     final sk = lanes(5), d = lanes(3);
-    final (dep, depFunding, note) = deposit(ledger, 30000, 55, sk: sk, d: d);
+    final (dep, depFunding, note) = await deposit(ledger, 30000, 55, sk: sk, d: d);
     expect(co.submit(dep, funding: depFunding), isNull);
     await co.closeRound();
     final at = positionOf(ledger, sk, d, note);
@@ -235,7 +249,7 @@ void main() {
     // the ring holds the last four roots, so four more rounds retire the one
     // the stale path proves membership in
     for (int r = 0; r < PP1SpHeader.ringSize; r++) {
-      final (t, f, _) = deposit(ledger, 1000 + r, 120 + r);
+      final (t, f, _) = await deposit(ledger, 1000 + r, 120 + r);
       expect(co.submit(t, funding: f), isNull);
       await co.closeRound();
     }
@@ -281,7 +295,7 @@ void main() {
     expect(await co.closeRound(), isNull);
     expect(published, isEmpty);
 
-    final (t, f, _) = deposit(ledger, 25000, 50);
+    final (t, f, _) = await deposit(ledger, 25000, 50);
     expect(co.submit(t, funding: f), isNull);
     expect(co.status.pending, 1);
     expect(co.status.deadline, clock.now.add(const Duration(minutes: 5)));
@@ -313,11 +327,11 @@ void main() {
         rng: Random(5));
     await co.runIdleWork();
 
-    final (a, fa, _) = deposit(ledger, 10000, 60);
+    final (a, fa, _) = await deposit(ledger, 10000, 60);
+    final (b, fb, _) = await deposit(ledger, 11000, 61); // made ahead: awaiting it after the close would let the build finish
     expect(co.submit(a, funding: fa), isNull);
     final first = co.closeRound();
     // the round is in flight; a transfer arriving now belongs to the next one
-    final (b, fb, _) = deposit(ledger, 11000, 61);
     expect(co.submit(b, funding: fb), isNull);
     expect(co.status.pending, 1);
     expect(co.status.inFlight, 1);
@@ -340,7 +354,7 @@ void main() {
     // here, once through a pool of one member that never answers and one
     // that does the work
     final (toolA, ledgerA, _) = freshPool();
-    final (transfer, funding, _) = deposit(ledgerA, 15000, 70);
+    final (transfer, funding, _) = await deposit(ledgerA, 15000, 70);
     final plan1Nodes = agg.transfers ~/ agg.levelSpec[0].arity;
     final roots = <String, List<int>>{};
     for (final which in ['local', 'pooled']) {
@@ -387,7 +401,7 @@ void main() {
     await co.runIdleWork();
     expect(co.status.paddingStock, 4);
 
-    final (t, f, _) = deposit(ledger, 9000, 80);
+    final (t, f, _) = await deposit(ledger, 9000, 80);
     expect(co.submit(t, funding: f), isNull);
     await co.closeRound();
     expect(co.status.paddingStock, 1, reason: 'the round took three padding transfers');
@@ -414,7 +428,7 @@ void main() {
         rng: Random(8));
     await co.runIdleWork();
     for (int r = 0; r < 3; r++) {
-      final (t, f, _) = deposit(ledger, 5000 + r, 90 + r);
+      final (t, f, _) = await deposit(ledger, 5000 + r, 90 + r);
       expect(co.submit(t, funding: f), isNull);
       await co.closeRound();
     }
@@ -449,7 +463,7 @@ void main() {
         clock: FakeClock(),
         rng: Random(11));
     await co.runIdleWork();
-    final (t, f, _) = deposit(ledger, 12345, 100);
+    final (t, f, _) = await deposit(ledger, 12345, 100);
     expect(co.submit(t, funding: f), isNull);
     await co.closeRound();
 

@@ -47,21 +47,28 @@ class PoolTransfer {
 
   bool get needsAuth => !PoolHash.isBsv(publics.asset) && (publics.publicOut < 0 || PoolHash.isGated(publics.asset));
 
+  /// The one note every padding transfer pays its two outputs to: zero
+  /// value, the zero address, zero randomness. Its commitment is a public
+  /// constant, so a reader knows a padding transfer's leaves without any
+  /// note data on chain (commitments are not public lanes in aggregated
+  /// mode). Anyone can spend it, once, for nothing.
+  static final paddingNote = OutputNote(
+      pkd: List.filled(PoolHash.digestLanes, 0), value: 0, rho: List.filled(PoolHash.rhoLanes, 0), rcm: List.filled(PoolHash.rcmLanes, 0));
+  static final List<int> paddingCm = paddingNote.cm;
+
   /// A padding transfer for an aggregated round: a spend of two dummies
-  /// (fresh random keys and rho) into two zero-value notes to a random
-  /// address, nothing leaving the pool, no extra outputs. It is proved
-  /// against the zero anchor: the state script waives the ring check when
-  /// neither input is real, so it can be proved at any time and used in any
-  /// round. Proving one costs a spend proof (about 1.5 s at production
-  /// parameters).
+  /// (fresh random keys and rho) into two copies of [paddingNote], nothing
+  /// leaving the pool, no extra outputs. It is proved against the zero
+  /// anchor: the ring check is waived when neither input is real, so it can
+  /// be proved at any time and used in any round. Proving one costs a spend
+  /// proof (about 1.5 s at production parameters).
   static PoolTransfer padding(StarkParams spendP, {Random? rng}) {
     final r = rng ?? Random.secure();
     List<int> lanes(int n) => List.generate(n, (_) => r.nextInt(M31.p));
     final a = SpendNote.dummy(sk: lanes(PoolHash.skLanes), rho: lanes(PoolHash.rhoLanes));
     final b = SpendNote.dummy(sk: lanes(PoolHash.skLanes), rho: lanes(PoolHash.rhoLanes));
-    final oa = OutputNote(pkd: lanes(PoolHash.digestLanes), value: 0, rho: lanes(PoolHash.rhoLanes), rcm: lanes(PoolHash.rcmLanes));
-    final ob = OutputNote(pkd: lanes(PoolHash.digestLanes), value: 0, rho: lanes(PoolHash.rhoLanes), rcm: lanes(PoolHash.rcmLanes));
-    final w = PoolSpendAir.witness(a, b, oa, ob, 0, anchor: List.filled(8, 0), outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    final w = PoolSpendAir.witness(a, b, paddingNote, paddingNote, 0,
+        anchor: List.filled(8, 0), outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
     assert(w.publics.isPadding);
     final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: r, hash: const Poseidon2ProofHash());
     return PoolTransfer(w.publics, proof, Uint8List(0));
@@ -121,6 +128,9 @@ class PoolLedger {
   PoolLedger(this.header, this.vault, this.tx);
 
   List<int> get anchor => NullifierSet.toLanes(header.cmRoot);
+
+  /// The header's ring of roots as lanes, [anchor] first.
+  List<List<int>> get ringLanes => [for (final r in header.ring) NullifierSet.toLanes(r)];
 }
 
 /// Builds the PP1_SP transactions: issuance, genesis (the create), rounds.
@@ -267,7 +277,14 @@ class ShieldedPoolTool {
     final extras = [for (final t in transfers) if (t.extraOutputs.isNotEmpty) t.extraOutputs];
 
     final (rootProof, wide) = await agg.aggregate([for (final t in transfers) t.publics], [for (final t in transfers) t.proof],
-        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, rng: rng, level1: level1, verbose: verbose);
+        rootBefore: rootBefore,
+        rootAfter: rootAfter,
+        index: j,
+        paths: paths,
+        ring: ledger.ringLanes,
+        rng: rng,
+        level1: level1,
+        verbose: verbose);
     final outs = gen.roundOutputs(next, vault, [VerifierSlotGen.resultOutput(wide)], extras);
     final stateUnlock = PP1SpUnlockBuilder.roundAggregated(gen,
         extraPrevouts: const [], transfers: full, roundLanes: wide.sublist(agg.tree.roundOffset));

@@ -2,6 +2,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
+import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/crypto/stark_verifier_ref.dart';
@@ -115,6 +116,50 @@ void main() {
     final vAir2 = program.air(lanes(8));
     expect(checkTrace(vAir2, program.witness(innerProof), [rq(), rq(), rq()]), isNotNull);
   }, timeout: const Timeout(Duration(minutes: 10)));
+
+  test('a level-1 program pins a real spend\'s anchor to the ring: a stale anchor has no witness', () {
+    // a note in the tree, spent against the tree's root
+    final sk = lanes(5), d = lanes(3);
+    final note = OutputNote(pkd: PoolHash.pkd(sk, d), value: 5000, rho: lanes(3), rcm: lanes(4));
+    final cmTree = NoteCommitmentTree();
+    final pos = cmTree.append(note.cm);
+    final path = cmTree.path(pos);
+    final a = SpendNote(sk: sk, d: d, value: note.value, rho: note.rho, rcm: note.rcm, siblings: path.siblings, position: pos);
+    final dummy = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
+    final oa2 = OutputNote(pkd: lanes(8), value: 4000, rho: lanes(3), rcm: lanes(4));
+    final ob2 = OutputNote(pkd: lanes(8), value: 1000, rho: lanes(3), rcm: lanes(4));
+    final ws = PoolSpendAir.witness(a, dummy, oa2, ob2, 0, outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
+    expect(ws.publics.anchor, cmTree.root);
+    final spendAir = PoolSpendAir.air(ws.publics);
+    final spendProof = StarkProver.prove(inner, spendAir, ws.rows, rng: Random(3), hash: p2);
+    final sw = Stopwatch()..start();
+    final prog = VerifierProgram.compile(InnerShape(inner, spendAir), vLog, ring: AnchorRing.pool);
+    print('  compiled with the ring check in ${sw.elapsedMilliseconds} ms: ${prog.periodsUsed} periods, ${prog.vmRows} VM rows '
+        '(${program.periodsUsed} periods, ${program.vmRows} VM rows without)');
+    final digestOf = VerifierProgram.statementDigest(spendAir, spendProof.preRoot);
+    // the anchor is the ring's third root: the witness selects it
+    final ring = [lanes(8), lanes(8), cmTree.root, lanes(8)];
+    final rows = prog.witnessAll([spendProof], ring: ring);
+    final vAir = prog.air(VerifierProgram.nodeDigest([digestOf], ring: ring));
+    expect(checkTrace(vAir, rows, [rq(), rq(), rq()]), isNull);
+    // the same trace against another ring's digest is another statement
+    final other = [lanes(8), lanes(8), lanes(8), lanes(8)];
+    expect(checkTrace(prog.air(VerifierProgram.nodeDigest([digestOf], ring: other)), rows, [rq(), rq(), rq()]), isNotNull);
+    // a ring the anchor is not in: no selector can be set, the witness fails
+    final stale = prog.witnessAll([spendProof], ring: other);
+    final result = checkTrace(prog.air(VerifierProgram.nodeDigest([digestOf], ring: other)), stale, [rq(), rq(), rq()]);
+    print('  stale anchor: $result');
+    expect(result, isNotNull);
+    // a deposit (two dummies) is unconstrained by the ring, as on chain
+    final progD = VerifierProgram.compile(InnerShape(inner, innerAir), vLog, ring: AnchorRing.pool);
+    final rowsD = progD.witnessAll([innerProof], ring: other);
+    expect(checkTrace(progD.air(VerifierProgram.nodeDigest([VerifierProgram.statementDigest(innerAir, innerProof.preRoot)], ring: other)), rowsD,
+        [rq(), rq(), rq()]), isNull);
+    // and the valid one proves
+    const outer = StarkParams(logTrace: vLog, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
+    final proof = StarkProver.prove(outer, vAir, rows, rng: Random(4), hash: p2);
+    expect(StarkVerifierRef(outer, vAir, hash: p2).verify(proof), isTrue);
+  }, timeout: const Timeout(Duration(minutes: 15)));
 
   test('the verifier trace proves and verifies (small parameters)', () {
     const outer = StarkParams(logTrace: vLog, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);

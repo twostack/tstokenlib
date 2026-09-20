@@ -21,6 +21,7 @@ import '../crypto/note_commitment_tree.dart';
 import '../crypto/note_encryption.dart';
 import '../script_gen/pool_spend_air.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/slot_script_common.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
 import 'shielded_pool_tool.dart';
@@ -142,15 +143,20 @@ class PoolChainReader {
   }
 
   /// An aggregated round: input 1 is the one slot, unlocked with every
-  /// transfer's lanes and the round lanes; the root proof also proved the
-  /// tree update, so the model's new root must be the one in the lanes.
+  /// transfer's reduced lanes and the round lanes; the root proof also
+  /// proved the tree update, so the model's new root must be the one in
+  /// the lanes. The commitments are not lanes: each transfer's come from
+  /// the note data its outHash attributes to it, or, for a padding
+  /// transfer, are the padding constant; the rootAfter check is what makes
+  /// that trustworthy, since the proof appended the true ones.
   PoolRound _applyAggregated(Transaction roundTx) {
     final parent = ledger.tx;
     final n = gen.n;
     _expectSpends(roundTx, 0, parent, ShieldedPoolTool.stateVout);
     _expectSpends(roundTx, 1, parent, gen.slotVout0);
     if (roundTx.outputs.length < gen.slotVout0 + 1) throw FormatException('round has too few outputs');
-    final lanes = readSlotLanes(roundTx.inputs[1].script!, n * PP1SpScriptGen.laneChunk + PP1SpScriptGen.roundLanes);
+    final per = gen.lanesPerTransfer;
+    final lanes = readSlotLanes(roundTx.inputs[1].script!, n * per + PP1SpScriptGen.roundLanes);
     if (lanes == null) throw FormatException('an aggregated round cannot skip its slot');
     final expected = VerifierSlotGen.resultOutput(lanes);
     final result = roundTx.outputs[1];
@@ -158,16 +164,28 @@ class PoolChainReader {
       throw FormatException('the result output does not match the slot\'s unlocking script');
     }
     final transfers = <PoolPublicInputs?>[];
+    var cursor = gen.slotVout0 + 1; // the extra outputs follow the slot
     for (int t = 0; t < n; t++) {
-      final off = t * PP1SpScriptGen.laneChunk;
-      if (lanes.sublist(off + PoolPublicInputs.count, off + PP1SpScriptGen.laneChunk).any((v) => v != 0)) {
-        throw FormatException('transfer $t: padding lanes are not zero');
+      final reduced = lanes.sublist(t * per, (t + 1) * per);
+      final bare = PoolPublicInputs.fromReducedLanes(reduced);
+      final (extras, next) = _extrasOf(roundTx, cursor, bare.outHash, t);
+      cursor = next;
+      final bundles = extras.isEmpty ? null : NoteBundle.fromScript(extras.first.script.buffer);
+      final List<int> cm1, cm2;
+      if (bundles != null && bundles.length == 2) {
+        cm1 = bundles[0].cm;
+        cm2 = bundles[1].cm;
+      } else if (bundles == null && bare.isPadding) {
+        cm1 = cm2 = PoolTransfer.paddingCm;
+      } else {
+        throw FormatException('transfer $t: no note data to take its two commitments from');
       }
-      transfers.add(PoolPublicInputs.fromLanes(lanes.sublist(off, off + PoolPublicInputs.count)));
+      transfers.add(PoolPublicInputs.fromReducedLanes(reduced, cm1: cm1, cm2: cm2));
     }
-    final round = lanes.sublist(n * PP1SpScriptGen.laneChunk);
+    final round = lanes.sublist(n * per);
     final rootBefore = ledger.anchor;
     if (!_sameInts(round.sublist(0, 8), rootBefore)) throw StateError('the round\'s rootBefore is not the pool\'s root');
+    if (!_sameInts(round.sublist(24), [for (final r in ledger.ringLanes) ...r])) throw StateError('the round\'s ring is not the pool\'s');
     final j = ledger.tree.nextSubtree;
     if (round[16] != j) throw StateError('the round\'s subtree index disagrees with the rebuilt tree');
     var vault = ledger.vault;
@@ -216,6 +234,23 @@ class PoolChainReader {
   static PoolPublicInputs? readSlot(SVScript unlock) {
     final lanes = readSlotLanes(unlock, PoolPublicInputs.count);
     return lanes == null ? null : PoolPublicInputs.fromLanes(lanes);
+  }
+
+  /// The outputs from [from] that are transfer [t]'s extra outputs: the
+  /// shortest run whose serialisation hashes to its [outHash] (an empty run
+  /// when the hash is the empty one's). Every transfer's extras follow the
+  /// previous transfer's, so walking the transfers in order attributes
+  /// every output.
+  (List<TransactionOutput>, int) _extrasOf(Transaction tx, int from, List<int> outHash, int t) {
+    final bytes = <int>[];
+    var at = from;
+    while (true) {
+      if (_sameInts(PoolPublicInputs.outHashLanes(bytes), outHash)) return (tx.outputs.sublist(from, at), at);
+      if (at >= tx.outputs.length) throw FormatException('transfer $t: no run of outputs hashes to its outHash');
+      final o = tx.outputs[at];
+      bytes.addAll(SlotScript.output(o.script.buffer, value: o.satoshis.toInt()));
+      at++;
+    }
   }
 
   /// The first [count] lanes a verifier slot was unlocked with, or null.

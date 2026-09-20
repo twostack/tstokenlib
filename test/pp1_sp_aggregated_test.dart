@@ -4,6 +4,7 @@ import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/builder/pp1_sp_lock_builder.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
+import 'package:tstokenlib/src/crypto/note_encryption.dart';
 import 'package:tstokenlib/src/crypto/proof_hash.dart';
 import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
@@ -25,6 +26,8 @@ void verifyAll(Transaction tx, List<TransactionOutput> spent, {String? label}) {
   }
   if (label != null) print('  $label: ${tx.inputs.length} inputs verified in ${sw.elapsedMilliseconds} ms, tx ${tx.serialize().length ~/ 2} B');
 }
+
+bool _same(List<int> a, List<int> b) => a.length == b.length && [for (int i = 0; i < a.length; i++) a[i] == b[i]].every((x) => x);
 
 /// The pool in aggregated mode: one verifier slot per round checking the
 /// root of a two-level aggregation of four spend proofs, no append slot.
@@ -64,6 +67,22 @@ void main() {
     return t;
   }
 
+  /// Two output notes with their note-data output, as a wallet publishes
+  /// them: in aggregated mode the commitments are not public lanes, so a
+  /// reader takes them from these bundles.
+  Future<(OutputNote, OutputNote, Uint8List)> notes(int va, int vb, {List<Uint8List> payouts = const []}) async {
+    final sender = PoolWalletKeys(lanes(5));
+    final ta = await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0), tb = await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0);
+    final oa = OutputNote(pkd: ta.pkd, value: va, rho: lanes(3), rcm: lanes(4));
+    final ob = OutputNote(pkd: tb.pkd, value: vb, rho: lanes(3), rcm: lanes(4));
+    final ba = await NoteEncryption.encrypt(
+        NotePlaintext(asset: PoolHash.bsvAsset, d: ta.d, value: va, rho: oa.rho, rcm: oa.rcm, memo: NotePlaintext.memoOf('a')), ta, sender.ovk, rng: rng);
+    final bb = await NoteEncryption.encrypt(
+        NotePlaintext(asset: PoolHash.bsvAsset, d: tb.d, value: vb, rho: ob.rho, rcm: ob.rcm, memo: NotePlaintext.memoOf('b')), tb, sender.ovk, rng: rng);
+    expect(ba.cm, oa.cm);
+    return (oa, ob, ShieldedPoolTool.extras([ba, bb], payouts));
+  }
+
   final rabin = Rabin.generateKeyPair(1024);
   final rabinN = Rabin.bigIntToScriptNum(rabin.n).toList();
   final rabinPKH = hash160(rabinN);
@@ -100,9 +119,7 @@ void main() {
     final transfers = <PoolTransfer>[];
     for (int n = 0; n < 4; n++) {
       final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
-      final oa = OutputNote(pkd: lanes(8), value: amounts[n] - 7, rho: lanes(3), rcm: lanes(4));
-      final ob = OutputNote(pkd: lanes(8), value: 7, rho: lanes(3), rcm: lanes(4));
-      final extras = n == 0 ? change : Uint8List(0);
+      final (oa, ob, extras) = await notes(amounts[n] - 7, 7, payouts: n == 0 ? [change] : const []);
       final w = PoolSpendAir.witness(da, db, oa, ob, -amounts[n], anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
       final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: Random(10 + n), hash: const Poseidon2ProofHash());
       transfers.add(PoolTransfer(w.publics, proof, extras));
@@ -115,7 +132,7 @@ void main() {
     print('  round built in ${sw.elapsedMilliseconds} ms');
     expect(ledger.vault, vaultBefore + amounts.reduce((a, b) => a + b));
     expect(ledger.tree.size, 32);
-    expect(roundTx.outputs.length, 4);
+    expect(roundTx.outputs.length, 3 + 4 + 1, reason: 'state, result, slot, four note-data outputs and the change');
     expect(roundTx.inputs.length, 3);
     verifyAll(roundTx, [...spent, depositFunding.outputs[0]], label: 'aggregated round');
     expect(PP1SpLockBuilder.fromScript(roundTx.outputs[0].script).header.bytes(), ledger.header.bytes());
@@ -135,11 +152,10 @@ void main() {
     final depositFunding = coinbaseLike(depositorAddress, [30000]);
     final change = ShieldedPoolTool.payout(depositorAddress, 30000 - 20000 - 800);
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
-    final oa = OutputNote(pkd: lanes(8), value: 19990, rho: lanes(3), rcm: lanes(4));
-    final ob = OutputNote(pkd: lanes(8), value: 10, rho: lanes(3), rcm: lanes(4));
-    final w = PoolSpendAir.witness(da, db, oa, ob, -20000, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(change));
+    final (oa, ob, extras) = await notes(19990, 10, payouts: [change]);
+    final w = PoolSpendAir.witness(da, db, oa, ob, -20000, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
     final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: Random(20), hash: const Poseidon2ProofHash());
-    final deposit = PoolTransfer(w.publics, proof, change);
+    final deposit = PoolTransfer(w.publics, proof, extras);
     expect(deposit.publics.isPadding, isFalse);
 
     final sw = Stopwatch()..start();
@@ -166,6 +182,8 @@ void main() {
     final round = reader.apply(tx);
     expect(round.transfers.length, 4);
     expect(round.transfers.where((t) => t!.isPadding).length, 3);
+    expect(round.transfers[0]!.cmOut1, oa.cm, reason: 'the reader took the commitments from the note data');
+    expect(round.commitments.where((c) => _same(c, PoolTransfer.paddingCm)).length, 6, reason: 'and the padding constant');
     expect(reader.ledger.header.bytes(), ledger.header.bytes());
     expect(reader.ledger.tree.root, ledger.tree.root);
     expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);

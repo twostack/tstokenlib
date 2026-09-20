@@ -2222,6 +2222,101 @@ is 44.3 s of constraint-program interpretation, 16.6 s of Dart-side setup and
 amount of work on the stages around them reaches the target; both spec
 scenarios are recorded as unmet rather than quietly adjusted.
 
+### Lane reduction (sized)
+
+Each transfer puts 56 public lanes on chain in aggregated mode, and two
+thirds of them are never read there: the state script checks the anchor
+against its ring and never reads the commitments, which reach the tree only
+through the root proof. Those 24 lanes are what the round pays for twice, in
+the root verifier slot (about 2,156 ops per transfer) and in the state script
+(about 3,432). Moving them inside the proofs is the lane-reduction change:
+the level-1 node checks each real spend's anchor against the round's ring,
+the ring enters the round chunks once, and the root takes the anchor and the
+commitments as witness chunks of each spend's statement, bound by the digest
+level 1 verified.
+
+The question to settle first was whether level 1 could afford the ring check,
+because it is the tightest level after the root: 16 spends on 2^20 used
+31,872 of 32,768 periods. Sized with the throughput plan compiled as a dry
+run (`tool/scratch/lane_reduction_size.dart`):
+
+| program | periods | VM rows | hint rows |
+| --- | --- | --- | --- |
+| one spend, ring off | 1,992 | 24,535 | 2,099 |
+| one spend, ring on | 1,996 | 24,572 | 2,103 |
+| level 1, 16 spends, ring off | 31,872 of 32,768 | 386,845 | 33,584 |
+| level 1, 16 spends, ring on | 31,876 of 32,768 | 387,437 | 33,648 |
+
+The check is four periods per node (the ring's four chunks continue the
+digest chain, so they are part of the public input at no extra hashing) and
+37 VM rows plus four hint rows per spend: a selector bit per ring entry, the
+bits summing to real1 OR real2, and the selected root's two halves equal to
+that flag times the anchor's. A real spend with a stale anchor has no
+selector to set and no witness; a deposit or padding transfer sets none and
+its anchor is unconstrained, exactly the waiver the state script makes. So
+16 spends still fit 2^20 and the 15-spend fallback plan is not needed. The
+whole plan compiles to periods [31,876, 40,724, 21,986, 15,636] and a root of
+11,644 of 16,384 (68 more than before: the four ring chunks and their
+absorption into sixteen level-1 digests), with 8,248 public lanes against
+14,360.
+
+### Lane reduction (built)
+
+Built as sized. The level-1 program takes the ring as public input by
+continuing its digest chain with the ring's four chunks after the spend
+digests, so the node's public input is still one 8-lane digest and the AIR is
+unchanged; each real spend's anchor is pinned to one ring entry with selector
+bits (`AnchorRing`, `VerifierProgram.compileAll(ring:)`, `nodeDigest(ring:)`).
+The wide root pins four of each spend's seven statement chunks (nf1, nf2, the
+amount and outHash chunk, the flags and asset chunk: `toReducedLanes`) and
+takes the anchor and the two commitments as witness chunks in their statement
+positions (`AggregationTree.freeChunks`), so the transcript replay is the one
+the spend proof was made for and a substituted commitment or ring fails the
+level-1 digest. The ring is four more round chunks after rootBefore,
+rootAfter and the index, absorbed into all sixteen level-1 digests. The state
+script reads 32 lanes per transfer, drops its anchor check in aggregated mode
+and checks instead that the round chunks' ring is its own; the issuer's
+message follows the lanes the script reads. Tests: `test/verifier_air_test.dart`
+(a real spend against the ring, a stale anchor with no witness, a deposit
+unconstrained), `test/recursion_tree_test.dart` (wrong ring and substituted
+commitment rejected, the round verified on chain), `test/pool_aggregation_test.dart`,
+`test/prover_pool_test.dart` (the job carries the ring),
+`test/pp1_sp_aggregated_test.dart`, `test/pool_coordinator_test.dart`.
+
+**Padding pays a fixed public note.** With the commitments off the lanes the
+chain reader takes them from the round's note-data outputs, which it
+attributes to transfers by outHash: each transfer, in order, owns the shortest
+run of remaining outputs whose serialisation hashes to its outHash. Padding
+transfers carry no note data, so instead of giving them bundles (about 1.5 KB
+each and an asynchronous KEM in the padding path) every padding transfer now
+pays its two zero-value outputs to one constant public note, zero address and
+zero randomness (`PoolTransfer.paddingNote`), whose commitment the reader
+fills in for any transfer whose lanes read as padding. It is spendable once,
+for nothing. A non-padding transfer without a note-data output is refused by
+the reader, which is the requirement wallets already had.
+
+**What it bought, measured** (`tool/scratch/root_script_size.dart throughput`,
+`tool/scratch/state_script_size.dart`, 256-transfer plan):
+
+| | before | after |
+| --- | --- | --- |
+| public lanes per round | 14,360 | 8,248 |
+| root verifier slot | 883,000 ops, 2.2 MB | 647,463 ops, 1.59 MB |
+| root slot per transfer | 2,156 ops | about 1,230 ops |
+| state script per transfer | 3,432 ops, 5.9 KB | 3,348 ops, 5.75 KB |
+| state script binds at | about 290 transfers | about 298 transfers |
+| root periods (2^19) | 11,576 | 11,644 |
+
+The root slot moved as the proposal said, 27% fewer ops and 0.6 MB less per
+round. The state script did not: its per-transfer cost is the two nullifier
+insertions, two depth-32 Merkle paths each, and the anchor check plus 24
+lanes' worth of bytes were 84 ops of the 3,432. The proposal's estimate of a
+third off the state script and a round of about 400 transfers was wrong,
+and the spec now carries the measured figures: the state script still binds
+the round, at about 298 transfers. Growing the round from here means cheaper
+nullifier insertions (a shallower set, or batching the paths), not fewer
+lanes.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the

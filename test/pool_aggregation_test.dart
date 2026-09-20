@@ -59,12 +59,15 @@ void main() {
       paths.add(cmTree.subtreePath(j + s));
       cmTree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendPubs, s)) l ?? MerkleFrontier.emptyLeaf]);
     }
-    final (proof, wide) = await agg.aggregate(publics, proofs, rootBefore: rootBefore, rootAfter: cmTree.root, index: j, paths: paths, rng: rng, verbose: true);
+    final ring = [rootBefore, lanes(8), lanes(8), lanes(8)];
+    final (proof, wide) = await agg.aggregate(publics, proofs,
+        rootBefore: rootBefore, rootAfter: cmTree.root, index: j, paths: paths, ring: ring, rng: rng, verbose: true);
     print('  aggregated in ${sw.elapsedMilliseconds} ms');
     expect(wide.length, agg.widePublicsCount);
+    expect(wide.sublist(agg.tree.ringOffset, agg.tree.ringOffset + 8), rootBefore);
     expect(StarkVerifierRef(rootP, agg.rootAir(wide), hash: sha).verify(proof), isTrue);
     // the statements are bound: another transfer's publics do not verify
-    final bad = [...wide]..[56 + PoolPublicInputs.idxNf1] ^= 1;
+    final bad = [...wide]..[PoolPublicInputs.reducedCount + PoolPublicInputs.rIdxNf1] ^= 1;
     expect(() => StarkVerifierRef(rootP, agg.rootAir(bad), hash: sha).verify(proof), throwsA(isA<VerificationFailure>()));
   }, timeout: const Timeout(Duration(minutes: 20)));
 
@@ -96,8 +99,9 @@ void main() {
       cmTree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendPubs, s)) l ?? MerkleFrontier.emptyLeaf]);
     }
     final rootAfter = cmTree.root;
+    final ring = [rootBefore, lanes(8), lanes(8), lanes(8)];
     Future<(StarkProof, List<int>)> round({NodeProver? level1}) => agg.aggregate(publics, proofs,
-        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, rng: Random(7), level1: level1);
+        rootBefore: rootBefore, rootAfter: rootAfter, index: j, paths: paths, ring: ring, rng: Random(7), level1: level1);
 
     final sw = Stopwatch()..start();
     final (inlineProof, inlineWide) = await round();

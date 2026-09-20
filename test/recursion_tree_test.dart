@@ -68,15 +68,16 @@ void main() {
     final spendDigests = [for (int n = 0; n < 4; n++) VerifierProgram.statementDigest(spends[n].$1, spendProofs[n].preRoot)];
     print('  4 spend proofs: ${lap('')}');
 
-    // ---- level 1: two spends per node ----
+    // ---- level 1: two spends per node, the round's ring as public input ----
+    final ring = [lanes(8), lanes(8), lanes(8), lanes(8)];
     final spendShape = InnerShape(spendP, spends[0].$1);
-    final prog1 = VerifierProgram.compileAll([spendShape, spendShape], 15);
+    final prog1 = VerifierProgram.compileAll([spendShape, spendShape], 15, ring: AnchorRing.pool);
     print('  level-1 program: ${prog1.periodsUsed} periods, ${prog1.vmRows} VM rows');
     final air1 = <VerifierAir>[], proofs1 = <StarkProof>[];
     for (int m = 0; m < 2; m++) {
-      final digest = VerifierProgram.nodeDigest([spendDigests[2 * m], spendDigests[2 * m + 1]]);
+      final digest = VerifierProgram.nodeDigest([spendDigests[2 * m], spendDigests[2 * m + 1]], ring: ring);
       final rows = prog1.witnessAll([spendProofs[2 * m], spendProofs[2 * m + 1]],
-          shapes: [InnerShape(spendP, spends[2 * m].$1), InnerShape(spendP, spends[2 * m + 1].$1)]);
+          shapes: [InnerShape(spendP, spends[2 * m].$1), InnerShape(spendP, spends[2 * m + 1].$1)], ring: ring);
       final air = prog1.air(digest);
       if (m == 0) expect(checkTrace(air, rows, [QM31.one, QM31.one + QM31.i, QM31.u]), isNull);
       air1.add(air);
@@ -101,7 +102,8 @@ void main() {
     final preRoot2 = PreCommitment.root(air2, p2p, p2);
 
     // ---- the root: wide statement over the four transfers ----
-    final tree = AggregationTree.uniform(PoolPublicInputs.count, const [], [(shape1, preRoot1), (InnerShape(p2p, air2), preRoot2)], 2);
+    final tree = AggregationTree.uniform(PoolPublicInputs.count, const [], [(shape1, preRoot1), (InnerShape(p2p, air2), preRoot2)], 2,
+        ring: AnchorRing.pool);
     final progR = VerifierProgram.compileWide(tree, 15);
     print('  root program: ${progR.periodsUsed} periods, ${progR.vmRows} VM rows, ${progR.hintRows} hints');
     // the commitment tree: the round's subtree appended to an empty pool tree
@@ -115,13 +117,23 @@ void main() {
     }
     final rootAfter = cmTree.root;
     expect(cmTree.size, tree.leavesAppended);
-    final widePublics = tree.widePublics(spendPubs, rootBefore: rootBefore, rootAfter: rootAfter, index: j);
-    final rowsR = progR.witnessAll([proof2], shapes: [InnerShape(p2p, air2)], widePublics: widePublics, subtreePaths: paths);
+    final widePublics = tree.widePublics(spendPubs, rootBefore: rootBefore, rootAfter: rootAfter, index: j, ring: ring);
+    List<List<int>> rootRows(List<List<int>> spendLanes, List<int> wide) =>
+        progR.witnessAll([proof2], shapes: [InnerShape(p2p, air2)], widePublics: wide, spendLanes: spendLanes, subtreePaths: paths);
+    final rowsR = rootRows(spendPubs, widePublics);
     final airR = progR.air(widePublics);
-    expect(airR.numPublics, 4 * 56 + 24);
+    expect(airR.numPublics, 4 * PoolPublicInputs.reducedCount + 24 + 32, reason: 'anchors and commitments are not public lanes');
+    expect(widePublics.sublist(0, 8), spendPubs[0].sublist(PoolPublicInputs.idxNf1, PoolPublicInputs.idxNf1 + 8));
     // a wrong new root does not fit
     final wrongRoot = [...widePublics]..[tree.roundOffset + 8] ^= 1;
     expect(checkTrace(progR.air(wrongRoot), rowsR, [QM31.one, QM31.one + QM31.i, QM31.u]), isNotNull);
+    // nor a ring other than the one level 1 verified against
+    final wrongRing = [...widePublics]..[tree.ringOffset + 9] ^= 1;
+    expect(checkTrace(progR.air(wrongRing), rowsR, [QM31.one, QM31.one + QM31.i, QM31.u]), isNotNull);
+    // nor a commitment other than the one the spend proof committed to: the
+    // witness chunk feeds the spend's digest, which level 1 verified
+    final swapped = [for (final p in spendPubs) [...p]]..[1][PoolPublicInputs.idxCm2 + 3] ^= 1;
+    expect(checkTrace(airR, rootRows(swapped, widePublics), [QM31.one, QM31.one + QM31.i, QM31.u]), isNotNull);
     expect(checkTrace(airR, rowsR, [QM31.one, QM31.one + QM31.i, QM31.u]), isNull);
     print('  root witness: ${lap('')}');
     final proofR = StarkProver.prove(rootP, airR, rowsR, rng: Random(6), hash: sha);
@@ -137,7 +149,7 @@ void main() {
     print('  interpreter: ${lap('')}, unlock ${unlock.buffer.length} bytes');
 
     // a transfer's publics altered: the same proof no longer fits the statement
-    final bad = [...widePublics]..[56 + PoolPublicInputs.idxNf1] ^= 1;
+    final bad = [...widePublics]..[PoolPublicInputs.reducedCount + PoolPublicInputs.rIdxNf1] ^= 1;
     expect(() => run(StarkVerifierGen(rootP, progR.air(bad)).buildUnlock(proofR), lock), throwsA(isA<ScriptException>()));
     // and the witness of a wrong tree does not satisfy the AIR
     expect(checkTrace(progR.air(bad), rowsR, [QM31.one, QM31.one + QM31.i, QM31.u]), isNotNull);

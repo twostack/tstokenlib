@@ -265,6 +265,36 @@ class PoolPublicInputs {
   static const idxAsset = 52;
   static const count = idxAsset + PoolHash.assetLanes; // 56
 
+  // indices into [toReducedLanes]: the statement's chunks less the anchor
+  // (chunk 0) and the commitments (chunks 3, 4), in order
+  static const rIdxNf1 = 0, rIdxNf2 = 8, rIdxPubLo = 16, rIdxPubHi = 17, rIdxOutHash = 18, rIdxReal1 = 26, rIdxReal2 = 27, rIdxAsset = 28;
+  static const reducedCount = rIdxAsset + PoolHash.assetLanes; // 32
+
+  /// The lanes an aggregated round puts on chain for this transfer: the
+  /// anchor and the commitments stay inside the proofs (level 1 checks the
+  /// anchor against the ring, the root appends the commitments), so what
+  /// the state script reads is nf1, nf2, the signed amount, outHash, the
+  /// real flags and the asset.
+  List<int> toReducedLanes() {
+    final l = toLanes();
+    return [...l.sublist(idxNf1, idxCm1), ...l.sublist(idxPubLo, count)];
+  }
+
+  /// The inverse of [toReducedLanes] with the lanes it lacks supplied: the
+  /// anchor (zeros when unknown, a reader has no use for it) and the two
+  /// commitments (from the round's note data or the padding constant).
+  static PoolPublicInputs fromReducedLanes(List<int> lanes, {List<int>? anchor, List<int>? cm1, List<int>? cm2}) {
+    if (lanes.length != reducedCount) throw ArgumentError('$reducedCount lanes expected');
+    final zero = List.filled(8, 0);
+    return fromLanes([
+      ...anchor ?? zero,
+      ...lanes.sublist(rIdxNf1, rIdxPubLo),
+      ...cm1 ?? zero,
+      ...cm2 ?? zero,
+      ...lanes.sublist(rIdxPubLo),
+    ]);
+  }
+
   List<int> toLanes() {
     final (lo, hiSigned) = PoolHash.signedLimbs(publicOut);
     final hi = PoolHash.laneOf(hiSigned);

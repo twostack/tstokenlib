@@ -23,6 +23,7 @@ import '../script_gen/air.dart';
 import '../script_gen/air_ring.dart';
 import '../script_gen/poseidon2_air.dart';
 import '../script_gen/poseidon2_chain_air.dart';
+import '../script_gen/pool_spend_air.dart';
 import 'verifier_air.dart';
 
 /// The shape of the inner proof a [VerifierProgram] verifies: its parameters
@@ -140,13 +141,30 @@ class _WireRing extends Ring<Wire> {
       b._vm(_Op.limb, x, null, QM31.fromLimbs(k == 0 ? 1 : 0, k == 1 ? 1 : 0, k == 2 ? 1 : 0, k == 3 ? 1 : 0), 'limb$k');
 }
 
+/// The anchor check a level-1 node makes on every spend it verifies: the
+/// spend's anchor (statement chunk [anchorChunk]) must be one of the [size]
+/// roots the node absorbs after its spends' digests, unless the spend has
+/// no real input (lanes [real1] and [real2] both zero), when the anchor
+/// protects nothing. The ring is part of the node's public input, so the
+/// root, which knows the round's ring, can re-derive the node's digest and
+/// the anchor's eight lanes need not be public at all.
+class AnchorRing {
+  final int anchorChunk, real1, real2, size;
+  const AnchorRing({required this.anchorChunk, required this.real1, required this.real2, this.size = 4});
+
+  /// The pool's: the anchor is the first chunk, the real flags lanes 50 and
+  /// 51, and the state header keeps four roots.
+  static const pool = AnchorRing(
+      anchorChunk: PoolPublicInputs.idxAnchor ~/ 8, real1: PoolPublicInputs.idxReal1, real2: PoolPublicInputs.idxReal2, size: 4);
+}
+
 /// The aggregation tree a wide root program re-derives the digests of.
 /// Level 0 is the spends ([spendPublics] public lanes each, preprocessed
 /// root [spendPreRoot], empty for the pool's spend AIR); level l + 1 holds
 /// the verifier proofs of shape [levels][l] (with that circuit's
 /// preprocessed root), each verifying `arities[l]` proofs of the level below.
 /// The root verifies one proof of the last level and takes every spend's
-/// publics as its own (wide) statement.
+/// publics, less the [freeChunks], as its own (wide) statement.
 class AggregationTree {
   final int spendPublics;
   final List<int> spendPreRoot;
@@ -158,21 +176,53 @@ class AggregationTree {
   /// The chunks of each spend's publics that are commitment-tree leaves,
   /// in leaf order (the pool's cm1, cm2).
   final List<int> leafChunks;
-  AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arities, {this.leafChunks = const [3, 4]}) {
+
+  /// The ring check level 1 makes, whose ring the root takes as round
+  /// chunks; null for a tree whose level 1 has none.
+  final AnchorRing? ring;
+
+  /// The chunks of each spend's publics the root takes as witness rather
+  /// than public input: the leaves, whose only reader is the tree update
+  /// the root proves, and the anchor, which level 1 checked against the
+  /// ring. The spend's digest still covers them, so the root cannot use
+  /// other values than the ones the spend proof was made for.
+  final List<int> freeChunks;
+  AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arities,
+      {this.leafChunks = const [3, 4], this.ring, List<int>? freeChunks})
+      : freeChunks = freeChunks ?? ([if (ring != null) ring.anchorChunk, ...leafChunks]..sort()) {
     if (levels.isEmpty) throw ArgumentError('at least one aggregation level');
     if (arities.length != levels.length || arities.any((a) => a < 1)) throw ArgumentError('one arity per level');
+    if (this.freeChunks.any((c) => c < 0 || c >= spendChunks) || this.freeChunks.toSet().length != this.freeChunks.length) {
+      throw ArgumentError('free chunks');
+    }
+    if (leafChunks.any((c) => !this.freeChunks.contains(c))) throw ArgumentError('the leaf chunks are witness chunks');
   }
 
   /// The same [arity] at every level.
   AggregationTree.uniform(int spendPublics, List<int> spendPreRoot, List<(InnerShape, List<int>)> levels, int arity,
-      {List<int> leafChunks = const [3, 4]})
-      : this(spendPublics, spendPreRoot, levels, List.filled(levels.length, arity), leafChunks: leafChunks);
+      {List<int> leafChunks = const [3, 4], AnchorRing? ring, List<int>? freeChunks})
+      : this(spendPublics, spendPreRoot, levels, List.filled(levels.length, arity),
+            leafChunks: leafChunks, ring: ring, freeChunks: freeChunks);
 
   int get depth => levels.length;
   int get transfers => arities.fold(1, (n, a) => n * a);
 
-  /// Pinned chunks per spend: its publics padded to whole chunks.
+  /// Chunks per spend statement: its publics padded to whole chunks.
   int get spendChunks => (spendPublics + 7) ~/ 8;
+
+  /// Pinned chunks per spend: the statement chunks that are public lanes.
+  int get pinnedChunks => spendChunks - freeChunks.length;
+
+  /// A spend's public lanes as the root pins them: its statement chunks
+  /// in order, less the free ones.
+  List<int> reducedLanes(List<int> spend) {
+    if (spend.length != spendPublics) throw ArgumentError('$spendPublics lanes per spend');
+    return [
+      for (int c = 0; c < spendChunks; c++)
+        if (!freeChunks.contains(c))
+          for (int j = 0; j < 8; j++) 8 * c + j < spend.length ? spend[8 * c + j] : 0
+    ];
+  }
 
   // ---- the commitment-tree update the root proves ----
   static const subtreeLeaves = NoteCommitmentTree.subtreeLeaves;
@@ -186,23 +236,33 @@ class AggregationTree {
   int get leavesAppended => subtrees * subtreeLeaves;
 
   /// The round chunks after the transfers': rootBefore, rootAfter,
-  /// [index, 0 x 7] with index the first subtree's position.
-  static const roundChunks = 3;
-  int get roundOffset => 8 * spendChunks * transfers;
+  /// [index, 0 x 7] with index the first subtree's position, then the
+  /// ring's roots when level 1 checks anchors.
+  int get roundChunks => 3 + (ring?.size ?? 0);
+  int get roundOffset => 8 * pinnedChunks * transfers;
 
-  /// The root's wide public inputs: every transfer's publics (padded to
-  /// chunks), then the round chunks.
+  /// Where the ring's lanes start in the wide publics.
+  int get ringOffset => roundOffset + 24;
+
+  /// The root's wide public inputs: every transfer's reduced lanes
+  /// ([reducedLanes]), then the round chunks.
   List<int> widePublics(List<List<int>> spends,
-      {required List<int> rootBefore, required List<int> rootAfter, required int index}) {
+      {required List<int> rootBefore, required List<int> rootAfter, required int index, List<List<int>>? ring}) {
     if (spends.length != transfers) throw ArgumentError('$transfers transfers expected');
     if (rootBefore.length != 8 || rootAfter.length != 8) throw ArgumentError('8-lane roots');
     if (index < 0 || index + subtrees > 1 << mainDepth) throw ArgumentError('subtree index');
+    final r = this.ring;
+    if (r == null ? ring != null : (ring == null || ring.length != r.size || ring.any((x) => x.length != 8))) {
+      throw ArgumentError(r == null ? 'this tree has no ring' : 'a ring of ${r.size} 8-lane roots');
+    }
     return [
-      for (final p in spends) ...[...p, ...List.filled(8 * spendChunks - p.length, 0)],
+      for (final p in spends) ...reducedLanes(p),
       ...rootBefore,
       ...rootAfter,
       index,
       ...List.filled(7, 0),
+      if (ring != null)
+        for (final x in ring) ...x,
     ];
   }
 
@@ -230,19 +290,25 @@ class VerifierProgram {
   final int logTrace;
   final VerifierProgramColumns columns;
   final int periodsUsed, vmRows, hintRows;
-  VerifierProgram(this.shapes, this.tree, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows);
+
+  /// Digest mode only: the anchor check this program makes, whose ring it
+  /// absorbs after its inner digests (see [nodeDigest]).
+  final AnchorRing? ring;
+  VerifierProgram(this.shapes, this.tree, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows, {this.ring});
 
   InnerShape get shape => shapes.single;
   bool get wide => tree != null;
 
   /// Compile for one [shape] on a 2^[logTrace]-row trace.
-  static VerifierProgram compile(InnerShape shape, int logTrace) => compileAll([shape], logTrace);
+  static VerifierProgram compile(InnerShape shape, int logTrace, {AnchorRing? ring}) => compileAll([shape], logTrace, ring: ring);
 
-  /// Compile a digest-mode program verifying one proof of each shape.
-  static VerifierProgram compileAll(List<InnerShape> shapes, int logTrace) {
-    final b = VerifierProgramBuilder(shapes, null, logTrace, null, null, null);
+  /// Compile a digest-mode program verifying one proof of each shape; with
+  /// [ring] it also checks each inner statement's anchor against a ring it
+  /// takes as public input (a level-1 node).
+  static VerifierProgram compileAll(List<InnerShape> shapes, int logTrace, {AnchorRing? ring}) {
+    final b = VerifierProgramBuilder(shapes, null, logTrace, null, null, null, ring: ring);
     b.build();
-    return VerifierProgram(shapes, null, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length);
+    return VerifierProgram(shapes, null, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length, ring: ring);
   }
 
   /// Compile the wide root program of [tree].
@@ -259,18 +325,29 @@ class VerifierProgram {
   /// The trace rows (main columns) proving that [proof] verifies.
   List<List<int>> witness(StarkProof proof) => witnessAll([proof]);
 
-  /// The trace rows for the inner [proofs] (one per shape); a wide program
-  /// also needs the transfers' [widePublics]. The inner AIR instances
-  /// ([shapes], defaulting to the compiled ones) supply the proofs' public
-  /// inputs. The program columns are recomputed and must match [columns].
+  /// The trace rows for the inner [proofs] (one per shape); a program with
+  /// a ring check needs the [ring] (its roots, 8 lanes each); a wide program
+  /// also needs the [widePublics], every transfer's full lanes
+  /// ([spendLanes], for the witness chunks) and the [subtreePaths]. The
+  /// inner AIR instances ([shapes], defaulting to the compiled ones) supply
+  /// the proofs' public inputs. The program columns are recomputed and must
+  /// match [columns].
   List<List<int>> witnessAll(List<StarkProof> proofs,
-      {List<InnerShape>? shapes, List<int>? widePublics, List<List<List<int>>>? subtreePaths}) {
+      {List<InnerShape>? shapes,
+      List<List<int>>? ring,
+      List<int>? widePublics,
+      List<List<int>>? spendLanes,
+      List<List<List<int>>>? subtreePaths}) {
     shapes ??= this.shapes;
     if (proofs.length != shapes.length) throw ArgumentError('${shapes.length} inner proofs expected');
-    if (wide && (widePublics == null || subtreePaths == null)) {
-      throw ArgumentError('a wide program needs the transfers\' publics and the subtree paths');
+    if (wide && (widePublics == null || subtreePaths == null || spendLanes == null)) {
+      throw ArgumentError('a wide program needs the wide publics, the transfers\' lanes and the subtree paths');
     }
-    final b = VerifierProgramBuilder(shapes, tree, logTrace, proofs, widePublics, subtreePaths);
+    if (this.ring != null && (ring == null || ring.length != this.ring!.size || ring.any((r) => r.length != 8))) {
+      throw ArgumentError('this program checks anchors against a ring of ${this.ring!.size} roots');
+    }
+    final b = VerifierProgramBuilder(shapes, tree, logTrace, proofs, widePublics, subtreePaths,
+        ring: this.ring, ringLanes: ring, spendLanes: spendLanes);
     b.build();
     for (int c = 0; c < VerifierProgramColumns.count; c++) {
       for (int r = 0; r < columns.rows; r++) {
@@ -294,11 +371,15 @@ class VerifierProgram {
   static List<int> nodeDigestOf(Air air, List<int> preRoot) => nodeDigest([statementDigest(air, preRoot)]);
 
   /// A digest-mode program's public input: the chain digest of its inner
-  /// proofs' statement digests.
-  static List<int> nodeDigest(List<List<int>> digests) {
+  /// proofs' statement digests, then of the [ring]'s roots when the program
+  /// checks anchors against one.
+  static List<int> nodeDigest(List<List<int>> digests, {List<List<int>>? ring}) {
     final ts = Poseidon2Transcript();
     for (final d in digests) {
       ts.absorb(d);
+    }
+    for (final r in ring ?? const <List<int>>[]) {
+      ts.absorb(r);
     }
     return ts.state;
   }
@@ -315,6 +396,13 @@ class VerifierProgramBuilder {
   final List<StarkProof>? proofs;
   final List<int>? widePublics;
   final List<List<List<int>>>? subtreePaths;
+
+  /// Digest mode: the anchor check and, in witness mode, the ring's roots.
+  final AnchorRing? ring;
+  final List<List<int>>? ringLanes;
+
+  /// Wide mode, witness: every transfer's full lanes, for the witness chunks.
+  final List<List<int>>? spendLanes;
   final VerifierProgramColumns columns;
   final periods = <_Period>[];
   final vmItems = <_VmItem>[];
@@ -322,7 +410,8 @@ class VerifierProgramBuilder {
   late final _WireRing f = _WireRing(this);
   _Period? _cur; // the transcript's current period (its digest is the state)
 
-  VerifierProgramBuilder(this.shapes, this.tree, this.logTrace, this.proofs, this.widePublics, this.subtreePaths)
+  VerifierProgramBuilder(this.shapes, this.tree, this.logTrace, this.proofs, this.widePublics, this.subtreePaths,
+      {this.ring, this.ringLanes, this.spendLanes})
       : columns = VerifierProgramColumns(1 << logTrace);
 
   bool get witnessMode => proofs != null;
@@ -536,8 +625,8 @@ class VerifierProgramBuilder {
   /// them): its chunks produced as K4 wires for the inner's constraints,
   /// then the preprocessed root chunk bound to [preRoot] (a K8 wire, the
   /// same one the query walks check against) or zero. Returns the last
-  /// period and the public lanes.
-  (_Period, List<Wire>) _statementFree(int i, Wire? preRoot) {
+  /// period, the public lanes and the chunk wires (two K4 per chunk).
+  (_Period, List<Wire>, List<Wire>) _statementFree(int i, Wire? preRoot) {
     final air = shapes[i].air;
     final pubs = air.publicValues;
     final chunkWires = <Wire>[];
@@ -549,7 +638,7 @@ class VerifierProgramBuilder {
       chunkWires.addAll([wa, wb]);
     }
     _cur = preRoot == null ? _absorb(zero: true) : _absorb(w8: preRoot);
-    return (_cur!, _pubLanes(air, chunkWires));
+    return (_cur!, _pubLanes(air, chunkWires), chunkWires);
   }
 
   /// The statement of a verifier proof whose 8-lane public input is the
@@ -582,17 +671,23 @@ class VerifierProgramBuilder {
   }
 
   /// The statement of spend [n] of a wide root: its chunks pinned to the
-  /// public columns, padding and root chunks zero. Returns the pinned
-  /// chunk periods and the last period.
+  /// public columns except the tree's free chunks, which are witness (from
+  /// [spendLanes]); padding and root chunks zero. Returns the chunk
+  /// periods (by chunk) and the last period.
   (List<_Period>, _Period) _statementPinned(int n) {
     final t = tree!;
-    final c0 = t.spendChunks * n;
+    final c0 = t.pinnedChunks * n;
     final chunks = <_Period>[];
+    var pinned = 0;
     for (int c = 0; c < Poseidon2Transcript.statementPeriods - 1; c++) {
-      if (c < t.spendChunks) {
-        chunks.add(_pinnedChunk(c0 + c, chained: c > 0));
-      } else {
+      if (c >= t.spendChunks) {
         _cur = _absorb(zero: true);
+      } else if (t.freeChunks.contains(c)) {
+        List<int> lanes() => [for (int j = 0; j < 8; j++) 8 * c + j < t.spendPublics ? spendLanes![n][8 * c + j] : 0];
+        chunks.add(c == 0 ? _fresh(free: lanes) : (_cur = _absorb(free: lanes)));
+      } else {
+        chunks.add(_pinnedChunk(c0 + pinned, chained: c > 0));
+        pinned++;
       }
     }
     if (t.spendPreRoot.isEmpty) {
@@ -711,17 +806,72 @@ class VerifierProgramBuilder {
   void build() {
     if (tree == null) {
       final digests = <Wire>[];
+      final anchors = <(Wire, Wire, Wire, Wire)>[];
       for (int i = 0; i < shapes.length; i++) {
         final preRoot = shapes[i].R > 0 ? hint8('preRoot$i', () => pfAt(i).preRoot) : null;
-        final (st, pubLane) = _statementFree(i, preRoot);
+        final (st, pubLane, chunks) = _statementFree(i, preRoot);
         digests.add(_digestWire(st));
+        final r = ring;
+        if (r != null) anchors.add((chunks[2 * r.anchorChunk], chunks[2 * r.anchorChunk + 1], pubLane[r.real1], pubLane[r.real2]));
         _verifyInner(i, pubLane, preRoot);
       }
-      _chain(digests).pinPub = true;
+      var last = _chain(digests);
+      final r = ring;
+      if (r != null) {
+        // the ring's roots continue the chain, so they are part of the
+        // public input; their halves are wires the anchor checks read
+        final ringA = <Wire>[], ringB = <Wire>[];
+        for (int k = 0; k < r.size; k++) {
+          final kk = k;
+          last = _cur = _absorb(free: () => ringLanes![kk]);
+          final (a, b) = _hiWires(last, 'ring$k');
+          ringA.add(a);
+          ringB.add(b);
+        }
+        for (int i = 0; i < anchors.length; i++) {
+          final (a0, b0, real1, real2) = anchors[i];
+          _anchorInRing(i, a0, b0, real1, real2, ringA, ringB);
+        }
+      }
+      last.pinPub = true;
     } else {
       _buildWide();
     }
     _finish();
+  }
+
+  /// Spend [i]'s anchor (K4 halves [a0], [b0]) is one of the ring's roots
+  /// unless neither input is real. A selector bit per root, from a hint,
+  /// picks the root: the bits sum to r = real1 OR real2, and the selected
+  /// root's halves equal r times the anchor's. So a real spend with a stale
+  /// anchor has no selector to set, and no witness; a spend of two dummies
+  /// sets none and its anchor is unconstrained, as on chain.
+  void _anchorInRing(int i, Wire a0, Wire b0, Wire real1, Wire real2, List<Wire> ringA, List<Wire> ringB) {
+    final r = f.sub(f.add(real1, real2), f.mul(real1, real2));
+    int chosen() {
+      if (r.lanes[0] == 0) return -1;
+      final anchor = [...a0.lanes, ...b0.lanes];
+      for (int k = 0; k < ringA.length; k++) {
+        final root = ringLanes![k];
+        var same = true;
+        for (int j = 0; j < 8 && same; j++) {
+          same = root[j] == anchor[j];
+        }
+        if (same) return k;
+      }
+      return -1;
+    }
+
+    final sel = [for (int k = 0; k < ringA.length; k++) bitHint('anchor${i}_$k', () => chosen() == k ? 1 : 0)];
+    var sum = sel[0], sa = f.mul(sel[0], ringA[0]), sb = f.mul(sel[0], ringB[0]);
+    for (int k = 1; k < sel.length; k++) {
+      sum = f.add(sum, sel[k]);
+      sa = f.add(sa, f.mul(sel[k], ringA[k]));
+      sb = f.add(sb, f.mul(sel[k], ringB[k]));
+    }
+    assertEq(sum, r);
+    assertEq(sa, f.mul(r, a0));
+    assertEq(sb, f.mul(r, b0));
   }
 
   void _buildWide() {
@@ -737,6 +887,10 @@ class VerifierProgramBuilder {
     // the round chunks and the commitment-tree update
     final r0 = _pinnedChunk(t.roundOffset ~/ 8), r1 = _pinnedChunk(t.roundOffset ~/ 8 + 1), r2 = _pinnedChunk(t.roundOffset ~/ 8 + 2);
     final (ia, _) = _hiWires(r2, 'round');
+    // the ring, once per round: every level-1 digest absorbs it
+    final ringWires = <Wire>[
+      for (int k = 0; k < (t.ring?.size ?? 0); k++) _hi8(_pinnedChunk(t.roundOffset ~/ 8 + 3 + k), 'ring$k'),
+    ];
     _treeUpdate(leaves, _hi8(r0, 'rootBefore'), _hi8(r1, 'rootAfter'), f.limb(ia, 0));
     var digests = digests0;
     for (int l = 0; l < t.depth; l++) {
@@ -744,7 +898,7 @@ class VerifierProgramBuilder {
       final next = <Wire>[];
       final arity = t.arities[l];
       for (int m = 0; m < digests.length ~/ arity; m++) {
-        final d = _digestWire(_chain(digests.sublist(arity * m, arity * (m + 1))));
+        final d = _digestWire(_chain([...digests.sublist(arity * m, arity * (m + 1)), if (l == 0) ...ringWires]));
         final (st, pubLane, root8) = _statementBound(shape.air, d, preRoot);
         if (l == t.depth - 1) {
           _verifyInner(0, pubLane, root8);

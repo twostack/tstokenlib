@@ -58,8 +58,13 @@ class NodeJob {
   final List<PoolPublicInputs> publics;
   final List<StarkProof> proofs;
 
+  /// The round's ring of roots, which the node checks every real spend's
+  /// anchor against and absorbs into its digest.
+  final List<List<int>> ring;
+
   /// The node's public input: the chain digest of the transfers' statement
-  /// digests, which is what pins the returned proof to these transfers.
+  /// digests and the ring, which is what pins the returned proof to these
+  /// transfers in this round.
   final List<int> digest;
 
   NodeJob({
@@ -68,14 +73,19 @@ class NodeJob {
     required this.levelPreRoot,
     required this.publics,
     required this.proofs,
+    required this.ring,
     required this.digest,
   }) {
     if (publics.length != proofs.length || publics.isEmpty) throw ArgumentError('one spend proof per transfer');
     if (levelPreRoot.length != 8) throw ArgumentError('an 8-lane preprocessed root');
+    if (ring.length != anchorRing.size || ring.any((r) => r.length != 8)) throw ArgumentError('a ring of ${anchorRing.size} roots');
     if (digest.length != 8) throw ArgumentError('an 8-lane node digest');
   }
 
   static const p2 = Poseidon2ProofHash();
+
+  /// The anchor check every level-1 node makes (the pool's).
+  static const anchorRing = AnchorRing.pool;
 
   int get arity => publics.length;
 
@@ -86,13 +96,13 @@ class NodeJob {
   /// [digest] before proving, so a job that does not describe itself is
   /// refused instead of producing a proof nobody wants.
   List<int> derivedDigest() =>
-      VerifierProgram.nodeDigest([for (final s in shapes()) VerifierProgram.statementDigest(s.air, const [])]);
+      VerifierProgram.nodeDigest([for (final s in shapes()) VerifierProgram.statementDigest(s.air, const [])], ring: ring);
 
   /// The compiled level program for this job. Compiling is about 0.3 s at
   /// production size and the preprocessed commitment behind it about 6 s, so
   /// a pool member serving many nodes compiles once and keeps the program
   /// for [LocalNodeProver].
-  VerifierProgram compile() => VerifierProgram.compileAll(shapes(), levelParams.logTrace);
+  VerifierProgram compile() => VerifierProgram.compileAll(shapes(), levelParams.logTrace, ring: anchorRing);
 
   /// The AIR the node's proof is checked against.
   VerifierAir airOf(VerifierProgram program) => program.air(digest);
@@ -106,9 +116,9 @@ class NodeJob {
   // ------------------------------------------------------------- encoding
 
   /// Lanes a job occupies before the spend proofs: the two parameter sets,
-  /// the arity, the preprocessed root, the digest and the publics.
+  /// the arity, the preprocessed root, the digest, the ring and the publics.
   static const _paramLanes = 7;
-  int get _headerLanes => 1 + 2 * _paramLanes + 8 + 8 + arity * PoolPublicInputs.count;
+  int get _headerLanes => 1 + 2 * _paramLanes + 8 + 8 + 8 * anchorRing.size + arity * PoolPublicInputs.count;
 
   int get bytes => 4 * _headerLanes + arity * spendCodec.bytes;
 
@@ -145,6 +155,11 @@ class NodeJob {
     }
     for (final v in digest) {
       lane(v);
+    }
+    for (final r in ring) {
+      for (final v in r) {
+        lane(v);
+      }
     }
     for (final p in publics) {
       for (final v in p.toLanes()) {
@@ -192,6 +207,7 @@ class NodeJob {
     final spendParams = params(), levelParams = params();
     final preRoot = [for (int i = 0; i < 8; i++) lane()];
     final digest = [for (int i = 0; i < 8; i++) lane()];
+    final ring = [for (int k = 0; k < anchorRing.size; k++) [for (int i = 0; i < 8; i++) lane()]];
     final publics = [
       for (int i = 0; i < arity; i++) PoolPublicInputs.fromLanes([for (int k = 0; k < PoolPublicInputs.count; k++) lane()])
     ];
@@ -208,6 +224,7 @@ class NodeJob {
         levelPreRoot: preRoot,
         publics: publics,
         proofs: proofs,
+        ring: ring,
         digest: digest);
   }
 }
@@ -258,7 +275,7 @@ class LocalNodeProver implements NodeProver {
     }
     final prog = program ?? job.compile();
     final shapes = job.shapes();
-    final rows = prog.witnessAll(job.proofs, shapes: shapes);
+    final rows = prog.witnessAll(job.proofs, shapes: shapes, ring: job.ring);
     return StarkProver.prove(job.levelParams, prog.air(job.digest), rows, rng: rng, hash: p2, kernels: kernels, verbose: verbose);
   }
 }

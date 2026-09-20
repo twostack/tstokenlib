@@ -16,8 +16,8 @@ For every transfer the script SHALL check that its lanes are canonical, that the
 - **THEN** the round is rejected
 
 ### Requirement: Size limits
-The state script and the round's unlocking data SHALL keep every script under 1,000,000 ops and the transaction under 10 MB; at 32 lanes per transfer the state script binds at about 400 transfers per round.
+The state script and the round's unlocking data SHALL keep every script under 1,000,000 ops and the transaction under 10 MB; at 32 lanes per transfer the state script binds at about 300 transfers per round (its per-transfer cost is the two nullifier insertions, not the lanes).
 
 #### Scenario: Round at plan size
 - **WHEN** a 256-transfer aggregated round is assembled
-- **THEN** the root verifier slot is about 600,000 ops and the transaction under 10 MB
+- **THEN** the root verifier slot is about 650,000 ops and 1.6 MB and the transaction under 10 MB
