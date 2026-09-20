@@ -257,6 +257,8 @@ The design assumes nfRoot is a sorted-leaf Poseidon2 Merkle tree updated in the 
 
 [ACCUMULATORS_AND_SIGMA_PROTOCOLS.md](ACCUMULATORS_AND_SIGMA_PROTOCOLS.md) section 4.12 proposes an RSA accumulator instead and leaves open where the check would run. In this design it would run inside V: batched non-membership with a proof of exponentiation (Boneh, Bünz and Fisch, 2019) is a handful of 128-bit modexps, about 30 KB of script, and the state field is 256 bytes instead of 32. The costs are hash-to-prime for every nullifier, which has to be proved in the spend circuit and is estimated to multiply that circuit by four, and the strong RSA assumption over a modulus nobody has factored. Neither is needed for identity; TSL1 supplies that. The Merkle route is preferred until the accumulator's circuit cost is measured.
 
+There is also a policy limit that bears directly on the accumulator route: `MaxScriptNumLengthPolicy` defaults to 10,000 bytes. Batched non-membership forms the product of the batch's primes in script, and 512 nullifiers at 256 bits each is a 16 KB number, over the limit. The batch would have to be split at about 312 nullifiers per product, or the product taken modulo the challenge prime incrementally, which changes the proof's shape. The Merkle route has no equivalent constraint.
+
 ## 11. Unknowns and unproven assumptions
 
 Each item says what is assumed, what breaks if the assumption is wrong, and how to find out.
@@ -266,18 +268,46 @@ Each item says what is assumed, what breaks if the assumption is wrong, and how 
 **Assumed:** witness N's PP1 unlock can push Y_N raw as one element, and round N+1's V unlock can push a 230 KB proof and an 80 KB rebuild.
 **If wrong:** the design is dead as written. The verifier's identity can only be established by hashing its bytes, and native SHA-256 needs them as a stack element.
 **Find out:** Teranode policy on maximum script element size and maximum unlocking script size. The branch's existing 1.57 MB slot outputs were accepted as outputs; whether the same bytes are accepted as a single push in an input has not been tested. A regtest submission of a 2 MB push settles it.
+**Checked 2026-09-20** against the Teranode policy settings reference (https://bsv-blockchain.github.io/teranode/references/settings/policy_settings/): no element-size setting is listed. The limits that would bind are `MaxScriptSizePolicy` at 100 MB and `MaxStackMemoryUsagePolicy` at 100 MB, both far above 1.5 MB. This is now unlikely to be a problem, but "not listed" is not "no limit", so the regtest submission stays on the list.
 
 ### 11.2 The witness can be 3.3 MB
 
 **Assumed:** policy accepts a 3.3 MB witness transaction.
 **If wrong:** the bundles (0.92 MB) can move back to round outputs at a cost of about 1.8 MB per round, and the design survives. If even that is over, Y can be split.
 **Find out:** the 10 MB per-transaction figure recorded in the Teranode policy memory; confirm it applies to a transaction whose size is almost entirely one input's unlocking script.
+**Checked 2026-09-20:** `MaxTxSizePolicy` defaults to 10,485,760 bytes and the reference draws no distinction by where the bytes sit. A 3.3 MB witness is a third of the limit.
 
 ### 11.3 PP3's partial hash is independent of the witness's size
 
-**Assumed:** PP3 hashes only the witness's last few blocks, so a 3.3 MB witness costs PP3 nothing more than a 3 KB one. The remainder must still fit the block count PP3 unrolls, which constrains which input is last and how large its unlock is. The tool builds the witness twice to compute padding, so an ordering that works for today's PP2 unlock exists.
-**If wrong:** if PP3's remainder had to cover the PP1 unlock, the design is dead; but nothing in ARCHITECTURE.md suggests that, and it would make today's TSL1 impossibly expensive too.
-**Find out:** read `partial_witness_lock_builder.dart` and the witness builder in `state_machine_tool.dart` for the input order and the block count.
+**RESOLVED 2026-09-20, measured.** A real SM witness was built through the tool and its geometry printed (`tool/scratch/witness_tail_probe.dart`):
+
+```
+WITNESS: 11315 B, 3 inputs, 1 output
+  input 0 (funding): 148 B
+  input 1 (PP1):   11047 B   unlock 11004 B
+  input 2 (PP2):      75 B   unlock 34 B
+  output 0:           35 B
+getInOutSize = 111 ; lastInputStart = 11200 ; 11200 % 64 == 0 ALIGNED
+remainder = last 128 B of the padded 11328 = [11200 .. 11328]
+```
+
+PP1's unlock sits at input 1 and is excluded from the hashed tail entirely, so a 1.5 MB push there costs PP3 nothing. The assumption holds and the design's witness shape is sound.
+
+**But the measurement exposes a hard constraint that was not in the design.** `TransactionUtils.computePartialHash` always takes the last 128 bytes, and `calculatePaddingBytes` aligns `lastInputStart` to a 64-byte boundary, so the remainder must cover exactly:
+
+```
+last input (36 + varint + unlock + 4) + output-count varint + ALL outputs + nLockTime + SHA padding = 128
+```
+
+SHA padding is at least 9 bytes (0x80 plus the 8-byte length), so everything before it has a ceiling of **119 bytes**. Today it is 115: PP2's input at 75, the count varint at 1, one 35-byte ModP2PKH output, and 4 bytes of nLockTime. **There are 4 bytes of headroom.**
+
+Three consequences for the pool:
+
+1. The witness carries exactly one output, 35 bytes, as section 4.3 already specifies. It cannot also carry a coordinator change output or an OP_RETURN. Fee change has to come from the funding input's own change, which means the funding input must be exact, or from a separate transaction.
+2. The last input's unlock must stay at or under PP2's 34 bytes. Any pool-specific data added to PP2's unlock breaks the alignment.
+3. `getInOutSize` hardcodes `inputs[2]` and `outputs[0]`. A pool witness with a different input count needs that generalised to "last input" and "all outputs", which is a small change but a required one.
+
+None of this touches the round transaction. The 128-byte rule applies only to the witness being verified, so the round's variable tail of withdrawals and receipts (section 5.7) is unconstrained by PP3.
 
 ### 11.4 PP1_SM accepts a variable tail of outputs
 
@@ -287,15 +317,66 @@ Each item says what is assumed, what breaks if the assumption is wrong, and how 
 
 ### 11.5 PP1's issuance branch checks the funding vout
 
-**Assumed:** issuance requires input 0 to be (T, 1), txid and index both.
-**If wrong:** a funding transaction with a second unspent output allows a second issuance under the same tokenId, and there are two pools with one identity. This is a question about TSL1 itself, not the pool.
-**Find out:** one read of the ISSUANCE branch in the SM generator. Not yet done.
+**RESOLVED 2026-09-20, measured. The answer is neither option, and it invalidates section 8.1's base case.**
+
+The create branch (`_emitCreateFunnel`, and identically `_emitIssueToken` in the NFT generator) never looks at the token transaction's inputs. Its stack is `[preImage, fundingOutpoint, witnessPadding, rabinN, rabinS, rabinPadding, identityTxId, ed25519PubKey]`, with no lhs and no parent raw transaction, so it cannot rebuild the token transaction and does not try. What it checks is:
+
+1. A Rabin signature over `SHA256(identityTxId ‖ ed25519PubKey ‖ tokenId)` against the header's `rabinPubKeyHash`.
+2. That the **witness's** `hashPrevouts` equals `SHA256d(fundingOutpoint ‖ (tokenTxId, 1) ‖ (tokenTxId, 2))`, which pins the witness's three inputs.
+
+Nothing ties `tokenId` to an outpoint that was spent. `tokenId = tokenFundingTx.hash` is assigned off chain by the tool and then only ever carried forward. The Rabin signature is the sole gate, and it is replayable: its message contains no outpoint, no nonce and nothing else specific to one issuance, and it is published on chain in the first witness's unlocking script.
+
+Measured with `tool/scratch/double_issue_probe.dart`:
+
+```
+A issuance ...  funded by opFunding:1
+  A witness PP1 create: ACCEPTED
+B issuance ...  funded by cpFunding:1, SAME tokenId, replayed Rabin sig
+  B PP1 script identical to A: true
+  B witness PP1 create: ACCEPTED
+C issuance ...  SAME tokenId, attacker is owner+operator
+  C PP1 script identical to A: false
+  C witness PP1 create: ACCEPTED
+```
+
+B is a second token with the same tokenId funded by an unrelated UTXO. C goes further: the attacker writes their own PKH into `ownerPKH` and `operatorPKH`, keeps the victim's `tokenId`, replays the issuer's signature, and is accepted. The counterfeit carries the genuine issuer's identity attestation, because that is what the signature covers.
+
+**What this does and does not mean.** It does not let anyone spend an existing token; C is a separate UTXO chain that shares a label, not coins. It does mean `tokenId` is not a unique identifier, so "same tokenId implies same token" is false, and any holder or indexer relying on it can be shown a counterfeit that verifies. Only the create witness was measured; whether chain C then advances through enroll and settle was not tested, though the transfer branches only check parent structure and tokenId continuity, so there is no obvious reason it would not.
+
+**Consequence for this design.** Section 8.1 terminates the induction at "issuance requires input 0 to spend the funding outpoint whose txid is T, and that outpoint is spendable once". That sentence describes what [ARCHITECTURE.md](ARCHITECTURE.md) claims and not what the generator does. As implemented the induction has no anchor, so a forged pool root is creatable and the clone this whole design exists to prevent returns at the base case.
+
+**FIXED in TSL1_SP 2026-09-20.** `_emitCreateFunnel` gained a Phase 0 that anchors the base case. It turned out not to need the output rebuild: pushing the token transaction's own raw bytes and checking `SHA256d(tokenRawTx) == preImage[68:100]` is enough, because that preimage field is the outpoint txid of the PP1 output this witness is spending, which is the token transaction itself. Phase 0 then walks `tokenRawTx` past nVersion and the input-count varint and requires input 0's 36-byte outpoint to equal `tokenId ‖ LE32(1)`.
+
+`tokenRawTx` is pushed at the bottom of the create stack, so every index the later phases use is unchanged, and Phase 0 consumes it and restores the original 8-item layout. The input-count varint is required to be a single byte (fewer than 253 inputs) so the offset to input 0 is fixed; without that check an attacker could shift the parse with a 3-byte varint. The vout is pinned to 1, matching the protocol convention that issuance is funded from output 1, so `(tokenId, 1)` can be spent once. `ShieldedPoolTool.createTokenIssuanceTxn` now throws on any other `fundingVout` rather than building an issuance whose witness could never be created.
+
+Re-running the probe against the fixed archetype:
+
+```
+A witness PP1 create: ACCEPTED
+B witness PP1 create: rejected (SCRIPT_ERR_EQUALVERIFY)
+C witness PP1 create: rejected (SCRIPT_ERR_EQUALVERIFY)
+```
+
+B is conclusive on its own: its PP1 script is byte-identical to A's and A passes, so the only difference is the funding outpoint. Both cases are now regression tests in `test/sp_token_test.dart` under "SP create anchors the base case", since the probe itself lives in git-excluded scratch.
+
+**Section 8.1 now holds as written.** The induction terminates at a base case that requires input 0 to spend `(tokenId, 1)`, an outpoint spendable once.
+
+**Still open in TSL1 proper.** PP1_SM, PP1_NFT, PP1_FT, PP1_RFT, PP1_RNFT and PP1_AT are unchanged and all carry the original unanchored create branch. Fixing them alters their script bytes, which changes every deployed token's locking script, so it is a protocol decision rather than a code change. Flagged in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### 11.6 V's OP_CODESEPARATOR preimage is sound
 
-**Assumed:** with the separator before the checksig, the preimage commits to the tail only, and this is safe because V's identity comes from PP1_N's byte check of Y_N, not from the preimage. The preimage's job in V is to introspect the spending transaction, and a signature over a tail-only scriptCode does that.
-**If wrong:** V's unlock would have to carry a 1.5 MB preimage, which round N+1 then contains and witness N+2 re-pushes, adding about 3 MB per round.
-**Find out:** `docs/checkPreimageOCS_deep_dive.md` and a test that spends a separator-tailed V.
+**RESOLVED 2026-09-20. It already works, at this exact size, in tested code.**
+
+`SlotScript` in `slot_script_common.dart` ends every slot with `<pubkey> OP_CODESEPARATOR OP_CHECKSIG`, and its own comment says "so its scriptCode in the preimage is that one CHECKSIG". The legacy verifier slot is 1.57 MB and the append slot 684 KB, both built that way, and both are exercised end to end by `verifier_slot_test`, `subtree_append_slot_test`, `pp1_sp_legacy_aggregated_test` and `pool_chain_reader_test`, which passes with real proofs. So a multi-megabyte script with a tail-only preimage is not a hypothesis, it is the shipped mechanism.
+
+Soundness, stated properly: with the separator, the scriptCode no longer identifies which script is running, but the preimage's 36-byte `outpoint` field does. One input spends one outpoint, which carries exactly one locking script, and `OP_CHECKSIG` computes the real sighash independently, so a preimage from another input or another transaction cannot be substituted. Not committing to the script text is harmless because the outpoint commits to the UTXO.
+
+By contrast every PP1 generator passes `useCodeSeparator: false` deliberately. PP1 reads its own script out of the preimage's scriptCode to rebuild output 1 without pushing its template separately. That is a saving, not an oversight, and the pool's PP1 must keep it. V has no equivalent need, because its identity comes from PP1's byte check of Y_N, so V takes the separator.
+
+**Two corrections to section 5.5 that came out of this.**
+
+1. **V must use SIGHASH_ALL (0x41), not the slots' SIGHASH_SINGLE (0x43).** The legacy slots use SINGLE because each binds only its own result output at a matching index. V has to read the state header, PP3's value, the withdrawals and the receipts, which means `hashOutputs` must cover all outputs. The legacy state script already uses `sighashAll = 0x41` for that reason. The OCS construction takes the sighash type as a parameter, so ALL and the separator compose without difficulty.
+2. **V may contain exactly one `OP_CODESEPARATOR`, the one in its tail.** Consensus takes the scriptCode from the most recently *executed* separator, while dartsv's `createSighashPreImage` strips to the *first* one in the script. Those agree only when there is one. The verifier program generators emit none today, which was checked, but it is now a constraint on anything added to V.
 
 ### 11.7 The nullifier tree update fits the aggregation circuit at acceptable cost
 

@@ -11,6 +11,7 @@ This document describes the internal architecture of the TSL1 Token Protocol, a 
 3. [Partial SHA256 Witness Mechanism](#partial-sha256-witness-mechanism)
 4. [Transaction Relationships](#transaction-relationships)
 5. [Transaction Flow Diagrams](#transaction-flow-diagrams)
+6. [Design Principle: Where Bytes Are Paid](#design-principle-where-bytes-are-paid)
 
 ---
 
@@ -111,6 +112,40 @@ Inductive step: Transfer — PP1 verifies the parent had valid outputs[1-4],
                 therefore the new transaction inherits validity without
                 checking the grandparent or any earlier ancestor.
 ```
+
+> **The base case does not currently anchor (measured 2026-09-20).**
+> The issuance branch (`_emitIssueToken`, and `_emitCreateFunnel` in the SM
+> generator) never inspects the token transaction's own inputs. It has no lhs
+> and no parent raw transaction on its stack, so it cannot rebuild the token
+> transaction. It checks a Rabin signature over
+> `SHA256(identityTxId ‖ ed25519PubKey ‖ tokenId)` and pins the *witness's*
+> inputs via `hashPrevouts == SHA256d(fundingOutpoint ‖ (tokenTxId,1) ‖ (tokenTxId,2))`.
+> `tokenId = hash(fundingTx)` is assigned off chain and never verified on chain.
+>
+> Because that Rabin message contains no outpoint and no nonce, and the
+> signature is published in the first witness's unlocking script, anyone can
+> replay it to issue a second token carrying the same `tokenId`, with their own
+> `ownerPKH` and `operatorPKH`. Reproduced in
+> `tool/scratch/double_issue_probe.dart`: three issuances, one genuine and two
+> counterfeit, all three create witnesses accepted by the interpreter.
+>
+> This does not allow spending an existing token. A counterfeit is a separate
+> UTXO chain that shares a label, not coins. It does mean `tokenId` is not a
+> unique identifier and cannot be used alone to decide authenticity.
+>
+> The fix is cheaper than the transfer branches' machinery and needs no output
+> rebuild: push the token transaction's own raw bytes, check
+> `SHA256d(tokenRawTx) == preImage[68:100]` (that field is the outpoint txid of
+> the PP1 output the witness is spending, so it is this token transaction), then
+> require input 0's outpoint inside those bytes to equal `tokenId ‖ LE32(1)`.
+> That ties the base case to an outpoint that can be spent once and makes the
+> replay useless.
+>
+> **Implemented in PP1_SP only** (`_emitCreateFunnel`, Phase 0), on the
+> shielded-pool branch, with regression tests in `test/sp_token_test.dart`.
+> PP1_SM, PP1_NFT, PP1_FT, PP1_RFT, PP1_RNFT and PP1_AT are unchanged and still
+> carry the unanchored branch. Fixing them changes their script bytes and so the
+> locking script of every deployed token, which is a protocol decision.
 
 This means a verifier (miner) only needs to evaluate the script for the current transaction. If PP1 succeeds, the token is valid — no SPV proof chain, no indexer lookup, no scanning back to genesis.
 
@@ -313,6 +348,39 @@ The token owner destroys the token by spending all proof outputs (PP1, PP2, PP3)
   Only a single change output remains.
   The token ceases to exist in the UTXO set.
 ```
+
+---
+
+## Design Principle: Where Bytes Are Paid
+
+TSL1 alternates two kinds of transaction. A token transaction spends the previous witness's output and the previous PP3; a witness spends the token transaction's PP1 and PP2. The two are not symmetric in what they cost, and the asymmetry is a design tool for anything built on top of the protocol.
+
+### A token transaction is paid three times
+
+1. It is mined.
+2. Its own PP1, running in its witness, rebuilds it from pushed data: the lhs (version and every input, each with its full unlocking script), the outputs it reconstructs from templates and header fields, and nLockTime. It hashes the result and requires equality with its own outpoint's txid. This is how PP1 knows which ancestor the transaction spent: input 2's outpoint is read from a byte string whose hash the chain has already fixed.
+3. The next token transaction's PP1, running in the next witness, pushes it whole as the parent and hashes it again to match input 2's outpoint.
+
+Because the lhs carries the unlocking scripts, a token transaction's inputs cost as much as its outputs. Any large blob placed in a token transaction, whether as an output script or as unlocking data, is pushed twice more after it is mined.
+
+### A witness is paid once
+
+PP3 verifies the witness by resuming SHA-256 from a midstate over its last few blocks. The next token transaction spends the witness's single 35-byte output with an ordinary signature. Nothing in the protocol ever holds a witness's full bytes on a stack. Its size is bounded only by policy, and its cost is its size.
+
+The one constraint is that the witness's tail must stay within the block count PP3 unrolls, so a bulky input must not be the last input. The witness builder already computes padding by building the transaction twice, so an ordering that works exists.
+
+### The rule
+
+Keep every token transaction small. Put every large thing either in a witness's unlocking data, or in a separate transaction whose bytes are pushed once, in a witness, to establish what it is.
+
+Two things follow from where each script runs.
+
+- **Money moves in the token transaction, so anything that gates money must be an input of it.** A check that runs in the witness runs after the token transaction is mined. It can refuse to continue the chain, which freezes the token, but it cannot undo a payout. A witness-side check turns a dishonest owner's failure into death of the chain, never theft. That is acceptable for structural checks and fatal for value checks.
+- **Data that must be published and bound, but not inspected at spend time, belongs in the witness.** Commit its hash in the token's header; have PP1 check the pushed bytes against that hash in the witness. The bytes are on chain once and never re-pushed.
+
+### Worked example
+
+The shielded pool round is the case that found this. A round carried a 1.5 MB verifier as an output and a 1.4 MB state script, so the round was 8.24 MB and a witness beside it would have pushed the same again. Moving the verifier to a separate transaction that PP3 pins by outpoint and PP1 checks by bytes, moving the ciphertext bundles to the witness, and moving the nullifier work into the proof, leaves a round of about 0.4 MB with a 3.3 MB witness. The verifier still runs in the round, as an input, because it gates withdrawals. See [ZK_SHIELDED_POOL_TSL1_DESIGN.md](ZK_SHIELDED_POOL_TSL1_DESIGN.md), sections 2 and 10.
 
 ---
 
