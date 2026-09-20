@@ -6,6 +6,7 @@ import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/transaction/utils.dart';
 
 // Merchant identity (Bob)
 var operatorWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
@@ -478,6 +479,88 @@ void main() {
           getOperatorFundingTx().hash, counterpartyAddress,
           hex.decode(counterpartyPubkeyHash), hex.decode(operatorPubkeyHash),
           getCounterpartyFundingTx(), counterpartyPrivateKey));
+    });
+  });
+
+  group('SP PP3 pins the verifier slot', () {
+    // The pool's verification must be impossible to skip. PP1 cannot enforce
+    // that, because it runs in the witness, after the round is already mined
+    // and its withdrawals paid. PP3 can: it refuses to be spent unless the
+    // verifier slot it names is also an input of the spending round.
+    List<int> outpoint(List<int> txId, int vout) {
+      var o = Uint8List(36);
+      o.setAll(0, txId);
+      o.buffer.asByteData().setUint32(32, vout, Endian.little);
+      return o;
+    }
+
+    late Transaction opFunding, cpFunding, tokenTx, witnessTx, slotTx;
+    late SVScript pp3Script;
+    late List<int> partialHash, remainder;
+
+    setUp(() {
+      opFunding = getOperatorFundingTx();
+      cpFunding = getCounterpartyFundingTx();
+      slotTx = cpFunding; // only its outpoint matters to PP3
+      var service = ShieldedPoolTool();
+      tokenTx = service.createTokenIssuanceTxn(
+        opFunding, DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+        operatorPub, operatorAddress, hex.decode(operatorPubkeyHash),
+        hex.decode(counterpartyPubkeyHash), 0x3F, 86400, cpFunding.hash,
+        rabinPubKeyHash,
+        nextSlot: outpoint(slotTx.hash, 0),
+      );
+      pp3Script = tokenTx.outputs[3].script;
+      witnessTx = service.createWitnessTxn(
+        DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
+        cpFunding, tokenTx, hex.decode(opFunding.serialize()), counterpartyPub,
+        counterpartyPubkeyHash, ShieldedPoolAction.CREATE,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+      var parts = TransactionUtils()
+          .computePartialHash(hex.decode(witnessTx.serialize()), 2);
+      partialHash = parts.$1;
+      remainder = parts.$2;
+    });
+
+    Transaction round({required bool withSlot}) {
+      var empty = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+      var b = TransactionBuilder()
+          .spendFromTxnWithSigner(
+              DefaultTransactionSigner(sigHashAll, operatorPrivateKey), opFunding, 1,
+              TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+          .spendFromTxn(witnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, empty)
+          .spendFromTxn(tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, empty);
+      if (withSlot) {
+        b.spendFromTxn(slotTx, 0, TransactionInput.MAX_SEQ_NUMBER, empty);
+      }
+      var tx = b
+          .spendToPKH(operatorAddress, BigInt.from(1000))
+          .withFee(BigInt.from(500))
+          .build(false);
+      var pre = Sighash().createSighashPreImage(tx, sigHashAll, 2, pp3Script, BigInt.one);
+      tx.inputs[2].script = PartialWitnessUnlockBuilder(
+              pre!, partialHash, remainder, outpoint(opFunding.hash, 1),
+              extraPrevouts: const <int>[])
+          .getScriptSig();
+      return tx;
+    }
+
+    void spendPP3(Transaction tx) => Interpreter().correctlySpends(
+        tx.inputs[2].script!, pp3Script, tx, 2, verifyFlags, Coin.valueOf(BigInt.one));
+
+    test('accepts a round that spends the named slot at input 3', () {
+      spendPP3(round(withSlot: true));
+    });
+
+    test('rejects a round that skips verification', () {
+      expect(() => spendPP3(round(withSlot: false)), throwsA(isA<ScriptException>()));
+    });
+
+    test('costs 79 bytes over a plain PP3', () {
+      var plain = PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash)).getScriptPubkey();
+      expect(pp3Script.buffer.length - plain.buffer.length, 79);
     });
   });
 

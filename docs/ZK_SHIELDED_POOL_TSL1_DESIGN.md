@@ -138,7 +138,27 @@ Unchanged.
 
 ### 5.4 PP3, pool variant
 
-Everything PP3 does today, plus one embedded field `nextSlot` (36 bytes) and one check: the spending transaction's hashPrevouts must contain `nextSlot` at input 3. This is the check that makes verification impossible to skip. The burn branch is removed; see 5.6.
+**BUILT 2026-09-20.** `WitnessCheckScriptGen.generate` takes an optional 36-byte `nextSlot`. PP3 already pinned the spending transaction to exactly three inputs in order, by requiring
+
+```
+hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ myOutpoint)
+```
+
+where `myOutpoint` is PP3's own outpoint read from its preimage. The pool variant appends two more terms:
+
+```
+hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ myOutpoint ‖ nextSlot ‖ extraPrevouts)
+```
+
+`nextSlot` is embedded in the locking script, so input 3 is fixed at the time the round before it was built. `extraPrevouts` is supplied in the unlock and covers inputs 4 and up, the deposit covenants. Those stay opaque to PP3 on purpose: each covenant enforces itself through its own SIGHASH_SINGLE binding, V's balance equation accounts for them, and no input can create a token output. This is not the `extraPrevouts` weakness of the legacy PP1_SP, where extra inputs were invisible to a script that was supposed to be authorising them.
+
+`nextSlot` is also pushed once at the front of the script and immediately dropped, purely so `PartialWitnessLockBuilder.parse` can read it as `chunks[1]`. The copy the script uses is emitted inline, which keeps it off the altstack and out of the burn path.
+
+Measured: PP3 grows from 49,110 to 49,189 bytes, 79 bytes. With `nextSlot` null the script is byte-identical to before, so every other archetype is untouched; the NFT, FT, RFT, RNFT, AT and SM suites pass unchanged.
+
+Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a round spending the named slot at input 3 is accepted, and the same round with that input removed is rejected.
+
+The burn branch removal is still pending; see 5.6.
 
 ### 5.5 V, the verifier slot script
 

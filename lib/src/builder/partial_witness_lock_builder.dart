@@ -28,11 +28,16 @@ import '../script_gen/witness_check_script_gen.dart';
 class PartialWitnessLockBuilder extends LockingScriptBuilder {
 
   List<int> _ownerPKH;
+  List<int>? _nextSlot;
 
   /// Creates a partial witness locking script builder.
   ///
   /// [_ownerPKH] - 20-byte pubkey hash of the current token owner (needed for burn).
-  PartialWitnessLockBuilder(this._ownerPKH) {
+  /// [nextSlot] - optional 36-byte outpoint of the verifier slot the spending
+  /// transaction must also spend, at input 3. Pool rounds set this; plain TSL1
+  /// tokens leave it null and generate a byte-identical script to before.
+  PartialWitnessLockBuilder(this._ownerPKH, {List<int>? nextSlot})
+      : _nextSlot = nextSlot {
     if (_ownerPKH.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Owner PKH must be 20 bytes");
     }
@@ -43,6 +48,9 @@ class PartialWitnessLockBuilder extends LockingScriptBuilder {
       _ownerPKH = [],
       super.fromScript(script);
 
+  /// The 36-byte verifier-slot outpoint this output pins, or null.
+  List<int>? get nextSlot => _nextSlot;
+
   /// The 20-byte pubkey hash of the current token owner.
   List<int> get ownerPKH => _ownerPKH;
 
@@ -51,6 +59,7 @@ class PartialWitnessLockBuilder extends LockingScriptBuilder {
     return WitnessCheckScriptGen.generate(
       ownerPKH: _ownerPKH,
       pp2OutputIndex: 2,  // NFT always uses PP2 at output index 2
+      nextSlot: _nextSlot,
     );
   }
 

@@ -31,6 +31,7 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _partialHash;
   List<int>? _partialWitnessPreImage;
   List<int>? _fundingOutpoint;
+  List<int>? _extraPrevouts;
   SVPublicKey? _ownerPubKey;
   TokenAction? _action;
 
@@ -40,15 +41,20 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   /// [partialHash] - The intermediate SHA256 hash state.
   /// [partialWitnessPreImage] - The remaining preimage bytes for the witness.
   /// [fundingOutpoint] - The 36-byte outpoint (txid + vout) funding the witness.
+  /// [extraPrevouts] - concatenated outpoints of any inputs after the verifier
+  /// slot, empty when there are none. Required exactly when the PP3 output it
+  /// spends was built with a nextSlot, and omitted otherwise.
   PartialWitnessUnlockBuilder(
     List<int> preImage,
     List<int> partialHash,
     List<int> partialWitnessPreImage,
-    List<int> fundingOutpoint,
-  ) : _preImage = preImage,
+    List<int> fundingOutpoint, {
+    List<int>? extraPrevouts,
+  }) : _preImage = preImage,
       _partialHash = partialHash,
       _partialWitnessPreImage = partialWitnessPreImage,
-      _fundingOutpoint = fundingOutpoint;
+      _fundingOutpoint = fundingOutpoint,
+      _extraPrevouts = extraPrevouts;
 
   /// Creates a partial witness unlock builder for burning a token.
   PartialWitnessUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
@@ -89,8 +95,11 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
         .addData(Uint8List.fromList(_preImage!))
         .addData(Uint8List.fromList(_partialHash!))
         .addData(Uint8List.fromList(_partialWitnessPreImage!))
-        .addData(Uint8List.fromList(_fundingOutpoint!))
-        .opCode(OpCodes.OP_0); // function selector: unlock=0
+        .addData(Uint8List.fromList(_fundingOutpoint!));
+    if (_extraPrevouts != null) {
+      builder.addData(Uint8List.fromList(_extraPrevouts!));
+    }
+    builder.opCode(OpCodes.OP_0); // function selector: unlock=0
 
     var result = builder.build();
     return result;

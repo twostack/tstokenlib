@@ -47,11 +47,22 @@ class WitnessCheckScriptGen {
   static SVScript generate({
     required List<int> ownerPKH,
     int pp2OutputIndex = 2,
+    List<int>? nextSlot,
   }) {
+    if (nextSlot != null && nextSlot.length != 36) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, 'nextSlot must be a 36-byte outpoint');
+    }
     var b = ScriptBuilder();
 
     // Push constructor params as data (for parseability)
     b.addData(Uint8List.fromList(ownerPKH));
+    if (nextSlot != null) {
+      // Pushed here only so parse() can read it as chunks[1]; the copy the
+      // script actually uses is emitted inline where the outpoints are built,
+      // which keeps it off the altstack and out of the burn path.
+      b.addData(Uint8List.fromList(nextSlot));
+      b.opCode(OpCodes.OP_DROP);
+    }
 
     // Function selector: scriptSig puts selector on top of stack.
     // After ownerPKH push: [...args, selector, ownerPKH]
@@ -59,7 +70,7 @@ class WitnessCheckScriptGen {
     b.opCode(OpCodes.OP_NOTIF);   // selector=OP_0 (falsy) → unlock path
 
     // === UNLOCK PATH ===
-    _emitUnlockPath(b, pp2OutputIndex);
+    _emitUnlockPath(b, pp2OutputIndex, nextSlot);
 
     b.opCode(OpCodes.OP_ELSE);    // selector=OP_1 (truthy) → burn path
 
@@ -79,9 +90,14 @@ class WitnessCheckScriptGen {
   ///
   /// Stack at entry: [preImage, partialHash, witnessPreImage, fundingOutpoint, ownerPKH]
   /// Stack at exit: [TRUE] (from OP_CHECKSIG)
-  static void _emitUnlockPath(ScriptBuilder b, int pp2OutputIndex) {
+  static void _emitUnlockPath(ScriptBuilder b, int pp2OutputIndex, List<int>? nextSlot) {
     // Drop ownerPKH (not needed for unlock)
     b.opCode(OpCodes.OP_DROP);
+    if (nextSlot != null) {
+      // extraPrevouts sits directly under ownerPKH in the pool unlock. Park it
+      // at the bottom of the altstack; everything below pushes and pops above it.
+      b.opCode(OpCodes.OP_TOALTSTACK);
+    }
     // Stack: [preImage, partialHash, witnessPreImage, fundingOutpoint]
 
     // Save fundingOutpoint to altstack
@@ -118,7 +134,7 @@ class WitnessCheckScriptGen {
     // Altstack: [fundingOutpoint]
 
     // === HashPrevOuts verification ===
-    _emitHashPrevOutsVerification(b);
+    _emitHashPrevOutsVerification(b, nextSlot);
     // Stack: [preImage]
 
     // === checkPreimageOCS ===
@@ -230,7 +246,7 @@ class WitnessCheckScriptGen {
   ///
   /// Pre: [witnessTxId, preImage] on stack. Altstack: [fundingOutpoint]
   /// Post: [preImage] on stack. Altstack: empty.
-  static void _emitHashPrevOutsVerification(ScriptBuilder b) {
+  static void _emitHashPrevOutsVerification(ScriptBuilder b, [List<int>? nextSlot]) {
     b.opCode(OpCodes.OP_FROMALTSTACK);  // fundingOutpoint (36 bytes, from scriptSig)
     // Stack: [witnessTxId, preImage, fundingOutpoint(36B)]
 
@@ -257,6 +273,19 @@ class WitnessCheckScriptGen {
 
     b.opCode(OpCodes.OP_CAT);
     // Stack: [witnessTxId, preImage, allOutpoints(108B)]
+
+    if (nextSlot != null) {
+      // Input 3 must be the verifier slot this output names. Without it a round
+      // could skip verification entirely, be mined, and pay out withdrawals
+      // against a claim nothing ever checked. PP1 cannot enforce this because it
+      // runs in the witness, after the round is already mined.
+      b.addData(Uint8List.fromList(nextSlot));
+      b.opCode(OpCodes.OP_CAT);
+      // Inputs 4.. are deposit covenants, opaque here. They enforce themselves
+      // and no input can create a token output, so they need no pinning.
+      b.opCode(OpCodes.OP_FROMALTSTACK);
+      b.opCode(OpCodes.OP_CAT);
+    }
 
     // calcHashPrevOuts = sha256(sha256(allOutpoints))
     b.opCode(OpCodes.OP_SHA256);

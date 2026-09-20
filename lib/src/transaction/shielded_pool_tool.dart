@@ -76,7 +76,8 @@ class ShieldedPoolTool {
       List<int> rabinPubKeyHash,
       {int fundingVout = 1,
        int witnessFundingVout = 1,
-       List<int>? metadataBytes}) {
+       List<int>? metadataBytes,
+       List<int>? nextSlot}) {
 
     // PP1_SP's create branch requires input 0 to spend (tokenId, 1), which is
     // what makes tokenId unique. Funding from any other index would build an
@@ -109,7 +110,10 @@ class ShieldedPoolTool {
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
 
     // PartialWitness output
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(operatorAddress.pubkeyHash160));
+    // nextSlot makes PP3 refuse to be spent unless the verifier slot it names is
+    // also an input of the spending round. Null for plain TSL1 tokens.
+    var shaLocker = PartialWitnessLockBuilder(hex.decode(operatorAddress.pubkeyHash160),
+        nextSlot: nextSlot);
     tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
 
     // Metadata OP_RETURN output
