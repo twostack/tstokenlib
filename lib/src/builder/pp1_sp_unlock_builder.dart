@@ -142,8 +142,11 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
 
     switch (action!) {
       case ShieldedPoolAction.CREATE:
-        // Stack: [preImage, fundingOutpoint, witnessPadding, rabinN, rabinS,
-        //         rabinPadding, identityTxId, ed25519PubKey, OP_0]
+        // Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding, rabinN,
+        //         rabinS, rabinPadding, identityTxId, ed25519PubKey, OP_0]
+        // tokenRawTx is first so it lands at the bottom, leaving every other
+        // stack index unchanged for the phases after the anchor check.
+        result.addData(Uint8List.fromList(_prevTokenTx!));
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_fundingOutpoint!));
         result.addData(Uint8List.fromList(_witnessPadding!));

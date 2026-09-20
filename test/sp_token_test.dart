@@ -413,6 +413,74 @@ void main() {
     });
   });
 
+  group('SP create anchors the base case', () {
+    // Before the anchor check existed, create verified only a Rabin signature
+    // over SHA256(identityTxId || ed25519PubKey || tokenId) plus the witness's
+    // own hashPrevouts. It never looked at the token transaction's inputs, so
+    // the attestation (published in the witness) could be replayed to mint a
+    // counterfeit carrying someone else's tokenId. Both cases below were
+    // ACCEPTED before the fix.
+    List<int> outpoint(List<int> txId, int vout) {
+      var o = Uint8List(36);
+      o.setAll(0, txId);
+      o.buffer.asByteData().setUint32(32, vout, Endian.little);
+      return o;
+    }
+
+    Transaction counterfeit(List<int> tokenId, Address owner, List<int> ownPKH,
+        List<int> otherPKH, Transaction funding, SVPrivateKey fundingKey) {
+      return (TransactionBuilder()
+            ..spendFromTxnWithSigner(
+                DefaultTransactionSigner(sigHashAll, fundingKey), funding, 1,
+                TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(fundingKey.publicKey))
+            ..withFeePerKb(100)
+            ..spendToLockBuilder(
+                PP1SpLockBuilder(owner, tokenId, ownPKH, otherPKH, rabinPubKeyHash, 0, 0,
+                    List<int>.filled(32, 0), 0x3F, 86400), BigInt.one)
+            ..spendToLockBuilder(
+                PP2LockBuilder(outpoint(getOperatorFundingTx().hash, 1),
+                    hex.decode(owner.pubkeyHash160), 1, hex.decode(owner.pubkeyHash160)),
+                BigInt.one)
+            ..spendToLockBuilder(
+                PartialWitnessLockBuilder(hex.decode(owner.pubkeyHash160)), BigInt.one)
+            ..spendToLockBuilder(MetadataLockBuilder(), BigInt.zero)
+            ..sendChangeToPKH(owner))
+          .build(false);
+    }
+
+    void expectCreateRejected(Transaction issuance) {
+      var service = ShieldedPoolTool();
+      var witness = service.createWitnessTxn(
+        DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+        getOperatorFundingTx(), issuance,
+        hex.decode(getOperatorFundingTx().serialize()), operatorPub,
+        operatorPubkeyHash, ShieldedPoolAction.CREATE,
+        rabinN: rabinNBytes, rabinS: rabinSBytes, rabinPadding: rabinPaddingValue,
+        identityTxId: dummyIdentityTxId, ed25519PubKey: dummyEd25519PubKey,
+      );
+      expect(
+          () => Interpreter().correctlySpends(witness.inputs[1].script!,
+              issuance.outputs[1].script, witness, 1, verifyFlags, Coin.valueOf(BigInt.one)),
+          throwsA(isA<ScriptException>()));
+    }
+
+    test('rejects a second token carrying an existing tokenId', () {
+      // Identical PP1 script to the genuine issuance, funded by an unrelated
+      // UTXO, replaying the issuer's Rabin signature verbatim.
+      expectCreateRejected(counterfeit(
+          getOperatorFundingTx().hash, operatorAddress,
+          hex.decode(operatorPubkeyHash), hex.decode(counterpartyPubkeyHash),
+          getCounterpartyFundingTx(), counterpartyPrivateKey));
+    });
+
+    test('rejects a counterfeit that names the attacker as owner', () {
+      expectCreateRejected(counterfeit(
+          getOperatorFundingTx().hash, counterpartyAddress,
+          hex.decode(counterpartyPubkeyHash), hex.decode(operatorPubkeyHash),
+          getCounterpartyFundingTx(), counterpartyPrivateKey));
+    });
+  });
+
   group('SP enroll', () {
     test('enroll lifecycle: issue → create witness → enroll → enroll witness', () {
       var service = ShieldedPoolTool();

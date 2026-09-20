@@ -78,6 +78,14 @@ class ShieldedPoolTool {
        int witnessFundingVout = 1,
        List<int>? metadataBytes}) {
 
+    // PP1_SP's create branch requires input 0 to spend (tokenId, 1), which is
+    // what makes tokenId unique. Funding from any other index would build an
+    // issuance whose witness can never be created.
+    if (fundingVout != 1) {
+      throw ArgumentError.value(fundingVout, 'fundingVout',
+          'PP1_SP issuance must be funded from output 1 of the funding transaction');
+    }
+
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var tokenTxBuilder = TransactionBuilder();
     var tokenId = tokenFundingTx.hash;
@@ -172,6 +180,13 @@ class ShieldedPoolTool {
     var pp2Output = tokenTx.outputs[pp2OutputIndex].serialize();
     var tokenChangeAmount = tokenTx.outputs[0].satoshis;
 
+    // CREATE anchors the base case, so PP1 needs THIS token transaction's own
+    // bytes to check that its input 0 spends (tokenId, 1). Every other action
+    // is an inductive step and needs the parent's bytes instead.
+    var pp1ParentBytes = action == ShieldedPoolAction.CREATE
+        ? hex.decode(tokenTx.serialize())
+        : parentTokenTxBytes;
+
     // Rabin signature is pre-computed by the caller. The tool never sees the private key.
     var fundingOutpoint = Uint8List(36);
     fundingOutpoint.setAll(0, fundingTx.hash);
@@ -179,7 +194,7 @@ class ShieldedPoolTool {
 
     var pp1UnlockBuilder = PP1SpUnlockBuilder(
         preImagePP1!, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
+        tokenChangeAmount, tokenTxLHS, pp1ParentBytes, paddingBytes,
         action, fundingOutpoint,
         eventData: eventData,
         counterpartyShareAmount: counterpartyShareAmount,
@@ -200,7 +215,7 @@ class ShieldedPoolTool {
 
     pp1UnlockBuilder = PP1SpUnlockBuilder(
         preImagePP1, pp2Output, operatorPubkey, tokenChangePKH,
-        tokenChangeAmount, tokenTxLHS, parentTokenTxBytes, paddingBytes,
+        tokenChangeAmount, tokenTxLHS, pp1ParentBytes, paddingBytes,
         action, fundingOutpoint,
         eventData: eventData,
         counterpartyShareAmount: counterpartyShareAmount,

@@ -191,13 +191,80 @@ class PP1SpScriptGen {
   // createFunnel (selector=0)
   // =========================================================================
 
-  /// Stack: [preImage, fundingOutpoint, witnessPadding, rabinN, rabinS,
-  ///         rabinPadding, identityTxId, ed25519PubKey]
+  /// Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding, rabinN,
+  ///         rabinS, rabinPadding, identityTxId, ed25519PubKey]
   /// Altstack: [td, bm, ch, mc, state, rabinPKH, counterpartyPKH, operatorPKH, tokenId, ownerPKH]
   static void _emitCreateFunnel(ScriptBuilder b) {
-    // Stack (8 items, top=0):
+    // Stack (9 items, top=0):
     //   ed25519PubKey=0, identityTxId=1, rabinPadding=2, rabinS=3, rabinN=4,
-    //   witnessPadding=5, fundingOutpoint=6, preImage=7
+    //   witnessPadding=5, fundingOutpoint=6, preImage=7, tokenRawTx=8
+
+    // --- Phase 0: anchor the base case to a once-spendable outpoint ---
+    //
+    // Without this, create checks only a Rabin signature over
+    // SHA256(identityTxId || ed25519PubKey || tokenId) and the witness's own
+    // hashPrevouts. It never looks at the token transaction's inputs, so
+    // tokenId is bound to nothing on chain and the Rabin attestation, which is
+    // published in this very witness, can be replayed to mint a counterfeit
+    // token carrying the same tokenId. Measured in
+    // tool/scratch/double_issue_probe.dart before this phase existed.
+    //
+    // Two checks close it:
+    //   SHA256d(tokenRawTx) == preImage[68:100]     the bytes are this token tx
+    //   tokenRawTx input 0 outpoint == tokenId || LE32(1)
+    //
+    // tokenRawTx is pushed at the BOTTOM of the create stack so every index
+    // the later phases use is unchanged. This phase consumes it and restores
+    // the original 8-item layout.
+
+    // SHA256d(tokenRawTx) must equal the outpoint txid in our own preimage,
+    // which is the token transaction whose PP1 output this witness is spending.
+    OpcodeHelpers.pushInt(b, 8);
+    b.opCode(OpCodes.OP_PICK);           // copy tokenRawTx
+    b.opCode(OpCodes.OP_HASH256);        // computed txid
+    OpcodeHelpers.pushInt(b, 8);
+    b.opCode(OpCodes.OP_PICK);           // copy preImage
+    OpcodeHelpers.pushInt(b, 100);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    OpcodeHelpers.pushInt(b, 68);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+
+    // Walk tokenRawTx to input 0's 36-byte outpoint: skip nVersion, then the
+    // input-count varint, which must be a single byte so the offset is fixed.
+    OpcodeHelpers.pushInt(b, 8);
+    b.opCode(OpCodes.OP_PICK);           // copy tokenRawTx
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);   // drop nVersion
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT);          // [countByte, rest], rest on top
+    b.opCode(OpCodes.OP_SWAP);           // countByte on top
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);            // unsigned: 0xfd..0xff must not read as negative
+    b.opCode(OpCodes.OP_BIN2NUM);
+    OpcodeHelpers.pushInt(b, 0xfd);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_VERIFY);
+    OpcodeHelpers.pushInt(b, 36);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP); // input 0 outpoint
+
+    // outpoint == tokenId || LE32(1). TSL1 funds issuance from output 1 of the
+    // funding transaction, so pinning the index makes (tokenId, 1) spendable once.
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
+    b.opCode(OpCodes.OP_DUP);
+    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
+    b.opCode(OpCodes.OP_CAT);            // expected outpoint
+    OpcodeHelpers.pushInt(b, 3);
+    b.opCode(OpCodes.OP_ROLL);           // bring the real outpoint up
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+    b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId back
+    b.opCode(OpCodes.OP_TOALTSTACK);     // ownerPKH back
+
+    // Drop tokenRawTx; the stack is now exactly what the phases below expect.
+    OpcodeHelpers.pushInt(b, 8);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_DROP);
 
     // --- Phase 1: Validate witnessPadding length ---
     b.opCode(OpCodes.OP_5);
