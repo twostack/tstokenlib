@@ -2317,6 +2317,204 @@ the round, at about 298 transfers. Growing the round from here means cheaper
 nullifier insertions (a shallower set, or batching the paths), not fewer
 lanes.
 
+### Optimization paused: what is left and what it is worth (planned)
+
+Work on prover speed, memory and round capacity stops here, with the round
+inside its budget: 222.5 s with the GPU on and 305.8 s without, a peak of
+15.4 GB, a root script at 647,463 of 1,000,000 ops. The next effort goes to
+running the pool end to end on a test network. This section is the backlog as
+it stands, so that picking it up again does not mean measuring it again.
+
+**Prover time.** One stage is now 28% of the round and the three pieces below
+are what it is made of. Nothing else in the round is worth touching before
+them; every other stage is under a tenth.
+
+| candidate | worth | cost | note |
+| --- | --- | --- | --- |
+| constraint program on the GPU | about 44 s | large | the interpreter walks the recorded program per row; a Metal port is a second implementation of the constraint evaluator and must stay byte-identical |
+| composition setup into the kernel | about 17 s | small | the linear forms evaluated row by row, the periodic columns and the divisor inversions are still Dart; the kernel already has the data |
+| the reuse path's shared buffers | about 6 s | small | with the GPU on, the constraint program reads Metal shared buffers where it used to read plain memory, and pays for it at levels 1 and 2 (+26% and +16%) |
+
+The order is by ratio, not by size: the setup and the shared-buffer read are
+both small pieces of work, and together they are about 23 s. The GPU port of
+the constraint program is the only one that needs a design.
+
+**Memory.** The round peaks at 15.4 GB, set by level 2 (a 2^21 trace at
+blowup 8). No proposal exists for any of these and none is needed to run the
+pool as it stands.
+
+| candidate | worth | note |
+| --- | --- | --- |
+| cache discipline | about 1.4 GB | preprocessed columns held past their last use |
+| lazy Merkle paths | about 1.5 GB | query paths materialised in full rather than walked |
+| packed witness | about 0.2 GB | trace rows as one flat buffer |
+
+**Round capacity.** A round is capped at about 298 transfers by the state
+script, not by the proof and no longer by the lanes: after the lane
+reduction, a transfer's 3,348 ops are almost entirely its two nullifier
+insertions, two depth-32 Merkle paths each. Growing the round means a
+shallower nullifier set, batched insertion paths, or moving the insertion
+into the proof the way the anchor check moved in. That last one is the same
+shape of change as lane reduction and would be the place to start.
+
+**What is deliberately not on this list.** The narrowing levels' parameters
+and the node stages were both worked through to a measured stop, and the
+remaining stages of a node are all small. Spend proving in the wallet (about
+5 s) has never been the constraint. The verifier slot's unclaimed script cuts
+(Lagrange-form periodic evaluation, about 20 KB; QM31-coefficient zero pins,
+about 3 KB) are small against a 1.59 MB slot and only matter if a script-size
+limit is in the way.
+
+### The end-to-end MVP and the deposit handshake (measured)
+
+With optimization paused the next goal is a pool running end to end on the
+local regtest network: issuance, deposits, wallet-side accounting, a
+withdrawal submitted to the coordinator, the payout handed back, and then a
+transfer between two wallets. The walkthrough from the wallet's side, with
+every transaction laid out output by output, is kept as a page
+(https://claude.ai/artifact/SNrxWZBYSMSyPvN8qaoHWP); this section records what
+measuring it found.
+
+**Direct-slot mode for the MVP.** One verifier slot per transfer and one
+append slot, the state script checking the rest. The coordinator proves
+nothing: each wallet proves its own spend and the chain checks them one by
+one. The aggregated mode folds every proof into one root slot and changes
+only the coordinator, so nothing built wallet-side is thrown away moving up.
+
+**What the operations cost**, at production spend parameters with the native
+kernels, one laptop (`tool/scratch/round_assembly_time.dart`,
+`tool/scratch/assembly_breakdown.dart`):
+
+| step | k = 2 | k = 4 | k = 8 |
+| --- | --- | --- | --- |
+| spend proof, in the wallet | 0.17 to 0.26 s | same | same |
+| verify at intake | 3 to 8 ms | | |
+| round transaction | 3.02 MB | 4.07 MB | 6.17 MB |
+| assemble the round | 3.1 s | 6.6 s | 16.7 s |
+| one sighash preimage | 503 ms | 719 ms | 1,109 ms |
+
+The proof is fast: the circuit is 4,096 rows, and the figure of five seconds
+carried in earlier notes was the pure-Dart one. Assembly is the cost, and
+almost all of it is sighash preimages, one per input, each a full pass over
+the transaction because dartsv recomputes the prevouts, sequence and outputs
+hashes for every input instead of once. That is the quadratic in the table
+and it is an implementation artifact: caching the three hashes across inputs
+makes assembly one pass at any round size. Genesis is 2.92 MB, and the round
+at eleven transfers approaches the 10 MB transaction policy, which is what
+bounds the mode.
+
+**The handshake, and what walking it exposed.** A deposit's funding input
+sits inside the round the coordinator assembles and signs over all of it, so
+the depositor cannot sign until the round has closed and been assembled: a
+deposit is a two-visit operation. Worse, because a signature covers the whole
+transaction, one depositor failing to sign changes the vault and the outputs
+and invalidates every other depositor's signature, and the round is
+re-assembled and re-signed by everyone who remains. That is tolerable at one
+deposit per round and not as a design. Signing only one's own input does not
+help, since the outputs are still the coordinator's.
+
+Zcash has no such step because its tree and nullifier set are consensus
+state; ours exists because the pool is one contended UTXO, which is the price
+of unlinkability on this chain. Rollups meet the same problem and solve
+deposits with a bridge: the user's own transaction, absorbed by the sequencer
+later.
+
+**Next: a deposit covenant.** The deposit becomes the user's own transaction
+creating an output that carries the note commitment and the pool's identity,
+locked so it can only be spent by a transaction that also spends the pool
+state and appends that commitment to the tree. Anyone may then sweep it into
+a round: no user signature in the round, no handshake, no dropout coupling,
+and the coordinator becomes a permissionless role rather than a trusted
+party. Its script has to be sized against the 500,000 byte policy before it
+is specified. The fungible-token archetype was considered from first
+principles for the shielded leg and cannot carry it, since spending a UTXO
+names it; its shape fits exactly this deposit layer, and separately a
+confidential (amount-hiding, graph-public) token.
+
+### The pool chain can be cloned, and what closing it would cost (measured)
+
+2026-09-20. A pool state can be counterfeited. Writing a live phase 1 header into
+an output of an ordinary transaction, copying the verifier and append slot scripts
+beside it at the vouts the state script expects, and spending a round off it is
+accepted by the interpreter on every input. There is no genesis behind it, no Rabin
+signature and no funding outpoint, and the tokenId in the forged header can be the
+real pool's. `tool/scratch/clone_the_chain.dart` is the reproduction.
+
+The consequence is not theft from the live pool, whose vault and tree a forged chain
+cannot reach. It is that identity stops being decidable from a UTXO. A forger can
+copy the genuine root into the forged ring, so a user's spend proof verifies against
+the forgery, deposits into it fund the forger, and the nullifier set, which is the
+pool's only protection against spending a note twice, duplicates along with the
+chain. Deciding which output is the real pool then needs a walk back to a genesis
+you trust, which is the back to genesis trace TSL1's inductive proof exists to
+remove.
+
+TSL1 does not have this hole because its induction is carried by spends rather than
+by bytes. PP1, spent by the witness transaction, rebuilds the whole transaction it
+lives in from the supplied left hand side plus the outputs it reconstructs, and
+checks the double hash against the txid its spender references, which pins the
+inputs as well as the outputs. It then hashes the parent's raw bytes and requires
+its own input 2 to spend that parent's PP3. Spending PP3 forces PP3 to run, which
+demands the previous witness transaction existed, which demands the parent's PP1 and
+PP2 were spent, and that PP1 execution checked its own parent. The regress ends at
+issuance, which requires input 0 to spend the funding output whose txid is the
+tokenId, and that outpoint is spendable once. Bytes can be copied. Spends cannot.
+
+The pool pins its successor's inputs through hashPrevouts and its outputs through
+hashOutputs, and its body propagates because the child is rebuilt as a new header
+plus the script's own body taken from the scriptCode. The create path binds the
+prevouts to the tokenId's own output, so a genesis is unique. What is missing is any
+requirement that the parent was a valid round, so the create path is a floor that
+nothing forces a chain to pass through. The note earlier in this document that the
+inductive check "should carry over without PP2 and PP3" was an assumption, flagged
+unverified at the time, and it is now known to be wrong.
+
+Two routes to close it were costed and neither fits.
+
+The TSL1 route needs a witness transaction, and a witness transaction pushes the
+entire raw parent transaction as push data in its input: `state_machine_tool.dart`
+passes `parentTokenTxBytes` into the witness builder, where it lands in the PP1
+unlock. That is a second transaction the size of the round, about 3.1 MB beside a
+3.02 MB round at k = 2 and about 8.3 MB beside an 8.24 MB round at 256 transfers,
+roughly 16.5 MB of chain per round with the witness alone near the 10 MB per
+transaction policy.
+
+The proof route is incrementally verifiable computation over the transaction chain,
+in the shape of twostack/onesatrollup: prove that the double hash of prefix, parent
+txid and postfix equals this transaction's id, and that the parent's proof verifies.
+Placement works, because the proof for round N goes in round N + 1's unlocking
+script, and the state script already reads txid N from its own preimage outpoint and
+can carry the genesis id beside the tokenId. That reference implementation makes
+only the current txid public, so its statement is satisfied by every transaction on
+the network; the genesis id has to be a second public input threaded through
+unchanged.
+
+The cost was measured by building a minimal SHA-256 AIR,
+`tool/scratch/sha256_air.dart`, correct against package:crypto with all 446
+constraints vanishing on every row. One row per compression round gives 64 rows and
+310 columns per 64 byte block, which is 310 trace cells per message byte against
+Poseidon2's 16.5, so 18.8 times the cost per byte in 19.4 times the columns. With
+the native kernels it proves at 3.0 to 3.2 ms per block, so 2^18 rows covers 256 KB
+of transaction in 13.2 s.
+
+Hashing a round therefore costs 12 nodes at k = 2 and 33 at 256 transfers, and the
+work is serial between rounds, because the proof for round N cannot start before
+round N exists and must finish before round N + 1 can be built. It sets the round
+interval at 3.5 minutes at k = 2, where the whole point of direct slot mode was that
+the coordinator proves nothing, and at 8 minutes for 256 transfers on top of the
+222 s the transfers already cost. A one minute ancestry budget would need a round
+transaction of about 1.15 MB.
+
+Round size is the binding constraint in three separate places: the 1.7 MB a deposit
+covenant must re-push to introspect the outputs, the ceiling of three deposits per
+round, and the hashing above. A 256 transfer round measures about 8.24 MB, of which
+72 percent is two scripts each appearing twice, the state script and the root
+verifier slot, once as an output and once inside the unlock. Removing that
+duplication reaches about 5.3 MB, still four to five times above where ancestry
+becomes affordable.
+
+The shielded pool is parked here.
+
 ### The key hierarchy (built)
 
 One spending key did everything: `pk_d = H(sk, d)`, `nf = H(sk, rho)`, and the
