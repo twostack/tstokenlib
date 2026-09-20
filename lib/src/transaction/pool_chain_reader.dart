@@ -15,21 +15,21 @@
 */
 
 import 'package:dartsv/dartsv.dart';
-import '../builder/pp1_sp_lock_builder.dart';
+import '../builder/pp1_sp_legacy_lock_builder.dart';
 import '../crypto/nullifier_set.dart';
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/note_encryption.dart';
 import '../script_gen/pool_spend_air.dart';
-import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/pp1_sp_legacy_script_gen.dart';
 import '../script_gen/slot_script_common.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
-import 'shielded_pool_tool.dart';
+import 'shielded_pool_legacy_tool.dart';
 
 /// What one round did, as read from its transaction: the publics of every
 /// used verifier slot (null for an idle one), the subtree index the round
 /// filled, and the leaves it appended (transfer t's commitments at 2t and
-/// 2t+1, empty leaves for an idle slot; see [ShieldedPoolTool.roundLeaves]).
+/// 2t+1, empty leaves for an idle slot; see [ShieldedPoolLegacyTool.roundLeaves]).
 class PoolRound {
   final Transaction tx;
   final List<PoolPublicInputs?> transfers;
@@ -58,7 +58,7 @@ class PoolRound {
 /// to (the append result and the new header), so a bug in either would be
 /// caught at the first round rather than at the wallet's next spend.
 class PoolChainReader {
-  final PP1SpScriptGen gen;
+  final PP1SpLegacyScriptGen gen;
   final PoolLedger ledger;
   final List<PoolRound> rounds = [];
 
@@ -68,13 +68,13 @@ class PoolChainReader {
 
   /// Start from the genesis (the create): output 0 is the live state with
   /// an empty tree and an empty nullifier set.
-  factory PoolChainReader.fromGenesis(PP1SpScriptGen gen, Transaction genesisTx) {
-    final state = genesisTx.outputs[ShieldedPoolTool.stateVout];
-    final header = PP1SpLockBuilder.fromScript(state.script).header;
+  factory PoolChainReader.fromGenesis(PP1SpLegacyScriptGen gen, Transaction genesisTx) {
+    final state = genesisTx.outputs[ShieldedPoolLegacyTool.stateVout];
+    final header = PP1SpLegacyLockBuilder.fromScript(state.script).header;
     if (header.phase != 1) throw FormatException('output 0 is not a live pool state');
     if (header.size != 0) throw FormatException('not a genesis: the tree is not empty');
     final ledger = PoolLedger(header, state.satoshis.toInt(), genesisTx);
-    if (!_bytesEqual(header.nfRoot, ledger.nullifiers.root) || !_bytesEqual(header.cmRoot, PP1SpHeader.emptyRootBytes)) {
+    if (!_bytesEqual(header.nfRoot, ledger.nullifiers.root) || !_bytesEqual(header.cmRoot, PP1SpLegacyHeader.emptyRootBytes)) {
       throw FormatException('not a genesis: roots are not the empty roots');
     }
     _checkSlots(gen, genesisTx);
@@ -86,7 +86,7 @@ class PoolChainReader {
   PoolRound apply(Transaction roundTx) {
     if (gen.aggregated) return _applyAggregated(roundTx);
     final parent = ledger.tx;
-    _expectSpends(roundTx, 0, parent, ShieldedPoolTool.stateVout);
+    _expectSpends(roundTx, 0, parent, ShieldedPoolLegacyTool.stateVout);
     for (int i = 0; i < k; i++) {
       _expectSpends(roundTx, 1 + i, parent, gen.slotVout0 + i);
     }
@@ -99,7 +99,7 @@ class PoolChainReader {
       final publics = readSlot(roundTx.inputs[1 + i].script!);
       final result = roundTx.outputs[1 + i];
       final expected = publics == null ? VerifierSlotGen.emptyResultOutput() : VerifierSlotGen.resultOutput(publics.toLanes());
-      if (!_bytesEqual(ShieldedPoolTool.outputFromBytes(expected).script.buffer, result.script.buffer) || result.satoshis != BigInt.zero) {
+      if (!_bytesEqual(ShieldedPoolLegacyTool.outputFromBytes(expected).script.buffer, result.script.buffer) || result.satoshis != BigInt.zero) {
         throw FormatException('slot $i: result output does not match its unlocking script');
       }
       transfers.add(publics);
@@ -115,19 +115,19 @@ class PoolChainReader {
       if (t.real2) ledger.nullifiers.insert(NullifierSet.fromLanes(t.nf2));
       if (PoolHash.isBsv(t.asset)) vault -= t.publicOut;
     }
-    final cms = ShieldedPoolTool.roundLeaves(transfers);
+    final cms = ShieldedPoolLegacyTool.roundLeaves(transfers);
     ledger.tree.appendSubtree(cms);
     final rootAfter = ledger.tree.root;
 
     // the round's own commitments must agree with the model
     final appendResult = roundTx.outputs[k + 1].script.buffer;
     final payload = SubtreeAppendSlotGen.payload(rootBefore, rootAfter, j, cms);
-    if (!_bytesEqual(ShieldedPoolTool.outputFromBytes(SubtreeAppendSlotGen.resultOutput(payload)).script.buffer, appendResult)) {
+    if (!_bytesEqual(ShieldedPoolLegacyTool.outputFromBytes(SubtreeAppendSlotGen.resultOutput(payload)).script.buffer, appendResult)) {
       throw StateError('the append result disagrees with the rebuilt tree');
     }
     final next = ledger.header.afterRound(rootAfter, ledger.nullifiers.root);
-    final state = roundTx.outputs[ShieldedPoolTool.stateVout];
-    if (!_bytesEqual(PP1SpLockBuilder.fromScript(state.script).header.bytes(), next.bytes())) {
+    final state = roundTx.outputs[ShieldedPoolLegacyTool.stateVout];
+    if (!_bytesEqual(PP1SpLegacyLockBuilder.fromScript(state.script).header.bytes(), next.bytes())) {
       throw StateError('the new state header disagrees with the rebuilt ledger');
     }
     if (state.satoshis.toInt() != vault) throw StateError('the new vault disagrees with the publics');
@@ -152,15 +152,15 @@ class PoolChainReader {
   PoolRound _applyAggregated(Transaction roundTx) {
     final parent = ledger.tx;
     final n = gen.n;
-    _expectSpends(roundTx, 0, parent, ShieldedPoolTool.stateVout);
+    _expectSpends(roundTx, 0, parent, ShieldedPoolLegacyTool.stateVout);
     _expectSpends(roundTx, 1, parent, gen.slotVout0);
     if (roundTx.outputs.length < gen.slotVout0 + 1) throw FormatException('round has too few outputs');
     final per = gen.lanesPerTransfer;
-    final lanes = readSlotLanes(roundTx.inputs[1].script!, n * per + PP1SpScriptGen.roundLanes);
+    final lanes = readSlotLanes(roundTx.inputs[1].script!, n * per + PP1SpLegacyScriptGen.roundLanes);
     if (lanes == null) throw FormatException('an aggregated round cannot skip its slot');
     final expected = VerifierSlotGen.resultOutput(lanes);
     final result = roundTx.outputs[1];
-    if (!_bytesEqual(ShieldedPoolTool.outputFromBytes(expected).script.buffer, result.script.buffer) || result.satoshis != BigInt.zero) {
+    if (!_bytesEqual(ShieldedPoolLegacyTool.outputFromBytes(expected).script.buffer, result.script.buffer) || result.satoshis != BigInt.zero) {
       throw FormatException('the result output does not match the slot\'s unlocking script');
     }
     final transfers = <PoolPublicInputs?>[];
@@ -205,8 +205,8 @@ class PoolChainReader {
     final rootAfter = ledger.tree.root;
     if (!_sameInts(round.sublist(8, 16), rootAfter)) throw StateError('the round\'s rootAfter disagrees with the rebuilt tree');
     final next = ledger.header.afterRound(rootAfter, ledger.nullifiers.root, leaves: gen.leavesAppended);
-    final state = roundTx.outputs[ShieldedPoolTool.stateVout];
-    if (!_bytesEqual(PP1SpLockBuilder.fromScript(state.script).header.bytes(), next.bytes())) {
+    final state = roundTx.outputs[ShieldedPoolLegacyTool.stateVout];
+    if (!_bytesEqual(PP1SpLegacyLockBuilder.fromScript(state.script).header.bytes(), next.bytes())) {
       throw StateError('the new state header disagrees with the rebuilt ledger');
     }
     if (state.satoshis.toInt() != vault) throw StateError('the new vault disagrees with the publics');
@@ -291,7 +291,7 @@ class PoolChainReader {
   }
 
   /// The fresh slots a pool transaction mints must be the generator's.
-  static void _checkSlots(PP1SpScriptGen gen, Transaction tx) {
+  static void _checkSlots(PP1SpLegacyScriptGen gen, Transaction tx) {
     if (gen.aggregated) {
       if (!_bytesEqual(tx.outputs[gen.slotVout0].script.buffer, gen.verifierBytes)) throw FormatException('output ${gen.slotVout0} is not the verifier slot');
       return;

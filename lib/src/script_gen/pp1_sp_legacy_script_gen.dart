@@ -38,7 +38,7 @@ import 'verifier_slot_gen.dart';
 ///   ring[4]          32  mutable    commitment roots, ring[0] current
 ///   size              4  mutable    leaves in the tree (padding included)
 ///   nfRoot           32  mutable    the nullifier set's root
-class PP1SpHeader {
+class PP1SpLegacyHeader {
   static const ringSize = 4;
   static const bytesTotal = 33 + 21 + 2 + ringSize * 33 + 5 + 33;
 
@@ -46,7 +46,7 @@ class PP1SpHeader {
   final int phase, size;
   final List<Uint8List> ring;
 
-  PP1SpHeader({
+  PP1SpLegacyHeader({
     required List<int> tokenId,
     required List<int> rabinPubKeyHash,
     required this.phase,
@@ -65,7 +65,7 @@ class PP1SpHeader {
   }
 
   /// The issued pool: empty tree, sentinel-only nullifier set.
-  factory PP1SpHeader.issued({required List<int> tokenId, required List<int> rabinPubKeyHash}) => PP1SpHeader(
+  factory PP1SpLegacyHeader.issued({required List<int> tokenId, required List<int> rabinPubKeyHash}) => PP1SpLegacyHeader(
         tokenId: tokenId,
         rabinPubKeyHash: rabinPubKeyHash,
         phase: 0,
@@ -76,12 +76,12 @@ class PP1SpHeader {
 
   static final Uint8List emptyRootBytes = SlotScript.lanesBytes(MerkleFrontier.emptyRoots[NoteCommitmentTree.depth]);
 
-  PP1SpHeader live() =>
-      PP1SpHeader(tokenId: tokenId, rabinPubKeyHash: rabinPubKeyHash, phase: 1, ring: ring, size: size, nfRoot: nfRoot);
+  PP1SpLegacyHeader live() =>
+      PP1SpLegacyHeader(tokenId: tokenId, rabinPubKeyHash: rabinPubKeyHash, phase: 1, ring: ring, size: size, nfRoot: nfRoot);
 
   /// After a round: the new root enters the ring, a subtree of leaves is
   /// appended, the nullifier set advances.
-  PP1SpHeader afterRound(List<int> rootAfterLanes, List<int> nfRootAfter, {int leaves = NoteCommitmentTree.subtreeLeaves}) => PP1SpHeader(
+  PP1SpLegacyHeader afterRound(List<int> rootAfterLanes, List<int> nfRootAfter, {int leaves = NoteCommitmentTree.subtreeLeaves}) => PP1SpLegacyHeader(
         tokenId: tokenId,
         rabinPubKeyHash: rabinPubKeyHash,
         phase: 1,
@@ -103,7 +103,7 @@ class PP1SpHeader {
     return Uint8List.fromList(out);
   }
 
-  static PP1SpHeader parse(List<int> script) {
+  static PP1SpLegacyHeader parse(List<int> script) {
     var i = 0;
     Uint8List take(int n) {
       if (script[i] != n) throw FormatException('expected a $n-byte push at $i');
@@ -115,12 +115,12 @@ class PP1SpHeader {
     final ring = [for (int r = 0; r < ringSize; r++) take(32)];
     final size = ByteData.sublistView(take(4)).getUint32(0, Endian.little);
     final nf = take(32);
-    return PP1SpHeader(tokenId: tokenId, rabinPubKeyHash: rabin, phase: phase, ring: ring, size: size, nfRoot: nf);
+    return PP1SpLegacyHeader(tokenId: tokenId, rabinPubKeyHash: rabin, phase: phase, ring: ring, size: size, nfRoot: nf);
   }
 }
 
 /// One transfer of a round, as the state script's unlock carries it.
-class PP1SpTransfer {
+class PP1SpLegacyTransfer {
   final PoolPublicInputs publics;
   final Uint8List extraOutputs;
   /// Insertion witnesses; null for a dummy input (`publics.real1/2` off),
@@ -129,7 +129,7 @@ class PP1SpTransfer {
   /// The issuer's authorisation, required for a mint of any non-BSV asset
   /// and for every transfer of a gated one.
   final IssuerAuth? auth;
-  const PP1SpTransfer(this.publics, this.extraOutputs, this.nf1, this.nf2, {this.auth});
+  const PP1SpLegacyTransfer(this.publics, this.extraOutputs, this.nf1, this.nf2, {this.auth});
 }
 
 /// An asset issuer's authorisation of one transfer: the asset record (whose
@@ -176,8 +176,8 @@ class IssuerAuth {
 /// SHA256(identityTxId ‖ ed25519PubKey ‖ tokenId); outputs: the live state
 /// with any vault, K + 1 empty results, K verifier slots, the append slot,
 /// any extras. Slots therefore always sit at vouts K+2..2K+2 of their parent.
-class PP1SpScriptGen {
-  static const ringSize = PP1SpHeader.ringSize;
+class PP1SpLegacyScriptGen {
+  static const ringSize = PP1SpLegacyHeader.ringSize;
   static const slotSats = 1;
   static const sighashAll = 0x41;
   static const tailBytes = 8 + 4 + 32 + 4 + 4;
@@ -209,7 +209,7 @@ class PP1SpScriptGen {
   /// the lanes the script reads, which is what its Rabin check hashes.
   BigInt issuerMessage(PoolPublicInputs publics) => IssuerAuth.message(publics, aggregated: aggregated);
 
-  PP1SpScriptGen(this.P, {this.k = 2})
+  PP1SpLegacyScriptGen(this.P, {this.k = 2})
       : verifierSlot = VerifierSlotGen(P),
         n = 0,
         leavesAppended = 0 {
@@ -220,7 +220,7 @@ class PP1SpScriptGen {
     appendHash = Uint8List.fromList(crypto.sha256.convert(appendBytes).bytes);
   }
 
-  PP1SpScriptGen.aggregated(this.P, {required this.verifierSlot, required int transfers, required this.leavesAppended})
+  PP1SpLegacyScriptGen.aggregated(this.P, {required this.verifierSlot, required int transfers, required this.leavesAppended})
       : k = 0,
         n = transfers {
     if (n <= 0 || leavesAppended % NoteCommitmentTree.subtreeLeaves != 0 || leavesAppended < 2 * n) throw ArgumentError('transfers / leaves');
@@ -281,7 +281,7 @@ class PP1SpScriptGen {
       ];
 
   // ---- script ----
-  SVScript lock(PP1SpHeader h) => SVScript.fromByteArray([...h.bytes(), ...body().buffer]);
+  SVScript lock(PP1SpLegacyHeader h) => SVScript.fromByteArray([...h.bytes(), ...body().buffer]);
 
   /// The body, generated twice so the baked-in body length is exact.
   SVScript body() {
@@ -974,7 +974,7 @@ class PP1SpScriptGen {
     _op(e, OpCodes.OP_BIN2NUM, pops: 1, pushes: 1);
     e.pushConst(0);
     e.numEqualVerify();
-    e.pushData(PP1SpHeader.emptyRootBytes, as: 'empty');
+    e.pushData(PP1SpLegacyHeader.emptyRootBytes, as: 'empty');
     for (int r = 0; r < ringSize; r++) {
       e.pick('h_ring$r');
       if (r < ringSize - 1) {
@@ -1104,12 +1104,12 @@ class PP1SpScriptGen {
     required Uint8List preimage,
     required List<int> extraPrevouts,
     required List<int> rootAfter,
-    required List<PP1SpTransfer?> transfers,
+    required List<PP1SpLegacyTransfer?> transfers,
     List<int>? roundLanes,
   }) {
     if (aggregated) {
       if (transfers.length != n || transfers.any((t) => t == null)) throw ArgumentError('$n transfers, all present');
-      if (roundLanes == null || roundLanes.length != PP1SpScriptGen.roundLanes) throw ArgumentError('${PP1SpScriptGen.roundLanes} round lanes');
+      if (roundLanes == null || roundLanes.length != PP1SpLegacyScriptGen.roundLanes) throw ArgumentError('${PP1SpLegacyScriptGen.roundLanes} round lanes');
       final b = ScriptBuilder();
       b.addData(preimage);
       b.addData(verifierBytes);
@@ -1199,7 +1199,7 @@ class PP1SpScriptGen {
 
   /// The vouts a round spends after the state: the slots (and append slot).
   List<int> get slotVouts => [for (int v = slotVout0; v < slotVout0 + numSlots; v++) v];
-  List<Uint8List> roundOutputs(PP1SpHeader next, int vault, List<Uint8List> results, List<Uint8List> extras) => [
+  List<Uint8List> roundOutputs(PP1SpLegacyHeader next, int vault, List<Uint8List> results, List<Uint8List> extras) => [
         _output(vault, lock(next).buffer),
         ...results,
         for (int i = 0; i < (aggregated ? 1 : k); i++) _output(slotSats, verifierBytes),

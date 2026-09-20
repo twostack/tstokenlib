@@ -20,7 +20,7 @@ import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../crypto/stark_verifier_ref.dart';
 import '../script_gen/pool_spend_air.dart';
-import '../script_gen/pp1_sp_script_gen.dart' show PP1SpHeader;
+import '../script_gen/pp1_sp_legacy_script_gen.dart' show PP1SpLegacyHeader;
 import 'prover_pool.dart';
 import 'verifier_air.dart';
 import 'verifier_program.dart';
@@ -83,7 +83,7 @@ class PoolAggregation {
       bool dryRun = false,
       this.anchorCheck = true}) {
     if (levelSpec.isEmpty || levelSpec.any((l) => l.arity < 1)) throw ArgumentError('at least one level, arities >= 1');
-    assert(anchorRing.size == PP1SpHeader.ringSize, 'the in-circuit ring is the header\'s');
+    assert(anchorRing.size == PP1SpLegacyHeader.ringSize, 'the in-circuit ring is the header\'s');
     var shape = InnerShape(spendP, PoolSpendAir.air(PoolPublicInputs.zero()));
     levels = [];
     levelShapes = [];

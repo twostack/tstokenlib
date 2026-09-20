@@ -24,10 +24,10 @@ import '../crypto/stark_verifier_ref.dart';
 import '../recursion/pool_aggregator.dart';
 import '../recursion/prover_pool.dart';
 import '../script_gen/pool_spend_air.dart';
-import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/pp1_sp_legacy_script_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
 import 'pool_chain_reader.dart';
-import 'shielded_pool_tool.dart';
+import 'shielded_pool_legacy_tool.dart';
 
 /// Which kind of round this pool does. A pool is built by one generator and
 /// its state script carries that choice, so the mode is fixed for the
@@ -270,7 +270,7 @@ class CoordinatorStatus {
 /// wrap the same service.
 class PoolCoordinator {
   final CoordinatorConfig config;
-  final ShieldedPoolTool tool;
+  final ShieldedPoolLegacyTool tool;
   final PoolLedger ledger;
   final CoordinatorClock clock;
 
@@ -317,7 +317,7 @@ class PoolCoordinator {
         throw StateError('the plan folds ${plan.transfers} transfers but the pool holds ${tool.gen.n} per round');
       }
     }
-    final live = ledger.tx.outputs[ShieldedPoolTool.stateVout].script.buffer;
+    final live = ledger.tx.outputs[ShieldedPoolLegacyTool.stateVout].script.buffer;
     final expected = tool.gen.lock(ledger.header).buffer;
     if (!_sameBytes(live, expected)) {
       throw StateError('the pool\'s state script is ${live.length} B and not the ${expected.length} B script this '
@@ -412,7 +412,7 @@ class PoolCoordinator {
     if (t.publics.real1 || t.publics.real2) {
       final anchor = NullifierSet.fromLanes(t.publics.anchor);
       if (!ledger.header.ring.any((r) => _sameBytes(r, anchor))) {
-        return Rejection(RejectReason.anchor, 'the anchor is not one of the ${PP1SpHeader.ringSize} roots this pool accepts');
+        return Rejection(RejectReason.anchor, 'the anchor is not one of the ${PP1SpLegacyHeader.ringSize} roots this pool accepts');
       }
     }
     for (final nf in _realNullifiers(t)) {
@@ -523,7 +523,7 @@ class PoolCoordinator {
   /// coordinator believed it had left behind; a disagreement means either
   /// the rebuild or the belief is wrong and the coordinator must not run on
   /// either.
-  static PoolLedger recover(PP1SpScriptGen gen, Transaction genesisTx, Iterable<Transaction> rounds, {Transaction? lastPublished}) {
+  static PoolLedger recover(PP1SpLegacyScriptGen gen, Transaction genesisTx, Iterable<Transaction> rounds, {Transaction? lastPublished}) {
     final reader = PoolChainReader.fromGenesis(gen, genesisTx);
     for (final r in rounds) {
       reader.apply(r);
@@ -548,7 +548,7 @@ class PoolCoordinator {
 /// exactly what the mode check catches, one step too late to be useful.
 class CoordinatorFile {
   final CoordinatorConfig config;
-  final PP1SpScriptGen gen;
+  final PP1SpLegacyScriptGen gen;
   final String genesis;
   final List<String> rounds;
   const CoordinatorFile({required this.config, required this.gen, required this.genesis, required this.rounds});
@@ -592,7 +592,7 @@ class CoordinatorFile {
           spendP: spendP, levelSpec: levels, rootP: params(root['params'] as Map<String, dynamic>), rootLog: root['logTrace'] as int);
     }
     final slot = VerifierSlotGen(agg.rootP, airFor: agg.rootAir, numPublics: agg.widePublicsCount);
-    final gen = PP1SpScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
+    final gen = PP1SpLegacyScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
     return CoordinatorFile(
       config: CoordinatorConfig.recursive(
         spendP: spendP,

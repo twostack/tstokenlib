@@ -10,9 +10,9 @@ import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 import 'package:tstokenlib/src/transaction/pool_chain_reader.dart';
-import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 final verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 final sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
@@ -37,8 +37,8 @@ void main() {
   Uint8List bytes(int n) => Uint8List.fromList(List.generate(n, (_) => rng.nextInt(256)));
   const p = StarkParams(
       logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
-  final gen = PP1SpScriptGen(p, k: 2);
-  final tool = ShieldedPoolTool(gen);
+  final gen = PP1SpLegacyScriptGen(p, k: 2);
+  final tool = ShieldedPoolLegacyTool(gen);
 
   final operatorKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
   final operatorPub = SVPublicKey.fromPrivateKey(operatorKey);
@@ -152,7 +152,7 @@ void main() {
     final dummy = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final oa = OutputNote(pkd: lanes(8), value: 200000, rho: lanes(3), rcm: lanes(4));
     final ob = OutputNote(pkd: lanes(8), value: 70000, rho: lanes(3), rcm: lanes(4));
-    final payee = ShieldedPoolTool.payout(operatorAddress, 29000);
+    final payee = ShieldedPoolLegacyTool.payout(operatorAddress, 29000);
     // the note ciphertexts ride in the transfer's note-data output, under its outHash
     final sender = PoolWalletKeys(lanes(5)), recipient = PoolWalletKeys(lanes(5));
     final to = await NoteAddress.at(recipient.ivk, 1);
@@ -160,7 +160,7 @@ void main() {
     final bundle = await NoteEncryption.encrypt(
         NotePlaintext(asset: PoolHash.bsvAsset, d: to.d, value: oa.value, rho: oa.rho, rcm: oa.rcm, memo: NotePlaintext.memoOf('round 2')),
         to, sender.ovk, rng: rng);
-    final extras = ShieldedPoolTool.extras([bundle], [payee]);
+    final extras = ShieldedPoolLegacyTool.extras([bundle], [payee]);
     final w = PoolSpendAir.witness(a, dummy, oaTo, ob, noteA.value - oa.value - ob.value,
         anchor: reader.ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
     final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(2));
@@ -211,12 +211,12 @@ void main() {
     final dummy = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final oa = OutputNote(pkd: lanes(8), value: 240000, rho: lanes(3), rcm: lanes(4));
     final ob = OutputNote(pkd: lanes(8), value: 5000, rho: lanes(3), rcm: lanes(4));
-    final payee = ShieldedPoolTool.payout(operatorAddress, 4000);
+    final payee = ShieldedPoolLegacyTool.payout(operatorAddress, 4000);
     final w = PoolSpendAir.witness(b, dummy, oa, ob, noteB.value - oa.value - ob.value,
         anchor: fresh.ledger.anchor, outHash: PoolPublicInputs.outHashLanes(payee));
     final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(3));
     // the round is built from the reader's ledger alone
-    final coordinator = ShieldedPoolTool(gen);
+    final coordinator = ShieldedPoolLegacyTool(gen);
     final spent = coordinator.spentByRound(fresh.ledger);
     final tx = coordinator.createRoundTxn(fresh.ledger, [null, PoolTransfer(w.publics, proof, payee)]);
     verifyAll(tx, spent);

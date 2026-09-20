@@ -13,10 +13,10 @@ import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/recursion/prover_pool.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/verifier_slot_gen.dart';
 import 'package:tstokenlib/src/transaction/pool_coordinator.dart';
-import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 final sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
@@ -58,7 +58,7 @@ void main() {
   }
 
   late PoolAggregation agg;
-  late PP1SpScriptGen gen;
+  late PP1SpLegacyScriptGen gen;
   late Transaction issuanceTx;
   final rabin = Rabin.generateKeyPair(1024);
   final rabinN = Rabin.bigIntToScriptNum(rabin.n).toList();
@@ -68,12 +68,12 @@ void main() {
   setUpAll(() {
     agg = PoolAggregation.uniform(spendP: spendP, levelP: const [l1, l2], levelLog: const [15, 16], rootP: rootP, rootLog: 15, arity: 2);
     final slot = VerifierSlotGen(rootP, airFor: agg.rootAir, numPublics: agg.widePublicsCount);
-    gen = PP1SpScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
+    gen = PP1SpLegacyScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
   });
 
   /// A fresh pool: issuance, genesis, the tool and a ledger at round zero.
-  (ShieldedPoolTool, PoolLedger, Transaction) freshPool({int vault = 2000}) {
-    final tool = ShieldedPoolTool(gen);
+  (ShieldedPoolLegacyTool, PoolLedger, Transaction) freshPool({int vault = 2000}) {
+    final tool = ShieldedPoolLegacyTool(gen);
     final fundingTx = coinbaseLike(operatorAddress, [50000, 20000]);
     issuanceTx = tool.createIssuanceTxn(fundingTx, 1, operatorSigner, operatorPub, operatorAddress, rabinPKH);
     final sig = Rabin.sign(Rabin.sha256ToScriptInt([...idTxId, ...ed25519, ...fundingTx.hash]), rabin.p, rabin.q);
@@ -89,7 +89,7 @@ void main() {
   /// reader takes an aggregated round's commitments from the bundles.
   Future<(PoolTransfer, FundingInput, OutputNote)> deposit(PoolLedger ledger, int sats, int seed, {List<int>? sk, List<int>? d}) async {
     final funding = coinbaseLike(depositorAddress, [sats + 2000]);
-    final change = ShieldedPoolTool.payout(depositorAddress, 1200);
+    final change = ShieldedPoolLegacyTool.payout(depositorAddress, 1200);
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final ta = sk == null ? await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0) : await NoteAddress.derive(PoolWalletKeys(sk).ivk, d!);
     final tb = await NoteAddress.at(PoolWalletKeys(lanes(5)).ivk, 0);
@@ -104,7 +104,7 @@ void main() {
           NotePlaintext(asset: PoolHash.bsvAsset, d: tb.d, value: ob.value, rho: ob.rho, rcm: ob.rcm, memo: NotePlaintext.memoOf('')), tb, ovk,
           rng: Random(seed)),
     ];
-    final extras = ShieldedPoolTool.extras(bundles, [change]);
+    final extras = ShieldedPoolLegacyTool.extras(bundles, [change]);
     final w = PoolSpendAir.witness(da, db, oa, ob, -sats, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));
     final proof = StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: Random(seed), hash: p2);
     return (PoolTransfer(w.publics, proof, extras), FundingInput(funding, 0, depositorSigner, depositorPub), oa);
@@ -238,7 +238,7 @@ void main() {
     /// An unshield of the note against the given path, taking its value out.
     PoolTransfer unshield(List<List<int>> siblings, int seed) {
       final a = SpendNote(sk: sk, d: d, value: note.value, rho: note.rho, rcm: note.rcm, siblings: siblings, position: at);
-      final payee = ShieldedPoolTool.payout(depositorAddress, note.value - 500);
+      final payee = ShieldedPoolLegacyTool.payout(depositorAddress, note.value - 500);
       final w = PoolSpendAir.witness(a, SpendNote.dummy(sk: lanes(5), rho: lanes(3)),
           OutputNote(pkd: lanes(8), value: 0, rho: lanes(3), rcm: lanes(4)),
           OutputNote(pkd: lanes(8), value: 0, rho: lanes(3), rcm: lanes(4)), note.value,
@@ -248,12 +248,12 @@ void main() {
 
     // the ring holds the last four roots, so four more rounds retire the one
     // the stale path proves membership in
-    for (int r = 0; r < PP1SpHeader.ringSize; r++) {
+    for (int r = 0; r < PP1SpLegacyHeader.ringSize; r++) {
       final (t, f, _) = await deposit(ledger, 1000 + r, 120 + r);
       expect(co.submit(t, funding: f), isNull);
       await co.closeRound();
     }
-    expect(co.status.rounds, 1 + PP1SpHeader.ringSize);
+    expect(co.status.rounds, 1 + PP1SpLegacyHeader.ringSize);
 
     final stale = unshield(stalePath, 56);
     expect(co.submit(stale)?.reason, RejectReason.anchor,
@@ -446,7 +446,7 @@ void main() {
 
     // and it runs on the rebuilt ledger
     final again = PoolCoordinator(
-        config: recursiveConfig(), tool: ShieldedPoolTool(gen), ledger: restarted, publish: (_) async {}, clock: FakeClock());
+        config: recursiveConfig(), tool: ShieldedPoolLegacyTool(gen), ledger: restarted, publish: (_) async {}, clock: FakeClock());
     expect(again.status.vault, ledger.vault);
   }, timeout: const Timeout(Duration(minutes: 20)));
 

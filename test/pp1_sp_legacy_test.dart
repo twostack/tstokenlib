@@ -10,7 +10,7 @@ import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/subtree_append_slot_gen.dart';
 import 'package:tstokenlib/src/script_gen/verifier_slot_gen.dart';
 
@@ -65,7 +65,7 @@ void main() {
   const p = StarkParams(
       logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
   const k = 2;
-  final gen = PP1SpScriptGen(p, k: k);
+  final gen = PP1SpLegacyScriptGen(p, k: k);
 
   // the operator's identity and the pool's genesis
   final rabin = Rabin.generateKeyPair(1024);
@@ -74,7 +74,7 @@ void main() {
   final tokenId = bytes(32), idTxId = bytes(32), ed25519 = bytes(32);
   final sig = Rabin.sign(Rabin.sha256ToScriptInt([...idTxId, ...ed25519, ...tokenId]), rabin.p, rabin.q);
   final rabinS = Rabin.bigIntToScriptNum(sig.s).toList();
-  final h0 = PP1SpHeader.issued(tokenId: tokenId, rabinPubKeyHash: rabinPKH);
+  final h0 = PP1SpLegacyHeader.issued(tokenId: tokenId, rabinPubKeyHash: rabinPKH);
   final change = SlotScript_output(500, hex.decode('76a914${'22' * 20}88ac'));
 
   // the pool as the wallet / coordinator sees it
@@ -82,7 +82,7 @@ void main() {
   final nfs = NullifierSet();
   NullifierInsertion? ins(bool real, List<int> nf) => real ? nfs.insert(NullifierSet.fromLanes(nf)) : null;
 
-  late PP1SpHeader h1;
+  late PP1SpLegacyHeader h1;
   const createVault = 1000;
   final createTxid = 'c1' * 32;
 
@@ -92,32 +92,32 @@ void main() {
     final outs = gen.roundOutputs(h1, createVault, [for (int i = 0; i <= k; i++) VerifierSlotGen.emptyResultOutput()], [change]);
     final ins = [inputAt(hex.encode(tokenId.reversed.toList()), 0), inputAt('ab' * 32, 0)];
     final tx = txOf(ins, outs);
-    final pre = preimage(tx, 1, lock0, 1, PP1SpScriptGen.sighashAll);
+    final pre = preimage(tx, 1, lock0, 1, PP1SpLegacyScriptGen.sighashAll);
     SVScript unlock({List<int>? s, Uint8List? pre0}) => gen.createUnlock(
         preimage: pre0 ?? pre, rabinN: rabinN, rabinS: s ?? rabinS, rabinPadding: sig.padding,
         identityTxId: idTxId, ed25519PubKey: ed25519, vault: createVault, extras: change);
     final sw = Stopwatch()..start();
     spends(unlock(), lock0, tx, 1, 1);
-    print('  PP1_SP k=$k: lock ${lock0.buffer.length} B (header ${PP1SpHeader.bytesTotal}); create unlock ${unlock().buffer.length} B; ${sw.elapsedMilliseconds} ms');
-    expect(PP1SpHeader.parse(lock0.buffer).tokenId, tokenId);
-    expect(PP1SpHeader.parse(outs[0].sublist(9 + 2)).phase, 1);
+    print('  PP1_SP k=$k: lock ${lock0.buffer.length} B (header ${PP1SpLegacyHeader.bytesTotal}); create unlock ${unlock().buffer.length} B; ${sw.elapsedMilliseconds} ms');
+    expect(PP1SpLegacyHeader.parse(lock0.buffer).tokenId, tokenId);
+    expect(PP1SpLegacyHeader.parse(outs[0].sublist(9 + 2)).phase, 1);
     // a signature for another tokenId
     final other = Rabin.sign(Rabin.sha256ToScriptInt([...idTxId, ...ed25519, ...bytes(32)]), rabin.p, rabin.q);
     expect(() => spends(unlock(s: Rabin.bigIntToScriptNum(other.s).toList()), lock0, tx, 1, 1), throwsA(isA<ScriptException>()));
     // a create that does not spend (tokenId, 0)
     final tx2 = txOf([inputAt(hex.encode(tokenId.reversed.toList()), 1), ins[1]], outs);
-    final pre2 = preimage(tx2, 1, lock0, 1, PP1SpScriptGen.sighashAll);
+    final pre2 = preimage(tx2, 1, lock0, 1, PP1SpLegacyScriptGen.sighashAll);
     expect(() => spends(unlock(pre0: pre2), lock0, tx2, 1, 1), throwsA(isA<ScriptException>()));
     // an output that stays issued
     final tx3 = txOf(ins, gen.roundOutputs(h0, createVault, [for (int i = 0; i <= k; i++) VerifierSlotGen.emptyResultOutput()], [change]));
-    final pre3 = preimage(tx3, 1, lock0, 1, PP1SpScriptGen.sighashAll);
+    final pre3 = preimage(tx3, 1, lock0, 1, PP1SpLegacyScriptGen.sighashAll);
     expect(() => spends(unlock(pre0: pre3), lock0, tx3, 1, 1), throwsA(isA<ScriptException>()));
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   /// Builds, verifies (every pool input) and applies one round with the
   /// given transfers on the pool at [h] held by [parentTxid] with [vault].
   /// Returns the next header and vault.
-  (PP1SpHeader, int, String) round(PP1SpHeader h, int vault, String parentTxid, List<PP1SpTransfer?> transfers,
+  (PP1SpLegacyHeader, int, String) round(PP1SpLegacyHeader h, int vault, String parentTxid, List<PP1SpLegacyTransfer?> transfers,
       {List<TransactionInput> funding = const [], String? label}) {
     final lock = gen.lock(h);
     final rootBefore = NullifierSet.toLanes(h.cmRoot);
@@ -141,7 +141,7 @@ void main() {
     final tx = txOf(ins, outs);
     final sw = Stopwatch()..start();
     // input 0: the state
-    final pre0 = preimage(tx, 0, lock, vault, PP1SpScriptGen.sighashAll);
+    final pre0 = preimage(tx, 0, lock, vault, PP1SpLegacyScriptGen.sighashAll);
     final unlock0 = gen.spendUnlock(preimage: pre0, extraPrevouts: prevoutsAfter(tx, k + 2), rootAfter: rootAfter, transfers: transfers);
     spends(unlock0, lock, tx, 0, vault);
     // inputs 1..k: the verifier slots
@@ -162,12 +162,12 @@ void main() {
     return (next, out, 'ee${tx.id.substring(2)}');
   }
 
-  late PP1SpHeader h2, h3;
+  late PP1SpLegacyHeader h2, h3;
   late int vault2, vault3;
   late String txid2;
   final skA = lanes(5), dA = lanes(3);
   final noteA = OutputNote(pkd: PoolHash.pkd(skA, dA), value: 700000, rho: lanes(3), rcm: lanes(4));
-  late PP1SpTransfer deposit;
+  late PP1SpLegacyTransfer deposit;
 
   test('round 1: a deposit and an unused slot', () {
     final db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
@@ -176,7 +176,7 @@ void main() {
     final extra = change;
     final w = PoolSpendAir.witness(db, dc, noteA, nb, -(noteA.value + nb.value),
         anchor: NullifierSet.toLanes(h1.cmRoot), outHash: PoolPublicInputs.outHashLanes(extra));
-    _proofs[deposit = PP1SpTransfer(w.publics, extra, ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2))] =
+    _proofs[deposit = PP1SpLegacyTransfer(w.publics, extra, ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2))] =
         StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(1));
     (h2, vault2, txid2) = round(h1, createVault, createTxid, [deposit, null], funding: [inputAt('f0' * 32, 0)], label: 'round 1 (deposit)');
     expect(vault2, createVault + noteA.value + nb.value);
@@ -196,7 +196,7 @@ void main() {
     final w = PoolSpendAir.witness(a, dummy, oa, ob, noteA.value - oa.value - ob.value,
         outHash: PoolPublicInputs.outHashLanes(payee));
     expect(w.publics.anchor, NullifierSet.toLanes(h2.cmRoot));
-    final tr = PP1SpTransfer(w.publics, payee, ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2));
+    final tr = PP1SpLegacyTransfer(w.publics, payee, ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2));
     _proofs[tr] = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(2));
     late String txid3;
     (h3, vault3, txid3) = round(h2, vault2, txid2, [tr, null], label: 'round 2 (spend)');
@@ -213,13 +213,13 @@ void main() {
     final na = OutputNote(pkd: lanes(8), value: 10, rho: lanes(3), rcm: lanes(4));
     final nb = OutputNote(pkd: lanes(8), value: 5, rho: lanes(3), rcm: lanes(4));
     final w = PoolSpendAir.witness(db, dc, na, nb, -15, anchor: lanes(8), outHash: PoolPublicInputs.outHashLanes(Uint8List(0)));
-    final tr = PP1SpTransfer(w.publics, Uint8List(0), ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2));
+    final tr = PP1SpLegacyTransfer(w.publics, Uint8List(0), ins(w.publics.real1, w.publics.nf1), ins(w.publics.real2, w.publics.nf2));
     _proofs[tr] = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(4));
     expect(() => round(h3, vault3, 'd3' * 32, [tr, null]), throwsA(isA<ScriptException>()));
   }, timeout: const Timeout(Duration(minutes: 5)));
 }
 
-final _proofs = <PP1SpTransfer, StarkProof>{};
+final _proofs = <PP1SpLegacyTransfer, StarkProof>{};
 const SlotScript_single = 0x43;
 Uint8List SlotScript_output(int sats, List<int> script) {
   final v = ByteData(8)..setUint64(0, sats, Endian.little);

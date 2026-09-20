@@ -18,17 +18,17 @@ import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../script_gen/pool_spend_air.dart';
-import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/pp1_sp_legacy_script_gen.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
 
-enum ShieldedPoolAction { create, round }
+enum ShieldedPoolLegacyAction { create, round }
 
 /// Unlocking-script builder for the PP1_SP state input. The preimage is set
 /// after the transaction's outputs are fixed (two-pass build).
-class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
-  final PP1SpScriptGen gen;
-  final ShieldedPoolAction action;
+class PP1SpLegacyUnlockBuilder extends UnlockingScriptBuilder {
+  final PP1SpLegacyScriptGen gen;
+  final ShieldedPoolLegacyAction action;
   Uint8List? preimage;
 
   // create
@@ -37,9 +37,9 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
 
   // round
   List<int>? extraPrevouts, rootAfter, roundLanes;
-  List<PP1SpTransfer?>? transfers;
+  List<PP1SpLegacyTransfer?>? transfers;
 
-  PP1SpUnlockBuilder.create(this.gen,
+  PP1SpLegacyUnlockBuilder.create(this.gen,
       {required this.rabinN,
       required this.rabinS,
       required this.rabinPadding,
@@ -47,21 +47,21 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       required this.ed25519PubKey,
       required this.vault,
       required this.extras})
-      : action = ShieldedPoolAction.create;
+      : action = ShieldedPoolLegacyAction.create;
 
-  PP1SpUnlockBuilder.round(this.gen, {required this.extraPrevouts, required this.rootAfter, required this.transfers})
-      : action = ShieldedPoolAction.round;
+  PP1SpLegacyUnlockBuilder.round(this.gen, {required this.extraPrevouts, required this.rootAfter, required this.transfers})
+      : action = ShieldedPoolLegacyAction.round;
 
   /// An aggregated round: every transfer present, the round lanes from the
   /// root proof's wide statement.
-  PP1SpUnlockBuilder.roundAggregated(this.gen, {required this.extraPrevouts, required this.transfers, required this.roundLanes})
-      : action = ShieldedPoolAction.round;
+  PP1SpLegacyUnlockBuilder.roundAggregated(this.gen, {required this.extraPrevouts, required this.transfers, required this.roundLanes})
+      : action = ShieldedPoolLegacyAction.round;
 
   @override
   SVScript getScriptSig() {
     if (preimage == null) return SVScript();
     switch (action) {
-      case ShieldedPoolAction.create:
+      case ShieldedPoolLegacyAction.create:
         return gen.createUnlock(
             preimage: preimage!,
             rabinN: rabinN!,
@@ -71,7 +71,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
             ed25519PubKey: ed25519PubKey!,
             vault: vault!,
             extras: extras!);
-      case ShieldedPoolAction.round:
+      case ShieldedPoolLegacyAction.round:
         return gen.spendUnlock(
             preimage: preimage!, extraPrevouts: extraPrevouts!, rootAfter: rootAfter ?? const [], transfers: transfers!, roundLanes: roundLanes);
     }

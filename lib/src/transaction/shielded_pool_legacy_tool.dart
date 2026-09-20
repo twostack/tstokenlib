@@ -18,8 +18,8 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
-import '../builder/pp1_sp_lock_builder.dart';
-import '../builder/pp1_sp_unlock_builder.dart';
+import '../builder/pp1_sp_legacy_lock_builder.dart';
+import '../builder/pp1_sp_legacy_unlock_builder.dart';
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/note_encryption.dart';
 import '../crypto/m31.dart';
@@ -27,7 +27,7 @@ import '../crypto/nullifier_set.dart';
 import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
 import '../script_gen/pool_spend_air.dart';
-import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/pp1_sp_legacy_script_gen.dart';
 import '../script_gen/slot_script_common.dart';
 import '../script_gen/subtree_append_slot_gen.dart';
 import '../script_gen/verifier_slot_gen.dart';
@@ -118,9 +118,9 @@ class FundingInput {
 
 /// The pool as its wallets and coordinator track it: the header of the live
 /// state output, its vault, the commitment tree and the nullifier set, and
-/// the transaction holding it. Advanced by [ShieldedPoolTool.createRoundTxn].
+/// the transaction holding it. Advanced by [ShieldedPoolLegacyTool.createRoundTxn].
 class PoolLedger {
-  PP1SpHeader header;
+  PP1SpLegacyHeader header;
   int vault;
   Transaction tx; // the transaction whose vout 0 is the state
   final NoteCommitmentTree tree = NoteCommitmentTree();
@@ -138,12 +138,12 @@ class PoolLedger {
 /// All transactions are assembled directly (no change output of the tool's
 /// own in a round: whatever the vault, the slots and the extra outputs leave
 /// is the fee). Slots pay 1 satoshi each.
-class ShieldedPoolTool {
-  final PP1SpScriptGen gen;
+class ShieldedPoolLegacyTool {
+  final PP1SpLegacyScriptGen gen;
   final NetworkType networkType;
   final int sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
-  ShieldedPoolTool(this.gen, {this.networkType = NetworkType.TEST});
+  ShieldedPoolLegacyTool(this.gen, {this.networkType = NetworkType.TEST});
 
   static const int stateVout = 0;
   int get k => gen.k;
@@ -168,7 +168,7 @@ class ShieldedPoolTool {
       Address changeAddress, List<int> rabinPubKeyHash,
       {int fee = 500, List<int>? metadata}) {
     if (fundingVout == 0) throw ArgumentError('output 0 of the funding transaction is reserved for the genesis');
-    final header = PP1SpHeader.issued(tokenId: fundingTx.hash, rabinPubKeyHash: rabinPubKeyHash);
+    final header = PP1SpLegacyHeader.issued(tokenId: fundingTx.hash, rabinPubKeyHash: rabinPubKeyHash);
     final t = Transaction()
       ..version = 1
       ..nLockTime = 0;
@@ -193,7 +193,7 @@ class ShieldedPoolTool {
       required List<int> ed25519PubKey,
       required int vault,
       int fee = 1000}) {
-    final issued = PP1SpLockBuilder.fromScript(issuanceTx.outputs[stateVout].script).header;
+    final issued = PP1SpLegacyLockBuilder.fromScript(issuanceTx.outputs[stateVout].script).header;
     if (issued.phase != 0) throw ArgumentError('not an issued pool');
     final live = issued.live();
     final funding = fundingTx.outputs[0].satoshis.toInt();
@@ -201,7 +201,7 @@ class ShieldedPoolTool {
     if (change < 0) throw ArgumentError('funding output 0 does not cover the vault, the slots and the fee');
     final extras = SlotScript.output(P2PKHLockBuilder.fromAddress(changeAddress).getScriptPubkey().buffer, value: change);
     final outs = gen.roundOutputs(live, vault, [for (int i = 0; i < gen.numResults; i++) VerifierSlotGen.emptyResultOutput()], [extras]);
-    final unlock = PP1SpUnlockBuilder.create(gen,
+    final unlock = PP1SpLegacyUnlockBuilder.create(gen,
         rabinN: rabinN, rabinS: rabinS, rabinPadding: rabinPadding, identityTxId: identityTxId, ed25519PubKey: ed25519PubKey,
         vault: vault, extras: extras);
     final t = _assemble([
@@ -251,9 +251,9 @@ class ShieldedPoolTool {
       }
       if (transfers[i].needsAuth && transfers[i].auth == null) throw ArgumentError('transfer $i needs the issuer\'s authorisation');
     }
-    final full = <PP1SpTransfer>[
+    final full = <PP1SpLegacyTransfer>[
       for (final t in transfers)
-        PP1SpTransfer(t.publics, t.extraOutputs, t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null,
+        PP1SpLegacyTransfer(t.publics, t.extraOutputs, t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null,
             t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null,
             auth: t.auth)
     ];
@@ -286,7 +286,7 @@ class ShieldedPoolTool {
         level1: level1,
         verbose: verbose);
     final outs = gen.roundOutputs(next, vault, [VerifierSlotGen.resultOutput(wide)], extras);
-    final stateUnlock = PP1SpUnlockBuilder.roundAggregated(gen,
+    final stateUnlock = PP1SpLegacyUnlockBuilder.roundAggregated(gen,
         extraPrevouts: const [], transfers: full, roundLanes: wide.sublist(agg.tree.roundOffset));
     final slotUnlock = VerifierSlotUnlockBuilder.proofLanes(gen.verifierSlot, rootProof, wide);
     final t = _assemble([
@@ -323,7 +323,7 @@ class ShieldedPoolTool {
       if (t.needsAuth && t.auth == null) throw ArgumentError('transfer $i needs the issuer\'s authorisation');
     }
     // apply to the wallet model first: nullifier witnesses, subtree, roots
-    final full = <PP1SpTransfer?>[];
+    final full = <PP1SpLegacyTransfer?>[];
     for (final t in transfers) {
       if (t == null) {
         full.add(null);
@@ -332,7 +332,7 @@ class ShieldedPoolTool {
       // a dummy input's nullifier is not inserted (the proof's real flags say which)
       final nf1 = t.publics.real1 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf1)) : null;
       final nf2 = t.publics.real2 ? ledger.nullifiers.insert(NullifierSet.fromLanes(t.publics.nf2)) : null;
-      full.add(PP1SpTransfer(t.publics, t.extraOutputs, nf1, nf2, auth: t.auth));
+      full.add(PP1SpLegacyTransfer(t.publics, t.extraOutputs, nf1, nf2, auth: t.auth));
     }
     final rootBefore = ledger.anchor;
     final j = ledger.tree.nextSubtree;
@@ -353,7 +353,7 @@ class ShieldedPoolTool {
     final extras = [for (final t in transfers) if (t != null && t.extraOutputs.isNotEmpty) t.extraOutputs];
     final outs = gen.roundOutputs(next, vault, results, extras);
 
-    final stateUnlock = PP1SpUnlockBuilder.round(gen, extraPrevouts: const [], rootAfter: rootAfter, transfers: full);
+    final stateUnlock = PP1SpLegacyUnlockBuilder.round(gen, extraPrevouts: const [], rootAfter: rootAfter, transfers: full);
     final slotUnlocks = <VerifierSlotUnlockBuilder>[
       for (final t in transfers)
         t == null ? VerifierSlotUnlockBuilder.skip(gen.verifierSlot) : VerifierSlotUnlockBuilder.proof(gen.verifierSlot, t.proof, t.publics)
@@ -405,7 +405,7 @@ class ShieldedPoolTool {
     while (at < bytes.length) {
       final o = outputFromBytes(bytes, at);
       out.add(o);
-      at += 8 + PP1SpScriptGen.varint(o.script.buffer.length).length + o.script.buffer.length;
+      at += 8 + PP1SpLegacyScriptGen.varint(o.script.buffer.length).length + o.script.buffer.length;
     }
     return out;
   }

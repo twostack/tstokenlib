@@ -33,7 +33,7 @@ import 'package:tstokenlib/src/script_gen/pp1_sm_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 
 const String version = '1.3.0';
 
@@ -997,14 +997,14 @@ Map<String, dynamic> _spStarkParams() => {
 
 /// The PP1_SP state script for rounds of up to [k] transfers, plus the two
 /// parameter-free slot scripts its body bakes the hashes of. The header is
-/// 226 bytes of pushes at fixed offsets (see [PP1SpHeader.bytes]).
+/// 226 bytes of pushes at fixed offsets (see [PP1SpLegacyHeader.bytes]).
 void exportPP1Sp(int k) {
-  final gen = PP1SpScriptGen(spParams, k: k);
-  final header = PP1SpHeader(
+  final gen = PP1SpLegacyScriptGen(spParams, k: k);
+  final header = PP1SpLegacyHeader(
     tokenId: List.filled(32, 0xBB),
     rabinPubKeyHash: List.filled(20, 0xCC),
     phase: 1,
-    ring: [for (int r = 0; r < PP1SpHeader.ringSize; r++) List.filled(32, 0xA0 + r)],
+    ring: [for (int r = 0; r < PP1SpLegacyHeader.ringSize; r++) List.filled(32, 0xA0 + r)],
     size: 0x44444444,
     nfRoot: List.filled(32, 0xEE),
   );
@@ -1016,7 +1016,7 @@ void exportPP1Sp(int k) {
     'tokenId': _SentinelRegion(tokenIdStart, 32, 0xBB),
     'rabinPubKeyHash': _SentinelRegion(rabinStart, 20, 0xCC),
     'phase': _SentinelRegion(phaseStart, 1, 0x01),
-    for (int r = 0; r < PP1SpHeader.ringSize; r++) 'ring$r': _SentinelRegion(ring0Start + 33 * r, 32, 0xA0 + r),
+    for (int r = 0; r < PP1SpLegacyHeader.ringSize; r++) 'ring$r': _SentinelRegion(ring0Start + 33 * r, 32, 0xA0 + r),
     'size': _SentinelRegion(sizeStart, 4, 0x44),
     'nfRoot': _SentinelRegion(nfRootStart, 32, 0xEE),
   });
@@ -1035,15 +1035,15 @@ void exportPP1Sp(int k) {
       {'name': 'tokenId', 'size': 32, 'encoding': 'hex', 'description': 'txid whose output 0 the genesis spends (immutable)'},
       {'name': 'rabinPubKeyHash', 'size': 20, 'encoding': 'hex', 'description': "hash160 of the operator's Rabin n (immutable)"},
       {'name': 'phase', 'size': 1, 'encoding': 'hex_byte', 'description': '00 issued, 01 live (mutable)'},
-      for (int r = 0; r < PP1SpHeader.ringSize; r++)
+      for (int r = 0; r < PP1SpLegacyHeader.ringSize; r++)
         {'name': 'ring$r', 'size': 32, 'encoding': 'hex', 'description': 'commitment root; ring0 is the current one (mutable)'},
       {'name': 'size', 'size': 4, 'encoding': 'le_uint32', 'description': 'leaves in the commitment tree (mutable)'},
       {'name': 'nfRoot', 'size': 32, 'encoding': 'hex', 'description': 'nullifier set root (mutable)'},
     ],
     'hex': templateHex,
     'metadata': {
-      'generatedBy': 'PP1SpScriptGen',
-      'sourceFile': 'lib/src/script_gen/pp1_sp_script_gen.dart',
+      'generatedBy': 'PP1SpLegacyScriptGen',
+      'sourceFile': 'lib/src/script_gen/pp1_sp_legacy_script_gen.dart',
       'note': 'Pushdata prefixes (0x20, 0x14, 0x01, 0x04) are part of the static hex. A round spends this output '
           'together with the K verifier slots and the append slot minted by the same transaction.',
     },

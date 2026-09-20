@@ -2,7 +2,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
-import 'package:tstokenlib/src/builder/pp1_sp_lock_builder.dart';
+import 'package:tstokenlib/src/builder/pp1_sp_legacy_lock_builder.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/note_encryption.dart';
 import 'package:tstokenlib/src/crypto/proof_hash.dart';
@@ -11,10 +11,10 @@ import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/verifier_slot_gen.dart';
 import 'package:tstokenlib/src/transaction/pool_chain_reader.dart';
-import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 final verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 final sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
@@ -43,8 +43,8 @@ void main() {
   const rootP = StarkParams(logTrace: 15, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
 
   late PoolAggregation agg;
-  late PP1SpScriptGen gen;
-  late ShieldedPoolTool tool;
+  late PP1SpLegacyScriptGen gen;
+  late ShieldedPoolLegacyTool tool;
 
   final operatorKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
   final operatorPub = SVPublicKey.fromPrivateKey(operatorKey);
@@ -80,7 +80,7 @@ void main() {
     final bb = await NoteEncryption.encrypt(
         NotePlaintext(asset: PoolHash.bsvAsset, d: tb.d, value: vb, rho: ob.rho, rcm: ob.rcm, memo: NotePlaintext.memoOf('b')), tb, sender.ovk, rng: rng);
     expect(ba.cm, oa.cm);
-    return (oa, ob, ShieldedPoolTool.extras([ba, bb], payouts));
+    return (oa, ob, ShieldedPoolLegacyTool.extras([ba, bb], payouts));
   }
 
   final rabin = Rabin.generateKeyPair(1024);
@@ -95,8 +95,8 @@ void main() {
     agg = PoolAggregation.uniform(spendP: spendP, levelP: const [p1, p2p], levelLog: const [15, 16], rootP: rootP, rootLog: 15, arity: 2);
     print('  aggregation compiled in ${sw.elapsedMilliseconds} ms: ${agg.transfers} transfers, ${agg.widePublicsCount} public lanes');
     final slot = VerifierSlotGen(rootP, airFor: agg.rootAir, numPublics: agg.widePublicsCount);
-    gen = PP1SpScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
-    tool = ShieldedPoolTool(gen);
+    gen = PP1SpLegacyScriptGen.aggregated(spendP, verifierSlot: slot, transfers: agg.transfers, leavesAppended: agg.tree.leavesAppended);
+    tool = ShieldedPoolLegacyTool(gen);
     print('  verifier slot ${gen.verifierBytes.length} B, state body ${gen.body().buffer.length} B (${sw.elapsedMilliseconds} ms)');
   }, timeout: const Timeout(Duration(minutes: 5)));
 
@@ -115,7 +115,7 @@ void main() {
   test('a round of four deposits through one aggregated slot; the chain reader agrees', () async {
     final depositFunding = coinbaseLike(depositorAddress, [400000]);
     final amounts = [100000, 50000, 25000, 12500];
-    final change = ShieldedPoolTool.payout(depositorAddress, 400000 - amounts.reduce((a, b) => a + b) - 800);
+    final change = ShieldedPoolLegacyTool.payout(depositorAddress, 400000 - amounts.reduce((a, b) => a + b) - 800);
     final transfers = <PoolTransfer>[];
     for (int n = 0; n < 4; n++) {
       final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
@@ -135,7 +135,7 @@ void main() {
     expect(roundTx.outputs.length, 3 + 4 + 1, reason: 'state, result, slot, four note-data outputs and the change');
     expect(roundTx.inputs.length, 3);
     verifyAll(roundTx, [...spent, depositFunding.outputs[0]], label: 'aggregated round');
-    expect(PP1SpLockBuilder.fromScript(roundTx.outputs[0].script).header.bytes(), ledger.header.bytes());
+    expect(PP1SpLegacyLockBuilder.fromScript(roundTx.outputs[0].script).header.bytes(), ledger.header.bytes());
 
     // a reader rebuilds the same ledger from the two transactions
     final reader = PoolChainReader.fromGenesis(gen, genesisTx);
@@ -150,7 +150,7 @@ void main() {
 
   test('a short round: one deposit and three padding transfers, two of them from stock', () async {
     final depositFunding = coinbaseLike(depositorAddress, [30000]);
-    final change = ShieldedPoolTool.payout(depositorAddress, 30000 - 20000 - 800);
+    final change = ShieldedPoolLegacyTool.payout(depositorAddress, 30000 - 20000 - 800);
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final (oa, ob, extras) = await notes(19990, 10, payouts: [change]);
     final w = PoolSpendAir.witness(da, db, oa, ob, -20000, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(extras));

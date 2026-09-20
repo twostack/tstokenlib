@@ -3,14 +3,14 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
-import 'package:tstokenlib/src/builder/pp1_sp_lock_builder.dart';
+import 'package:tstokenlib/src/builder/pp1_sp_legacy_lock_builder.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/rabin.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
-import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 final verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
 final sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
@@ -31,8 +31,8 @@ void main() {
   Uint8List bytes(int n) => Uint8List.fromList(List.generate(n, (_) => rng.nextInt(256)));
   const p = StarkParams(
       logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
-  final gen = PP1SpScriptGen(p, k: 2);
-  final tool = ShieldedPoolTool(gen);
+  final gen = PP1SpLegacyScriptGen(p, k: 2);
+  final tool = ShieldedPoolLegacyTool(gen);
 
   // the operator (creates the pool) and a depositor, with keys
   final operatorKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
@@ -70,7 +70,7 @@ void main() {
     expect(hex.encode(fundingTx.hash.reversed.toList()), fundingTx.id, reason: 'hash is the internal byte order');
     issuanceTx = tool.createIssuanceTxn(fundingTx, 1, operatorSigner, operatorPub, operatorAddress, rabinPKH);
     expect(issuanceTx.outputs.length, 3);
-    final h = PP1SpLockBuilder.fromScript(issuanceTx.outputs[0].script).header;
+    final h = PP1SpLegacyLockBuilder.fromScript(issuanceTx.outputs[0].script).header;
     expect(h.tokenId, fundingTx.hash);
     expect(h.phase, 0);
     expect(h.size, 0);
@@ -106,7 +106,7 @@ void main() {
     final da = SpendNote.dummy(sk: lanes(5), rho: lanes(3)), db = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final nb = OutputNote(pkd: lanes(8), value: 7, rho: lanes(3), rcm: lanes(4));
     final deposit = noteA.value + nb.value;
-    final change = ShieldedPoolTool.payout(depositorAddress, 400000 - deposit - 800);
+    final change = ShieldedPoolLegacyTool.payout(depositorAddress, 400000 - deposit - 800);
     final w = PoolSpendAir.witness(da, db, noteA, nb, -deposit, anchor: ledger.anchor, outHash: PoolPublicInputs.outHashLanes(change));
     final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(1));
     final spent = tool.spentByRound(ledger);
@@ -119,7 +119,7 @@ void main() {
     expect(tx.outputs[0].satoshis, BigInt.from(ledger.vault));
     verifyAll(tx, [...spent, depositFunding.outputs[0]], label: 'round 1');
     // the ledger's header is what the new state output carries
-    expect(PP1SpLockBuilder.fromScript(tx.outputs[0].script).header.bytes(), ledger.header.bytes());
+    expect(PP1SpLegacyLockBuilder.fromScript(tx.outputs[0].script).header.bytes(), ledger.header.bytes());
   }, timeout: const Timeout(Duration(minutes: 5)));
 
   test('round 2: the note is spent, an unshield pays the operator; the fee comes from the vault', () {
@@ -129,7 +129,7 @@ void main() {
     final dummy = SpendNote.dummy(sk: lanes(5), rho: lanes(3));
     final oa = OutputNote(pkd: lanes(8), value: 250000, rho: lanes(3), rcm: lanes(4));
     final ob = OutputNote(pkd: lanes(8), value: 20000, rho: lanes(3), rcm: lanes(4));
-    final payee = ShieldedPoolTool.payout(operatorAddress, 29000); // 1000 sats of the 30000 leaving are fee
+    final payee = ShieldedPoolLegacyTool.payout(operatorAddress, 29000); // 1000 sats of the 30000 leaving are fee
     final w = PoolSpendAir.witness(a, dummy, oa, ob, noteA.value - oa.value - ob.value, outHash: PoolPublicInputs.outHashLanes(payee));
     final proof = StarkProver.prove(p, PoolSpendAir.air(w.publics), w.rows, rng: Random(2));
     final spent = tool.spentByRound(ledger);

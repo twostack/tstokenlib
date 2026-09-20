@@ -27,7 +27,7 @@ import 'package:tstokenlib/src/script_gen/pp1_nft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
-import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 
 void main() {
   group('Template sync guard', () {
@@ -201,8 +201,8 @@ void main() {
       var p = StarkParams(
           logTrace: st['logTrace'], logBlowup: st['logBlowup'], logExpand: st['logExpand'], logFinal: st['logFinal'],
           numQueries: st['numQueries'], grindBytes: st['grindBytes'], zkRandomizers: st['zkRandomizers']);
-      var gen = PP1SpScriptGen(p, k: state['k']);
-      var h = PP1SpHeader(
+      var gen = PP1SpLegacyScriptGen(p, k: state['k']);
+      var h = PP1SpLegacyHeader(
         tokenId: List.generate(32, (i) => i + 1),
         rabinPubKeyHash: List.generate(20, (i) => i + 0x40),
         phase: 1,
@@ -220,7 +220,7 @@ void main() {
         substituted = substituted.replaceFirst('{{ring$r}}', hex.encode(h.ring[r]));
       }
       expect(substituted, equals(hex.encode(gen.lock(h).buffer)),
-          reason: 'PP1_SP template output must match PP1SpScriptGen.lock() output');
+          reason: 'PP1_SP template output must match PP1SpLegacyScriptGen.lock() output');
       expect(state['verifierSlotHash'], equals(hex.encode(gen.verifierHash)));
       expect(state['appendSlotHash'], equals(hex.encode(gen.appendHash)));
 
