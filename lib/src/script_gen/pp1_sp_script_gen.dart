@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import '../shielded_pool/pool_header.dart';
+import '../shielded_pool/pool_out_hash.dart';
 import '../shielded_pool/pool_outputs.dart';
 import 'opcode_helpers.dart';
 import 'check_preimage_ocs.dart';
@@ -410,9 +411,12 @@ class PP1SpScriptGen {
     // for bytes: an output's bytes are paid three times, a witness's once, and
     // nothing in script needs to read inside them. Being in a mined witness is
     // what publishes them; this check is what binds them to the round.
+    // header.outHash is a hash of per-transfer bundle hashes, which is what
+    // lets V hold each transfer's proof to its own ciphertexts with 32 bytes
+    // a transfer (see PoolOutHash).
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_PICK);           // bundles
-    b.opCode(OpCodes.OP_SHA256);
+    emitRoundOutHash(b);
     b.opCode(OpCodes.OP_9);
     b.opCode(OpCodes.OP_PICK);           // newHeader
     OpcodeHelpers.pushInt(b, PoolHeader.outHashOffset);
@@ -886,6 +890,51 @@ class PP1SpScriptGen {
   /// Pre:  [receipts, withdrawals]   (withdrawals on top)
   /// Post: [countVarint, tailBytes]
   static void emitBuildOutputTail(ScriptBuilder b) {
+    _emitBuildOutputTail(b);
+  }
+
+  /// header.outHash from the witness's bundles push: `SHA256(c_0 ‖ … ‖
+  /// c_{n-1})` with `c_t = SHA256(bundle_t)`, the push being each bundle
+  /// behind a 2-byte little-endian length ([PoolOutHash.encodeBundles]).
+  ///
+  /// Up to [PoolOutHash.maxTransfers] segments, one unrolled step each,
+  /// skipped once the push is used up; then it must be empty. A length that
+  /// runs past the push fails OP_SPLIT, so a malformed push cannot parse as
+  /// anything. The count is not stated anywhere: V hashes its own transfers'
+  /// bundle hashes into the same header field, so a different count cannot
+  /// meet it.
+  ///
+  /// Pre:  [bundles]
+  /// Post: [outHash32]
+  static void emitRoundOutHash(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_0);                          // bundles acc
+    b.opCode(OpCodes.OP_SWAP);                       // acc bundles
+    for (int i = 0; i < PoolOutHash.maxTransfers; i++) {
+      b.opCode(OpCodes.OP_SIZE);
+      b.opCode(OpCodes.OP_IF);
+      OpcodeHelpers.pushInt(b, PoolOutHash.lengthBytes);
+      b.opCode(OpCodes.OP_SPLIT);                    // acc len rest
+      b.opCode(OpCodes.OP_SWAP);
+      b.addData(Uint8List.fromList([0x00]));         // unsigned
+      b.opCode(OpCodes.OP_CAT);
+      b.opCode(OpCodes.OP_BIN2NUM);                  // acc rest n
+      b.opCode(OpCodes.OP_SPLIT);                    // acc seg rest'
+      b.opCode(OpCodes.OP_SWAP);
+      b.opCode(OpCodes.OP_SHA256);                   // acc rest' c
+      b.opCode(OpCodes.OP_ROT);
+      b.opCode(OpCodes.OP_SWAP);
+      b.opCode(OpCodes.OP_CAT);                      // rest' acc'
+      b.opCode(OpCodes.OP_SWAP);                     // acc' rest'
+      b.opCode(OpCodes.OP_ENDIF);
+    }
+    b.opCode(OpCodes.OP_SIZE);
+    b.opCode(OpCodes.OP_NOT);
+    b.opCode(OpCodes.OP_VERIFY);                     // more than the maximum
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_SHA256);
+  }
+
+  static void _emitBuildOutputTail(ScriptBuilder b) {
     // --- The counts, from the sizes ---
     b.opCode(OpCodes.OP_SIZE);
     b.opCode(OpCodes.OP_DUP);

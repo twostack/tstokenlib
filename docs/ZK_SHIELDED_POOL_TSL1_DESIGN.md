@@ -159,7 +159,7 @@ Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyH
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
+**Measured.** Script 14,652 bytes since the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
 Tests: `test/sp_token_test.dart`, 58 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, a selector that names no branch, and the output tail cases of 5.7.
 
@@ -294,10 +294,20 @@ One header push, then the existing verifier program, then a tail that:
 | size | index | `index = size_N / 32`, `size_{N+1} = size_N + leavesAppended` |
 | nfRoot | nfBefore, nfAfter | equal to header_N's and header_{N+1}'s (10.1) |
 | balance | each transfer's signed amount | summed in script, BSV only, then step 4 |
-| outHash | nothing yet | open, see below |
+| outHash | each transfer's outHash lanes | V takes the 32-byte bundle hash of every transfer, checks their hash is the header's and that each transfer's lanes are `SHA256(W_t ‖ c_t)` (below) |
 | (receipts) | receipt slots | per used slot, the receipt output's cm equals the slot's and its value equals minus the slot's amount; unused slots zero (7.1) |
 
-One gap remains before V can be written. Each transfer's own outHash is still SHA-256 of its extra outputs, payees and the ciphertext OP_RETURN together, which this design moved into the witness; it has to be redefined, likely as the withdrawal record plus a hash of the bundle, which would also give header.outHash a source.
+**outHash, redefined 2026-09-21.** In the legacy pool a transfer's outHash was SHA-256 of its extra outputs, payees and ciphertext output together, and the spend proof binds it by absorbing it. This design moved the ciphertexts into the witness, so the two halves are hashed apart (`PoolOutHash` in `lib/src/shielded_pool/pool_out_hash.dart`):
+
+```
+c_t            = SHA256(bundle_t)             transfer t's note bundles
+outHash_t      = SHA256(W_t ‖ c_t)             W_t its 28-byte withdrawal record, or nothing
+header.outHash = SHA256(c_0 ‖ … ‖ c_{n-1})
+```
+
+PP1 in witness N+1 computes header.outHash from the published bundles, pushed as 2-byte-length-prefixed segments, one unrolled step per transfer up to 256 (`emitRoundOutHash`, 4,359 bytes, PP1 now 14,652 bytes; about 13 KB a round once paid three times). V needs 32 bytes per transfer, not the bundles: it checks the c_t list against header_{N+1}.outHash and each transfer's lanes against its withdrawal output and c_t. So neither a withdrawal's payee nor a recipient's ciphertext can be changed after the spender proved. Every BSV transfer taking money out has exactly one withdrawal, the next in tail order, for exactly its amount; no other transfer has one. Assets other than BSV moving in or out are refused until V carries them. `PoolOutHash.check` is that rule in Dart, tested in `test/pool_out_hash_test.dart`, and is what V's script will implement.
+
+With that, every field of the header and every output of the round has a source in the proof's statement, and V can be written.
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
 

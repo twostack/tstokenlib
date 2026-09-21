@@ -7,6 +7,7 @@ import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
+import 'package:tstokenlib/src/shielded_pool/pool_out_hash.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
 
 // The pool coordinator.
@@ -431,14 +432,14 @@ void main() {
       fundB = getOperatorFundingTx2();
       signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       g = genesisHeader();
-      bundles = <int>[1, 2, 3, 4, 5];
+      bundles = PoolOutHash.encodeBundles([[1, 2, 3], [4, 5]]);
       // outHash binds the round's ciphertexts, so the header the round carries
       // has to be built around the bundles that ride in its witness.
       var base = nextHeader(g);
       h1 = PoolHeader(
           cmRoot: base.cmRoot, nfRoot: base.nfRoot, ring: base.ring,
           size: base.size, balance: BigInt.from(500000),
-          outHash: crypto.sha256.convert(bundles).bytes);
+          outHash: PoolOutHash.roundOutHashOf(PoolOutHash.decodeBundles(bundles)));
 
       y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
@@ -556,7 +557,7 @@ void main() {
       var roundTx = round(h1, y1.outpoint);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: y1.outpoint, yInput: y1.input,
-              vBody: verifierBody, claimedBundles: const <int>[9, 9, 9])),
+              vBody: verifierBody, claimedBundles: PoolOutHash.encodeBundles([[9, 9, 9]]))),
           throwsA(isA<ScriptException>()));
     });
 
@@ -643,7 +644,7 @@ void main() {
       var witness1 = honestWitness(round1);
       spendPP1(round1, witness1);
 
-      var bundles2 = <int>[7, 7, 7, 7];
+      var bundles2 = PoolOutHash.encodeBundles([[7, 7, 7, 7]]);
       var base2 = h1.advance(
           cmRoot: List<int>.generate(32, (i) => 0xE0 + i % 16),
           nfRoot: List<int>.generate(32, (i) => 0xF0 + i % 16),
@@ -651,7 +652,7 @@ void main() {
       var h2 = PoolHeader(
           cmRoot: base2.cmRoot, nfRoot: base2.nfRoot, ring: base2.ring,
           size: base2.size, balance: base2.balance,
-          outHash: crypto.sha256.convert(bundles2).bytes);
+          outHash: PoolOutHash.roundOutHashOf(PoolOutHash.decodeBundles(bundles2)));
       var y2 = service.buildSlotTxn(
           header: h2, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
 
@@ -1143,12 +1144,12 @@ void main() {
       fundB = getOperatorFundingTx2();
       signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       g = genesisHeader();
-      bundles = <int>[1, 2, 3, 4, 5];
+      bundles = PoolOutHash.encodeBundles([[1, 2, 3], [4, 5]]);
       var base = nextHeader(g);
       h1 = PoolHeader(
           cmRoot: base.cmRoot, nfRoot: base.nfRoot, ring: base.ring,
           size: base.size, balance: BigInt.from(500000),
-          outHash: crypto.sha256.convert(bundles).bytes);
+          outHash: PoolOutHash.roundOutHashOf(PoolOutHash.decodeBundles(bundles)));
 
       y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
