@@ -143,8 +143,9 @@
       builds and the interpreter accepts.</p>
     <div class="meta">
       <span class="chip mono">two rounds verified end to end</span>
+      <span class="chip mono">measured at 62b48eb</span>
       <span class="chip mono">branch feature/shielded-pool</span>
-      <span class="chip alert">V is a stub · withdrawals not built</span>
+      <span class="chip alert">V is a stub · withdrawals ungated · deposits not built</span>
     </div>
   </header>
 
@@ -159,7 +160,10 @@
     <p>Three relationships appear in the map, and telling them apart is the whole design.
       A <strong>solid arrow</strong> is a spend. A <strong>dotted line</strong> is a claim made
       about a transaction that has not been spent yet: PP3 <em>pins</em> an outpoint the next round
-      must spend, and PP1 <em>certifies</em> what the script at that outpoint actually is.</p>
+      must spend, and PP1 <em>certifies</em> what the script at that outpoint actually is.
+      A <strong>grey arrow</strong> from a slot transaction down to a round is the anchor: the
+      round that pins Y_N also spends Y_N's output 1, so the transaction it pins is already
+      mined.</p>
   </section>
 
   <section>
@@ -167,8 +171,8 @@
     <h2>Rounds and witnesses alternate; slot transactions drop in from above</h2>
     <hr class="rule">
     <div class="scroll">
-      <svg class="map" viewBox="0 0 1220 372" role="img"
-           aria-label="Flow of the shielded pool chain across two rounds: round 0, witness 0, round 1, witness 1, round 2, with slot transactions above and PP3 arcs below.">
+      <svg class="map" viewBox="0 0 1220 388" role="img"
+           aria-label="Flow of the shielded pool chain across two rounds: round 0, witness 0, round 1, witness 1, round 2, with slot transactions above, anchor spends from each slot into the round that pins it, and PP3 arcs below.">
         <defs>
           <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
                   orient="auto-start-reverse">
@@ -187,7 +191,7 @@
         <!-- lane labels -->
         <text x="8" y="26" font-size="10.5" font-weight="600" letter-spacing="1.6"
               fill="var(--faint)">SLOT TRANSACTIONS</text>
-        <text x="8" y="136" font-size="10.5" font-weight="600" letter-spacing="1.6"
+        <text x="132" y="256" font-size="10.5" font-weight="600" letter-spacing="1.6"
               fill="var(--faint)">ROUNDS AND WITNESSES</text>
 
         <!-- slot transactions -->
@@ -196,20 +200,22 @@
                 stroke="var(--vfy)" stroke-width="1"/>
           <text x="52" y="60" font-size="13" font-weight="600" fill="var(--vfy)">Y_0</text>
           <text x="52" y="78" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">300 B · V 240 B</text>
+                font-family="IBM Plex Mono, monospace">357 B · V 261 B</text>
 
           <rect x="480" y="40" width="130" height="52" rx="7" fill="var(--vfy-bg)"
                 stroke="var(--vfy)" stroke-width="1"/>
           <text x="492" y="60" font-size="13" font-weight="600" fill="var(--vfy)">Y_1</text>
           <text x="492" y="78" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">300 B · V 240 B</text>
+                font-family="IBM Plex Mono, monospace">357 B · V 261 B</text>
 
-          <rect x="920" y="40" width="130" height="52" rx="7" fill="none"
-                stroke="var(--vfy)" stroke-width="1" stroke-dasharray="4 3" opacity=".75"/>
-          <text x="932" y="60" font-size="13" font-weight="600" fill="var(--vfy)"
-                opacity=".85">Y_2</text>
-          <text x="932" y="78" font-size="11" fill="var(--faint)"
-                font-family="IBM Plex Mono, monospace">awaits round 3</text>
+          <rect x="920" y="40" width="130" height="52" rx="7" fill="var(--vfy-bg)"
+                stroke="var(--vfy)" stroke-width="1"/>
+          <text x="932" y="60" font-size="13" font-weight="600" fill="var(--vfy)">Y_2</text>
+          <text x="932" y="78" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">357 B · V 261 B</text>
+          <path d="M1050,66 L1100,66" stroke="var(--vfy)" stroke-width="1.6" fill="none"
+                stroke-dasharray="4 3" marker-end="url(#arv)"/>
+          <text x="1106" y="70" font-size="10" fill="var(--vfy)">round 3</text>
         </g>
 
         <!-- spine boxes -->
@@ -219,39 +225,41 @@
           <text x="54" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 0</text>
           <text x="54" y="192" font-size="10.5" fill="var(--faint)">issuance · genesis</text>
           <text x="54" y="214" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">61,078 B · 1 in · 5 out</text>
+                font-family="IBM Plex Mono, monospace">66,522 B · 2 in · 5 out</text>
 
           <rect x="260" y="152" width="160" height="80" rx="8" fill="var(--sunk)"
                 stroke="var(--line)" stroke-width="1.5"/>
           <text x="274" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Witness 0</text>
           <text x="274" y="192" font-size="10.5" fill="var(--faint)">proves round 0</text>
           <text x="274" y="214" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">71,923 B · 3 in · 1 out</text>
+                font-family="IBM Plex Mono, monospace">82,739 B · 3 in · 1 out</text>
 
           <rect x="480" y="152" width="160" height="80" rx="8" fill="var(--surface)"
                 stroke="var(--line)" stroke-width="1.5"/>
           <text x="494" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 1</text>
           <text x="494" y="192" font-size="10.5" fill="var(--faint)">balance 500,000 sat</text>
           <text x="494" y="214" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">110,899 B · 4 in · 5 out</text>
+                font-family="IBM Plex Mono, monospace">116,358 B · 5 in · 5 out</text>
 
           <rect x="700" y="152" width="160" height="80" rx="8" fill="var(--sunk)"
                 stroke="var(--line)" stroke-width="1.5"/>
           <text x="714" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Witness 1</text>
           <text x="714" y="192" font-size="10.5" fill="var(--faint)">proves round 1</text>
           <text x="714" y="214" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">123,891 B · 3 in · 1 out</text>
+                font-family="IBM Plex Mono, monospace">134,835 B · 3 in · 1 out</text>
 
           <rect x="920" y="152" width="160" height="80" rx="8" fill="var(--surface)"
                 stroke="var(--line)" stroke-width="1.5"/>
           <text x="934" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 2</text>
           <text x="934" y="192" font-size="10.5" fill="var(--faint)">balance 900,000 sat</text>
           <text x="934" y="214" font-size="11" fill="var(--muted)"
-                font-family="IBM Plex Mono, monospace">110,900 B · 4 in · 5 out</text>
+                font-family="IBM Plex Mono, monospace">116,356 B · 5 in · 5 out</text>
 
           <rect x="1140" y="152" width="60" height="80" rx="8" fill="none"
                 stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3"/>
-          <text x="1152" y="196" font-size="11" fill="var(--faint)">W 2 …</text>
+          <text x="1150" y="186" font-size="11" fill="var(--faint)">W 2</text>
+          <text x="1150" y="202" font-size="9.5" fill="var(--faint)"
+                font-family="IBM Plex Mono, monospace">184.8 KB</text>
         </g>
 
         <!-- spine spends: round out1,out2 -> witness in1,in2 -->
@@ -287,38 +295,55 @@
 
         <!-- V spends: Y_N out0 -> round N+1 in2 -->
         <g stroke="var(--vfy)" stroke-width="1.6" fill="none" marker-end="url(#arv)">
-          <path d="M170,66 L340,66 L340,120 L536,120 L536,148"/>
-          <path d="M610,66 L780,66 L780,120 L976,120 L976,148"/>
+          <path d="M170,66 L340,66 L340,120 L500,120 L500,148"/>
+          <path d="M610,66 L780,66 L780,120 L940,120 L940,148"/>
         </g>
         <g font-size="10.5" font-weight="600" fill="var(--vfy)" text-anchor="middle">
-          <text x="424" y="114">V out0 → in2</text>
-          <text x="864" y="114">V out0 → in2</text>
+          <text x="420" y="114">V out0 → in2</text>
+          <text x="860" y="114">V out0 → in2</text>
         </g>
 
         <!-- pins and certifies (dotted, not spends) -->
         <g stroke="var(--pp3)" stroke-width="1.4" fill="none" stroke-dasharray="2.5 3">
-          <path d="M105,152 L105,92"/>
-          <path d="M545,152 L545,92"/>
-          <path d="M985,152 L985,92"/>
+          <path d="M80,152 L80,92"/>
+          <path d="M520,152 L520,92"/>
+          <path d="M960,152 L960,92"/>
         </g>
         <g stroke="var(--pp1)" stroke-width="1.4" fill="none" stroke-dasharray="2.5 3">
-          <path d="M300,152 L300,104 L150,104 L150,92"/>
-          <path d="M740,152 L740,104 L590,104 L590,92"/>
+          <path d="M300,152 L300,104 L160,104 L160,92"/>
+          <path d="M740,152 L740,104 L600,104 L600,92"/>
+          <path d="M1170,152 L1170,104 L1040,104 L1040,92"/>
         </g>
         <g font-size="9.5" fill="var(--pp3)">
-          <text x="112" y="140">PP3 pins</text>
-          <text x="552" y="140">PP3 pins</text>
-          <text x="992" y="140">PP3 pins</text>
+          <text x="86" y="142">PP3 pins</text>
+          <text x="526" y="142">PP3 pins</text>
+          <text x="966" y="142">PP3 pins</text>
         </g>
         <g font-size="9.5" fill="var(--pp1)">
           <text x="308" y="140">PP1 certifies</text>
           <text x="748" y="140">PP1 certifies</text>
+          <text x="1164" y="140" text-anchor="end">PP1 certifies</text>
+        </g>
+
+        <!-- anchors: Y_N out1 -> the round that pins Y_N (issuance in1, rounds in4) -->
+        <g stroke="var(--plain)" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+          <path d="M136,92 L136,148"/>
+          <path d="M576,92 L576,148"/>
+          <path d="M1016,92 L1016,148"/>
+        </g>
+        <g font-size="9.5" fill="var(--plain)">
+          <text x="141" y="124">anchor</text><text x="141" y="135">out1 → in1</text>
+          <text x="581" y="124">anchor</text><text x="581" y="135">out1 → in4</text>
+          <text x="1021" y="124">anchor</text><text x="1021" y="135">out1 → in4</text>
         </g>
 
         <text x="40" y="352" font-size="11" fill="var(--faint)"
               font-family="IBM Plex Serif, serif">Input 0 of every round and every witness is a
           coordinator P2PKH funding UTXO, left out of the arrows. Solid = spend, dotted = a claim
           about an outpoint not yet spent.</text>
+        <text x="40" y="370" font-size="11" fill="var(--faint)"
+              font-family="IBM Plex Serif, serif">Grey = anchor spend: each round spends output 1
+          of the slot transaction its own PP3 pins, so every Y on this map is mined, Y_2 included.</text>
       </svg>
     </div>
   </section>
@@ -331,7 +356,8 @@
       <div>
         <h3><span class="swatch" style="background:var(--pp1)"></span>PP1_SP</h3>
         <p>Locks round out1. Runs when the witness spends it. Rebuilds its own round byte for
-          byte and certifies the next verifier slot. <span class="mono">10,294 B</span></p>
+          byte and certifies the next verifier slot, rebuilding that slot transaction whole. The
+          create branch certifies the genesis slot Y_0 the same way. <span class="mono">15,578 B</span></p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--pp2)"></span>PP2</h3>
@@ -341,19 +367,22 @@
       <div>
         <h3><span class="swatch" style="background:var(--pp3)"></span>PP3</h3>
         <p>Locks round out3 and <em>holds the pool balance</em>. Runs when the next round spends
-          it, at input 3. Pins the verifier slot that round must also spend, and requires that round's
-          output 3 to run this same program: a forward covenant, so the balance can never move into
-          a weaker script. No owner and no burn path. <span class="mono">49,182 B</span></p>
+          it, at input 3. Pins the verifier slot that round must also spend, requires it to spend the
+          anchor of the slot its own successor pins, and requires its output 3 to run this same
+          program: a forward covenant, so the balance can never move into a weaker script. No owner
+          and no burn path. <span class="mono">49,195 B</span></p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--vfy)"></span>V</h3>
         <p>Locks slot transaction out0, one satoshi. Runs as input 2 of the round it verifies.
-          Today a stub: a header push then <code>OP_DROP OP_1</code>. <span class="mono">240 B</span></p>
+          A header push, then the signer's key hash, then the body. The body is a stub today,
+          <code>OP_DROP OP_1</code>. <span class="mono">261 B</span></p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--plain)"></span>P2PKH and metadata</h3>
-        <p>Change out0, the metadata <code>OP_FALSE OP_RETURN</code> at out4, and the witness's
-          single ModP2PKH output. No covenant on any of them.</p>
+        <p>Change out0, the metadata <code>OP_FALSE OP_RETURN</code> at out4, the witness's
+          single ModP2PKH output, and the one-satoshi anchor on each slot transaction's out1. No
+          covenant on any of them; the anchor matters because of who must spend it.</p>
       </div>
     </div>
   </section>
@@ -370,18 +399,18 @@
         <header>
           <span class="name">Round 1</span>
           <span class="chip mono">token transaction</span>
-          <span class="size">110,899 B</span>
+          <span class="size">116,358 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>coordinator funding
               <small>pays the fee and tops up the balance</small></span>
-            <span class="sz">unlock 106 B</span></div>
+            <span class="sz">unlock 107 B</span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-plain">ModP2PKH</span>witness 0 out0
               <small>the coordinator's signature authorises the round</small></span>
-            <span class="sz">unlock 106 B</span></div>
+            <span class="sz">unlock 107 B</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-vfy">V</span>Y_0 out0
               <small>the verifier for header 0, pinned by PP3 of round 0</small></span>
@@ -390,23 +419,28 @@
             <span class="what"><span class="tag t-pp3">PP3</span>round 0 out3
               <small>carries the induction and the balance forward; its SIGHASH_SINGLE preimage
                 carries PP3's whole script, so it can demand output 3 run the same program</small></span>
-            <span class="sz">unlock 49,591 B</span></div>
+            <span class="sz">unlock 49,604 B</span></div>
+          <div class="row"><span class="ix">4</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>Y_1 out1, the anchor
+              <small>Y_1 is the slot this round's own PP3 pins; spending its anchor here means the
+                pin can only exist once Y_1 is mined</small></span>
+            <span class="sz">unlock 106 B</span></div>
           <p class="hd">Outputs · what each creates</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>change</span>
-            <span class="sz">25 B · 999,499,866 sat</span></div>
+            <span class="sz">25 B · 999,499,867 sat</span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1_SP</span>header 1
               <small>ownerPKH, tokenId, verifierBodyHash, genesisHeader, header</small></span>
-            <span class="sz">10,294 B · 1 sat</span></div>
+            <span class="sz">15,578 B · 1 sat</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>witness bridge</span>
             <span class="sz">1,366 B · 1 sat</span></div>
           <div class="row"><span class="ix">3</span>
             <span class="what"><span class="tag t-pp3">PP3</span>pins Y_1
-              <small>holds the pool balance; the next round must spend Y_1 at its input 2, and
-                this at its input 3</small></span>
-            <span class="sz">49,182 B · 500,000 sat</span></div>
+              <small>holds the pool balance; the next round must spend Y_1 at its input 2, this at
+                its input 3, and Y_2's anchor at its input 4</small></span>
+            <span class="sz">49,195 B · 500,000 sat</span></div>
           <div class="row"><span class="ix">4</span>
             <span class="what"><span class="tag t-plain">OP_RETURN</span>metadata</span>
             <span class="sz">2 B · 0 sat</span></div>
@@ -417,17 +451,17 @@
         <header>
           <span class="name">Witness 1</span>
           <span class="chip mono">inductive proof</span>
-          <span class="size">123,891 B</span>
+          <span class="size">134,835 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>coordinator funding</span>
-            <span class="sz">unlock 106 B</span></div>
+            <span class="sz">unlock 107 B</span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1</span>round 1 out1
               <small>where PP1 executes; 18 pushes, the large ones listed below</small></span>
-            <span class="sz">unlock 123,579 B</span></div>
+            <span class="sz">unlock 134,522 B</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>round 1 out2</span>
             <span class="sz">unlock 34 B</span></div>
@@ -441,23 +475,25 @@
             <span class="what">parent round, pushed whole
               <small>49% of this witness; PP1 reads input 3's outpoint from bytes the chain fixed.
                 Round 0 has no PP3 unlock in it, so from witness 2 on the parent is a full round
-                and a witness is 173,875 B</small></span>
-            <span class="sz">61,078 B</span></div>
+                and a witness is 184,819 B</small></span>
+            <span class="sz">66,522 B</span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">lhs of round 1
-              <small>every input with its unlocking script, including PP3's 49,591 B</small></span>
-            <span class="sz">49,975 B</span></div>
+              <small>all five inputs with their unlocking scripts, including PP3's 49,604 B</small></span>
+            <span class="sz">50,136 B</span></div>
           <div class="row"><span class="ix">—</span>
-            <span class="what">sighash preimage, PP2 output</span>
-            <span class="sz">11,830 B</span></div>
+            <span class="what">sighash preimage, PP2 output
+              <small>the preimage carries PP1's own script, so it grows with PP1</small></span>
+            <span class="sz">17,114 B</span></div>
           <div class="row"><span class="ix">—</span>
-            <span class="what">newHeader, nextSlot, Y_1's input, verifier body
-              <small>the forward-looking certificate about Y_1</small></span>
-            <span class="sz">315 B</span></div>
+            <span class="what">newHeader, nextSlot, Y_1's parts, verifier body
+              <small>the forward-looking certificate about Y_1: header 236, outpoint 36, Y_1's
+                input and anchor key hash 61, body 2 (the stub)</small></span>
+            <span class="sz">335 B</span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">ciphertext bundles
               <small>published by riding here; bound by header 1's outHash</small></span>
-            <span class="sz">200 B</span></div>
+            <span class="sz">204 B</span></div>
         </div>
       </article>
 
@@ -465,20 +501,27 @@
         <header>
           <span class="name">Y_1</span>
           <span class="chip mono">slot transaction</span>
-          <span class="size">300 B</span>
+          <span class="size">357 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
           <div class="row"><span class="ix">0</span>
             <span class="what">any funding, from anyone
-              <small>exactly one input is a requirement, not a convention</small></span>
+              <small>exactly one input, its scriptSig under 253 B; PP1 checks the input's length
+                against its own length byte, so a scriptSig cannot swallow V or end early</small></span>
             <span class="sz">41 B serialized</span></div>
           <p class="hd">Outputs</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-vfy">V_1</span>
-              <code>4c ec</code> + header 1 + verifier body
-              <small>one output forces V to be output 0, so a forged Y cannot hide it</small></span>
-            <span class="sz">240 B · 1 sat</span></div>
+              <code>4c ec</code> + header 1 + <code>14</code> + signer + body
+              <small>the signer is round 1's new owner; V will demand its SIGHASH_ALL signature,
+                so a copied proof cannot spend V anywhere but in round 2</small></span>
+            <span class="sz">261 B · 1 sat</span></div>
+          <div class="row"><span class="ix">1</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>anchor
+              <small>spent by round 1 at input 4. PP1 rebuilds the whole transaction, so these
+                two outputs are the only shape that certifies</small></span>
+            <span class="sz">25 B · 1 sat</span></div>
         </div>
       </article>
 
@@ -486,7 +529,7 @@
         <header>
           <span class="name">Round 0</span>
           <span class="chip mono">issuance · genesis</span>
-          <span class="size">61,078 B</span>
+          <span class="size">66,522 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
@@ -495,6 +538,12 @@
               <small>this outpoint becomes the tokenId and can be spent once, which is the
                 base case of the whole induction</small></span>
             <span class="sz">unlock 107 B</span></div>
+          <div class="row"><span class="ix">1</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>Y_0 out1, the anchor
+              <small>witness 0's create branch checks this is the slot PP3_0 pins and certifies
+                Y_0 as a round certifies its successor. Before 62b48eb it did not, and a decoy
+                Y_0 could take round 1's money</small></span>
+            <span class="sz">unlock 106 B</span></div>
           <p class="hd">Outputs</p>
           <div class="row"><span class="ix">0-4</span>
             <span class="what">same five as every round
@@ -522,24 +571,35 @@
             <td><span class="tag t-vfy">V_N</span></td>
             <td class="mono">Y_N out0</td>
             <td class="mono">round N+1 spends it at in2</td>
-            <td>Verifies the proof, rebuilds the round's outputs against hashOutputs, checks the
-              withdrawal list and the balance equation. <strong>This is the gate on money</strong>,
-              and it sits in the same transaction as the payout.</td>
+            <td>Requires a SIGHASH_ALL signature from the signer its slot names, verifies the proof,
+              rebuilds the round's outputs against hashOutputs, checks the withdrawal list and the
+              balance equation. <strong>This is the gate on money</strong>, and it sits in the
+              same transaction as the payout.</td>
           </tr>
           <tr>
             <td><span class="tag t-pp3">PP3_N</span></td>
             <td class="mono">round N out3</td>
             <td class="mono">round N+1 spends it at in3</td>
             <td>Requires the round's input 2 to be the outpoint it named, so V cannot simply be
-              left out, and the round's output 3 to run PP3's own program, so the balance cannot
-              move into a weaker script. Knows the address, not the tenant.</td>
+              left out; its input 4 to be the anchor of the slot the round's own PP3 pins; and its
+              output 3 to run PP3's own program, so the balance cannot move into a weaker script.
+              Knows the address, not the tenant.</td>
           </tr>
           <tr>
             <td><span class="tag t-pp1">PP1_N</span></td>
             <td class="mono">round N out1</td>
             <td class="mono">witness N spends it at in1</td>
-            <td>Certified, one round earlier, that the outpoint PP3_N names holds this pool's
-              verifier carrying header N. Can inspect, but arrives too late for its own round.</td>
+            <td>Certifies that the outpoint PP3_N names is the output 0 of a slot transaction of
+              the fixed shape, holding this pool's verifier with header N and signer N. Can
+              inspect, but arrives too late for its own round.</td>
+          </tr>
+          <tr>
+            <td><span class="tag t-plain">anchor</span></td>
+            <td class="mono">Y_N out1</td>
+            <td class="mono">round N spends it at in4<br>(issuance: in1)</td>
+            <td>Nothing in its script; the point is where it is spent. Because the round that
+              pins Y_N spends it, Y_N is mined before the pin exists, so a coordinator cannot pin
+              a slot that never reaches the chain.</td>
           </tr>
         </tbody>
       </table>
@@ -555,8 +615,8 @@
     <hr class="rule">
     <p>Every deployment runs a coordinator with a prover, and that is the only shape the pool has.
       Proof work happens in two places, and the split is not a choice: it follows from who holds
-      which key. Everything in the map above assumes this mode, which is why Y_N always has one
-      output.</p>
+      which key. Everything in the map above assumes this mode, which is why Y_N always carries
+      exactly one verifier.</p>
     <div class="modes">
 
       <article class="mode">
@@ -579,10 +639,11 @@
         <h3>At the coordinator</h3>
         <p class="sub">A recursive prover folds the round into one proof</p>
         <p>The coordinator aggregates every spend in the round into a single root proof and the new
-          header. Y_N carries <strong>one output</strong>, V_N, which verifies that one proof when the
-          next round spends it at input 2.</p>
+          header. Y_N carries <strong>one verifier</strong>, V_N, which verifies that one proof when
+          the next round spends it at input 2.</p>
         <dl>
-          <dt>Y_N outputs</dt><dd><span class="num">1</span>, which is what forces V to be output 0</dd>
+          <dt>Y_N outputs</dt><dd><span class="num">2</span>: V at output 0 and the anchor at output 1,
+            a shape PP1 rebuilds byte for byte</dd>
           <dt>Measured</dt><dd>about <span class="num">220 s</span> for a 256-transfer round on one
             machine</dd>
           <dt>Needs</dt><dd>the recursion stack and machine time, on the coordinator's own machines;
@@ -600,7 +661,7 @@
     <p class="note"><strong>Why there is no second mode.</strong> Until 2026-09-21 the pool also had
       a direct-slot mode, in which the coordinator proved nothing and Y_N carried K spend-verifier
       outputs plus an append slot. It was dropped for four reasons, recorded in the design's 11.11:
-      its K + 1 outputs could not satisfy the one-output check that forces V to be output 0, so
+      its K + 1 outputs could not satisfy the fixed slot shape that forces V to be output 0, so
       keeping it meant weakening that property or maintaining a second PP1; the prover it existed to
       do without is built and measured; its rounds were dominated by Y, about 1.7 MB at K = 2; and
       K slots would have made PP1 know K when walking the round's inputs. If a coordinator that
@@ -609,24 +670,81 @@
   </section>
 
   <section>
+    <p class="lab">The slot transaction under attack</p>
+    <h2>Six ways to compromise Y, and where each one stands</h2>
+    <hr class="rule">
+    <p>Y is built by the coordinator, certified by PP1 in the witness of the round that pins it,
+      anchored by that round, and spent by the round after. Every outsider-triggered freeze is now
+      closed; what remains can only be triggered by the coordinator, and it freezes rather than
+      steals. The survey is
+      recorded in the design's 11.15; this is its outcome.</p>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th>Vector</th><th>Attack</th><th>Worst case</th><th>Stands</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">1</td>
+            <td>Copy the round's proof from the mempool and spend Y_N out0 in some other
+              transaction, which leaves PP3_N unspendable.</td>
+            <td>Freeze</td>
+            <td><span class="tag t-vfy">closed by design</span>V demands the named signer's
+              SIGHASH_ALL signature. Built in the layout; enforced once V's body exists.</td></tr>
+          <tr><td class="mono">2</td>
+            <td>Malleate Y's txid in relay so that a different Y is mined.</td>
+            <td>Delay</td>
+            <td><span class="tag t-plain">delay only</span>The round spends the original Y's
+              anchor, so it cannot be mined without that Y; rebuild and resubmit.</td></tr>
+          <tr><td class="mono">3</td>
+            <td>Double-spend Y's funding, get Y rejected by policy, or withhold the anchor key.</td>
+            <td>Delay</td>
+            <td><span class="tag t-plain">delay only</span>The anchor means the pin never exists
+              without Y, so the round simply is not mined yet.</td></tr>
+          <tr><td class="mono">4</td>
+            <td>Pin a Y whose content PP1 will not certify.</td>
+            <td>Freeze</td>
+            <td><span class="tag t-pp3">accepted</span>Only the coordinator can do it, and the
+              result is death, not theft. Closing it on chain costs about 3 MB a round, and the
+              same coordinator can freeze the pool more cheaply by never spending witness N's
+              output 0.
+              <code>checkSlotIsCertifiable</code> refuses to build such a round.</td></tr>
+          <tr><td class="mono">5</td>
+            <td>Pin a decoy Y_0 at issuance that create never looked at.</td>
+            <td>Theft</td>
+            <td><span class="tag t-pp1">closed 62b48eb</span>Create certifies Y_0 and the
+              issuance spends its anchor. Holds while PP3_0 is canonical, which is the
+              depositor's check.</td></tr>
+          <tr><td class="mono">6</td>
+            <td>Give Y a second input, extra outputs, a long scriptSig, or V somewhere other than
+              output 0.</td>
+            <td>Theft</td>
+            <td><span class="tag t-pp1">closed</span>PP1 rebuilds Y whole from its parts and
+              checks the input's length, so only the fixed shape hashes to the pinned txid.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
     <p class="lab">Status</p>
     <h2>What the map draws that does not exist yet</h2>
     <hr class="rule">
     <ul>
-      <li><strong>V is a stub.</strong> Today it is a header push followed by
-        <code>OP_DROP OP_1</code>, 240 bytes. The real one is roughly 1.5 MB and carries the
-        hashOutputs rebuild, the proof check and the balance equation. Everything around it is
-        real, which is what makes the covenant testable without it.</li>
+      <li><strong>V is a stub, and it is next.</strong> Today it is the header push and the
+        signer push followed by <code>OP_DROP OP_1</code>, 261 bytes. The real body keeps that
+        prefix and adds the signer check, the hashOutputs rebuild, the proof check and the
+        balance equation, roughly 1.5 MB. Everything around it is real, which is what makes the
+        covenant testable without it.</li>
       <li><strong>Withdrawals are ungated, not impossible.</strong> As of 2026-09-21 PP1 emits a
         variable output tail: receipts then withdrawals, each rebuilt from a fixed template with
         only its hash, commitment and amount free, with the count divided out of the blob sizes
-        rather than pushed. That is 6,981 of the 10,294 bytes on this page's PP1 boxes. What is
-        still missing is the gate, which is V's balance equation, not the tail.</li>
+        rather than pushed. What is still missing is the gate, which is V's balance equation, not
+        the tail.</li>
       <li><strong>Deposits are unbuilt.</strong> The covenant outputs, their SIGHASH_SINGLE receipt
-        binding and the refund timelock are designed and not written.</li>
-      <li><strong>Everything else verifies.</strong> Genesis, two full rounds, both witnesses and
-        every PP3 spend are accepted by the interpreter, and the sizes on this page come from that
-        run rather than from the design document.</li>
+        binding and the refund timelock are designed and not written. The index question that
+        blocked them is settled: deposits start at input 5, which lines up with receipts at
+        output 5, now that the anchor holds input 4.</li>
+      <li><strong>Everything else verifies.</strong> Genesis, two full rounds, three witnesses,
+        every PP3 spend and every anchor spend are accepted by the interpreter, and the sizes on
+        this page come from that run rather than from the design document.</li>
     </ul>
   </section>
 
