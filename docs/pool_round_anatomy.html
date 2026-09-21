@@ -85,6 +85,13 @@
   .row .sz{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
            font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;}
   .row + .hd{border-top:1px solid var(--line-soft);margin-top:6px;}
+  .prod{display:block;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--vfy);
+        text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .k{font-family:"IBM Plex Sans",sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.08em;
+     text-transform:uppercase;margin-right:5px;opacity:.85;}
+  .key{display:flex;flex-wrap:wrap;gap:8px 18px;font-family:"IBM Plex Sans",sans-serif;
+       font-size:13px;color:var(--muted);margin:0 0 18px;}
+  .key b{font-family:"IBM Plex Mono",monospace;font-weight:500;}
   .tag{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:500;
        padding:1px 6px;border-radius:4px;margin-right:6px;}
   .t-pp1{color:var(--pp1);background:var(--pp1-bg);}
@@ -173,7 +180,7 @@
     <h2>Rounds and witnesses alternate; slot transactions drop in from above</h2>
     <hr class="rule">
     <div class="scroll">
-      <svg class="map" viewBox="0 0 1220 388" role="img"
+      <svg class="map" viewBox="0 0 1220 406" role="img"
            aria-label="Flow of the shielded pool chain across two rounds: round 0, witness 0, round 1, witness 1, round 2, with slot transactions above, anchor spends from each slot into the round that pins it, PP3 arcs below, and a deposit spent into round 1.">
         <defs>
           <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
@@ -362,6 +369,9 @@
         <text x="40" y="370" font-size="11" fill="var(--faint)"
               font-family="IBM Plex Serif, serif">Grey = anchor spend: each round spends output 1
           of the slot transaction its own PP3 pins, so every Y on this map is mined, Y_2 included.</text>
+        <text x="40" y="388" font-size="11" fill="var(--faint)"
+              font-family="IBM Plex Serif, serif">Sizes are the test chain's: 4 transfers a round and
+          test proof parameters. The anatomy below gives the production size beside each one.</text>
       </svg>
     </div>
   </section>
@@ -422,15 +432,23 @@
     <hr class="rule">
     <p>After genesis every round has the same five inputs and five outputs. What varies is the
       tail: a deposit covenant for each deposit from input 5, and from output 5 its receipt and then
-      each withdrawal. Round 1 has one deposit, round 2 one withdrawal. The sizes below are the
-      measured ones.</p>
+      each withdrawal. Round 1 has one deposit, round 2 one withdrawal.</p>
+    <p>Where a transaction has two sizes, they are the same transaction at two scales.</p>
+    <div class="key">
+      <span><span class="k" style="color:var(--muted)">test</span>measured on the chain this page
+        runs: 4 transfers a round, 2 receipt slots, the tests' proof parameters</span>
+      <span style="color:var(--vfy)"><span class="k">prod</span>a production round, 256 transfers
+        and 8 receipt slots: plain if measured or computed from measured parts, ~ if it is the
+        estimate in section 10 of the design</span>
+    </div>
+    <p>A row with one size is the same at both scales.</p>
     <div class="txgrid">
 
       <article class="tx">
         <header>
           <span class="name">Round 1</span>
           <span class="chip mono">token transaction</span>
-          <span class="size">141,646 B</span>
+          <span class="size"><span class="k">test</span>141,646 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
@@ -444,10 +462,12 @@
             <span class="sz">unlock 107 B</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-vfy">V</span>Y_0 out0
-              <small>the verifier for header 0, pinned by PP3 of round 0: the root proof, then the
-                bundles, receipts, change and next outputs it rebuilds, the signer's SIGHASH_ALL
-                signature and the preimage</small></span>
-            <span class="sz">unlock 23,393 B</span></div>
+              <small>the verifier for header 0, pinned by PP3 of round 0. This input carries
+                only what unlocks V: the root proof, the bytes V rebuilds the outputs from, the
+                signer's signature and the preimage. V's 1.78 MB body is not in this transaction;
+                it sits in Y_0 and in the witness that certified it, which is why a round stays
+                small</small></span>
+            <span class="sz"><span class="k">test</span>unlock 23,393 B<span class="prod"><span class="k">prod</span>~250 KB</span></span></div>
           <div class="row"><span class="ix">3</span>
             <span class="what"><span class="tag t-pp3">PP3</span>round 0 out3
               <small>carries the induction and the balance forward; its SIGHASH_SINGLE preimage
@@ -462,7 +482,7 @@
             <span class="what"><span class="tag t-dep">deposit</span>D out1
               <small>every prevout of the round and a SIGHASH_SINGLE preimage: input 3 is the PP3
                 it names, and output 5 is its receipt</small></span>
-            <span class="sz">unlock 418 B</span></div>
+            <span class="sz"><span class="k">test</span>unlock 418 B<span class="prod"><span class="k">prod</span>670 B at 13 inputs</span></span></div>
           <p class="hd">Outputs · what each creates</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>change</span>
@@ -494,7 +514,7 @@
         <header>
           <span class="name">Witness 1</span>
           <span class="chip mono">inductive proof</span>
-          <span class="size">574,387 B</span>
+          <span class="size"><span class="k">test</span>574,387 B<span class="prod"><span class="k">prod</span>~3.6 MB</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
@@ -504,7 +524,7 @@
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1</span>round 1 out1
               <small>where PP1 executes; 18 pushes, the large ones listed below</small></span>
-            <span class="sz">unlock 574,074 B</span></div>
+            <span class="sz"><span class="k">test</span>unlock 574,074 B<span class="prod"><span class="k">prod</span>~3.6 MB</span></span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>round 1 out2</span>
             <span class="sz">unlock 34 B</span></div>
@@ -519,18 +539,18 @@
               <small>72% of this witness, on purpose: PP1 certifies Y_1 by rebuilding it and
                 matching the txid PP3 pins, which takes every byte, so V's body rides here in full: 412,939 B of body, then header 236, outpoint 36, Y_1's input and
                 anchor key hash 61. At production parameters the body is 1.78 MB</small></span>
-            <span class="sz">413,272 B</span></div>
+            <span class="sz"><span class="k">test</span>413,272 B<span class="prod"><span class="k">prod</span>1,782,867 B</span></span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">lhs of round 1
               <small>all six inputs with their unlocking scripts, V's 23,393 B and PP3's 49,640 B
                 among them</small></span>
-            <span class="sz">74,028 B</span></div>
+            <span class="sz"><span class="k">test</span>74,028 B<span class="prod"><span class="k">prod</span>~0.35 MB</span></span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">parent round, pushed whole
               <small>PP1 reads input 3's outpoint from bytes the chain fixed. Round 0 has no V or
                 PP3 unlock in it, so from witness 2 on the parent is a full round of 141,646 B
                 and the witness is 647,603 B</small></span>
-            <span class="sz">67,866 B</span></div>
+            <span class="sz"><span class="k">test</span>67,866 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">sighash preimage, PP2 output
               <small>the preimage carries PP1's own script, so it grows with PP1</small></span>
@@ -538,8 +558,9 @@
           <div class="row"><span class="ix">—</span>
             <span class="what">ciphertext bundles, receipts
               <small>bundles bound by header 1's outHash; one 40-byte receipt record, rebuilt as
-                output 5</small></span>
-            <span class="sz">214 B</span></div>
+                output 5. In production, 512 hybrid-KEM bundles of 1,827 B and up to 8
+                receipts</small></span>
+            <span class="sz"><span class="k">test</span>214 B<span class="prod"><span class="k">prod</span>~0.94 MB</span></span></div>
         </div>
       </article>
 
@@ -547,7 +568,7 @@
         <header>
           <span class="name">Y_1</span>
           <span class="chip mono">slot transaction</span>
-          <span class="size">413,296 B</span>
+          <span class="size"><span class="k">test</span>413,296 B<span class="prod"><span class="k">prod</span>1,782,891 B</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
@@ -562,7 +583,7 @@
               <code>4c ec</code> + header 1 + <code>14</code> + signer + body
               <small>the signer is round 1's new owner; V will demand its SIGHASH_ALL signature,
                 so a copied proof cannot spend V anywhere but in round 2</small></span>
-            <span class="sz">413,198 B · 1 sat</span></div>
+            <span class="sz"><span class="k">test</span>413,198 B · 1 sat<span class="prod"><span class="k">prod</span>1,782,793 B</span></span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>anchor
               <small>spent by round 1 at input 4. PP1 rebuilds the whole transaction, so these
@@ -628,13 +649,14 @@
         <header>
           <span class="name">Round 2</span>
           <span class="chip mono">token transaction</span>
-          <span class="size">141,069 B</span>
+          <span class="size"><span class="k">test</span>141,069 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
           <div class="row"><span class="ix">0-4</span>
             <span class="what">the same five as round 1, one round on
-              <small>V_1's unlock 23,332 B, PP3_1's 49,604 B; no deposits</small></span>
+              <small>V_1's unlock 23,332 B (~250 KB in production), PP3_1's 49,604 B; no
+                deposits</small></span>
             <span class="sz"></span></div>
           <p class="hd">Outputs</p>
           <div class="row"><span class="ix">3</span>
