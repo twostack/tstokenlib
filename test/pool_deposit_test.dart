@@ -3,6 +3,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/script_gen/pool_deposit_gen.dart';
+import 'package:tstokenlib/src/transaction/shielded_pool_tool.dart';
 
 final depositorKey = SVPrivateKey.fromWIF('cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5');
 final otherKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
@@ -94,6 +95,14 @@ void main() {
     print('  deposit lock ${Deposit().lock.buffer.length} B, body ${PoolDepositGen.body().length} B');
   });
 
+  test('a refund height that is a timestamp is refused when locking', () {
+    final d = Deposit();
+    expect(
+        () => PoolDepositGen.lock(
+            commitment: d.cm, pp3Outpoint: outpointOf(d.pp3), refundPKH: pkhOf(depositorKey), refundAfter: 500000000),
+        throwsArgumentError);
+  });
+
   group('the round spends a deposit', () {
     test('with the receipt at its own index, for its whole value', () => DepositRound().run());
     test('at another index, with the receipt moved with it', () => (DepositRound()
@@ -128,5 +137,80 @@ void main() {
       refused((Refund()..sequence = 0xffffffff).run);
     });
     test('refused: anyone else', () => refused((Refund()..signer = otherKey).run));
+    test('refused: a lock time that is a timestamp, final long ago', () {
+      // 500,000,000 and up is a Unix time, and 1985 has passed, so a
+      // depositor could take the deposit back at once and race the round
+      // that spends it.
+      refused((Refund()..lockTime = 500000000).run);
+    });
+  });
+
+  group('the wallet side', () {
+    final svc = ShieldedPoolTool();
+    final addr = depositorKey.publicKey.toAddress(NetworkType.TEST);
+    final funding = Transaction()
+      ..addInput(TransactionInput(hex.encode(List.filled(32, 0xf0)), 0, TransactionInput.MAX_SEQ_NUMBER))
+      ..addOutput(TransactionOutput(BigInt.from(100000), P2PKHLockBuilder.fromAddress(addr).getScriptPubkey()));
+    final d = Deposit();
+
+    Transaction deposit({List<int>? pp3, int refundAfter = 900, BigInt? sats}) => svc.createDepositTxn(
+        fundingTx: funding,
+        fundingVout: 0,
+        fundingSigner: DefaultTransactionSigner(0x41, depositorKey),
+        fundingPubKey: depositorKey.publicKey,
+        changeAddress: addr,
+        commitment: d.cm,
+        satoshis: sats ?? d.value,
+        pp3Outpoint: pp3 ?? outpointOf(d.pp3),
+        refundPKH: pkhOf(depositorKey),
+        refundAfter: refundAfter);
+
+    test('the depositor pays into the covenant, and signs for the funding', () {
+      final t = deposit();
+      const v = ShieldedPoolTool.depositVout;
+      final terms = PoolDepositGen.parse(t.outputs[v].script.buffer)!;
+      expect(terms.commitment, d.cm);
+      expect(terms.pp3Outpoint, outpointOf(d.pp3));
+      expect(terms.refundPKH, pkhOf(depositorKey));
+      expect(terms.refundAfter, 900);
+      expect(t.outputs[v].satoshis, d.value);
+      expect(t.outputs.length, 2, reason: 'the change and the covenant');
+      Interpreter().correctlySpends(
+          t.inputs[0].script!, funding.outputs[0].script, t, 0, flags, Coin.valueOf(funding.outputs[0].satoshis));
+    });
+
+    test('parse knows the covenant only by its exact body', () {
+      final lock = d.lock.buffer;
+      expect(PoolDepositGen.parse(lock), isNotNull);
+      expect(PoolDepositGen.parse(List<int>.from(lock)..[lock.length - 5] ^= 1), isNull);
+      expect(PoolDepositGen.parse(lock.sublist(0, lock.length - 1)), isNull);
+      expect(PoolDepositGen.parse(List<int>.from(lock)..[33] = 35), isNull);
+      expect(PoolDepositGen.parse(funding.outputs[0].script.buffer), isNull);
+    });
+
+    test('the coordinator finds the deposits the next round can take in', () {
+      final good = deposit();
+      final otherPool = deposit(pp3: List.filled(36, 7));
+      final refundsTooSoon = deposit(refundAfter: 850);
+      final found = ShieldedPoolTool.findDeposits([funding, otherPool, good, refundsTooSoon], outpointOf(d.pp3),
+          minRefundAfter: 880);
+      expect(found.length, 1);
+      expect(found[0].tx.id, good.id);
+      expect(found[0].vout, ShieldedPoolTool.depositVout);
+      expect(found[0].receipt.commitment, d.cm);
+      expect(found[0].receipt.satoshis, d.value);
+      expect(found[0].receipt.lockingScript.buffer, PoolDepositGen.receiptScript(d.cm, d.value));
+    });
+
+    test('the depositor takes back a deposit no round took in', () {
+      final t = deposit();
+      final refund = svc.createDepositRefundTxn(
+          depositTx: t, depositVout: ShieldedPoolTool.depositVout, refundKey: depositorKey, payTo: addr, lockTime: 905);
+      Interpreter().correctlySpends(refund.inputs[0].script!, t.outputs[ShieldedPoolTool.depositVout].script, refund, 0, flags, Coin.valueOf(d.value));
+      expect(
+          () => svc.createDepositRefundTxn(
+              depositTx: t, depositVout: ShieldedPoolTool.depositVout, refundKey: depositorKey, payTo: addr, lockTime: 899),
+          throwsArgumentError);
+    });
   });
 }

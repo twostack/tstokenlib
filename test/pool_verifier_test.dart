@@ -57,6 +57,10 @@ class VRound {
   BigInt? pp3Sats;
   List<int>? txPP1Program;
   List<TransactionOutput> extraOutputs = [];
+  List<int>? chgRecord, changeScript;
+  /// Replaces the transaction's outputs, for an attack that frames the same
+  /// bytes as other outputs.
+  List<TransactionOutput> Function(List<TransactionOutput> outs)? reframe;
   /// Changes the transaction the signer signed, not the one that is spent.
   void Function(Transaction tx)? tamperSignedTx;
 
@@ -136,17 +140,21 @@ class VRound {
     for (int i = 0; i < 5; i++) {
       t.addInputs([TransactionInput(hex.encode(List.filled(32, 0x10 + i)), i == 4 ? 1 : 0, TransactionInput.MAX_SEQ_NUMBER)]);
     }
-    final hdr1 = PoolHeader.decode(h1);
     t.addOutputs([
-      output(changeSats, [0x76, 0xa9, 0x14, ...changePKH, 0x88, 0xac]),
+      output(changeSats, changeScript ?? [0x76, 0xa9, 0x14, ...changePKH, 0x88, 0xac]),
       output(BigInt.one, [...pp1Prefix, ...h1, ...(txPP1Program ?? pp1Program)]),
       output(BigInt.one, pp2),
-      output(pp3Sats ?? hdr1.balance, [0x24, ...slot, ...pp3Program]),
+      output(pp3Sats ?? PoolHeader.decode(h1).balance, [0x24, ...slot, ...pp3Program]),
       output(BigInt.zero, meta),
       for (final r in txReceipts ?? receipts) TransactionOutput(BigInt.zero, r.lockingScript),
       for (final w in txWithdrawals ?? withdrawals) TransactionOutput(w.satoshis, w.lockingScript),
       ...extraOutputs,
     ]);
+    if (reframe != null) {
+      final outs = reframe!(t.outputs);
+      t.outputs.clear();
+      t.addOutputs(outs);
+    }
     return t;
   }
 
@@ -165,23 +173,36 @@ class VRound {
   PoolVerifierGen get v => gen;
   List<int> belowTail() => PoolVerifierGen.barePublics(publics());
 
-  SVScript unlock(Transaction t) => SVScript.fromByteArray(Uint8List.fromList([
-        ...belowTail(),
-        ...PoolVerifierGen.unlockTail(
-            bundleHashes: bundleHashes,
-            withdrawals: withdrawals,
-            receipts: receipts,
-            changePKH: changePKH,
-            changeSatoshis: changeSats,
-            pp1Prefix: pp1Prefix,
-            header1: h1,
-            pp2Script: pp2,
-            nextSlot: slot,
-            metadataScript: meta,
-            signerSig: sign(t),
-            signerPubKey: hex.decode(signer.publicKey.toHex()),
-            preimage: preimage(t)),
-      ]));
+  SVScript unlock(Transaction t) {
+    final tail = List<int>.of(PoolVerifierGen.unlockTail(
+        bundleHashes: bundleHashes,
+        withdrawals: withdrawals,
+        receipts: receipts,
+        changePKH: changePKH,
+        changeSatoshis: changeSats,
+        pp1Prefix: pp1Prefix,
+        header1: h1,
+        pp2Script: pp2,
+        nextSlot: slot,
+        metadataScript: meta,
+        signerSig: sign(t),
+        signerPubKey: hex.decode(signer.publicKey.toHex()),
+        preimage: preimage(t)));
+    if (chgRecord != null) _replacePush(tail, PoolWithdrawal(changePKH, changeSats).encodeRecord(), chgRecord!);
+    return SVScript.fromByteArray(Uint8List.fromList([...belowTail(), ...tail]));
+  }
+
+  /// Swaps the push of [from] in [script] for a push of [to], both under 76 bytes.
+  static void _replacePush(List<int> script, List<int> from, List<int> to) {
+    final needle = [from.length, ...from];
+    for (int i = 0; i + needle.length <= script.length; i++) {
+      if (List.generate(needle.length, (j) => script[i + j]).join(',') == needle.join(',')) {
+        script.replaceRange(i, i + needle.length, [to.length, ...to]);
+        return;
+      }
+    }
+    throw StateError('push not found');
+  }
 
   void run() {
     final t = tx();
@@ -330,6 +351,80 @@ void main() {
       test('a receipt with no slot', () {
         final r = VRound();
         r.receipts = [...r.receipts, PoolReceipt(List.filled(32, 3), BigInt.one)];
+        refused(r);
+      });
+    });
+
+    group('the fixed-size pushes', () {
+      test('a header shifted one byte into PP1\'s prefix', () {
+        // The same output bytes, split one byte earlier: V would check
+        // header' = ec ‖ H[0..235) while PP1 carries H forward, whose
+        // balance and roots are header' read one byte on. Only possible when
+        // header'.cmRoot starts with ec, the prefix's last byte, which a
+        // coordinator can grind for. The header is then 237 bytes, which
+        // the outHash read refuses as well as the size check: it reads to
+        // the end of the push, so 33 bytes never equal a SHA256.
+        VRound ground() {
+          final r = VRound();
+          r.rootAfter[0] = (r.rootAfter[0] & ~0xff) | PoolHeader.byteSize;
+          final root = SlotScript.lanesBytes(r.rootAfter);
+          r.h1 = List<int>.from(r.h1)
+            ..setRange(PoolHeader.cmRootOffset, PoolHeader.cmRootOffset + 32, root)
+            ..setRange(PoolHeader.ringOffset, PoolHeader.ringOffset + 32, root);
+          expect(r.h1[0], r.pp1Prefix.last);
+          return r;
+        }
+
+        ground().run();
+        final r = ground();
+        r.pp3Sats = PoolHeader.decode(r.h1).balance;
+        r.pp1Prefix = r.pp1Prefix.sublist(0, r.pp1Prefix.length - 1);
+        r.h1 = [...r.h1, 0x51];
+        refused(r);
+      });
+      // A push between two of V's constants cannot move a byte to its
+      // neighbour, so a wrong size makes its output a byte longer than the
+      // length V wrote. The spilled byte, and V's own bytes after it, then
+      // have to read as outputs of their own, which an opaque push after
+      // them (PP2, the metadata) can be shaped to finish: 7 zeros and a
+      // length, so V's varint for it becomes the next output's value.
+      List<int> finisher(int n) => [...List.filled(7, 0), n - 8, ...VRound.ops(n - 8, 3)];
+
+      test('PP1\'s prefix one byte long, the spill framed as two outputs', () {
+        final r = VRound();
+        final prog = VRound.pp1Program;
+        r.pp1Prefix = [OpCodes.OP_NOP, ...r.pp1Prefix];
+        r.pp2 = finisher(40);
+        r.reframe = (outs) => [
+              outs[0],
+              VRound.output(BigInt.one, [...r.pp1Prefix, ...r.h1, ...prog.sublist(0, prog.length - 1)]),
+              VRound.output(BigInt.from(prog.last + 0x100), []),
+              VRound.output(BigInt.from(40), r.pp2.sublist(8)),
+              ...outs.sublist(3),
+            ];
+        refused(r);
+      });
+      test('the next slot one byte long, the spill framed as two outputs', () {
+        final r = VRound();
+        final prog = VRound.pp3Program;
+        r.slot = [...r.slot, OpCodes.OP_NOP];
+        r.meta = finisher(40);
+        r.reframe = (outs) => [
+              ...outs.sublist(0, 3),
+              VRound.output(outs[3].satoshis, [0x24, ...r.slot, ...prog.sublist(0, prog.length - 1)]),
+              VRound.output(BigInt.from(prog.last), []),
+              VRound.output(BigInt.from(40), r.meta.sublist(8)),
+              ...outs.sublist(5),
+            ];
+        refused(r);
+      });
+      test('a change record one byte long, making output 0 a bare push', () {
+        // value ‖ 1a, then 19 76a914 pkh 88ac, parses as an output whose
+        // script pushes the P2PKH script as data: spendable by anyone.
+        final r = VRound();
+        final v = ByteData(8)..setUint64(0, r.changeSats.toInt(), Endian.little);
+        r.chgRecord = [...r.changePKH, ...v.buffer.asUint8List(), 0x1a];
+        r.changeScript = [0x19, 0x76, 0xa9, 0x14, ...r.changePKH, 0x88, 0xac];
         refused(r);
       });
     });

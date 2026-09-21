@@ -450,9 +450,12 @@ class ShieldedPoolTool {
     var pp3Outpoint = getOutpoint(prevTokenTx.hash, outputIndex: 3);
     for (var k = 0; k < depositList.length; k++) {
       var (dTx, dVout) = depositList[k];
-      var lock = dTx.outputs[dVout].script.buffer;
-      var cm = lock.sublist(1, 33), target = lock.sublist(34, 70);
-      if (lock.length < 80 || !_sameRange(target, pp3Outpoint, 0, 36)) {
+      var terms = PoolDepositGen.parse(dTx.outputs[dVout].script.buffer);
+      if (terms == null) {
+        throw ArgumentError('Deposit $k is not a deposit covenant.');
+      }
+      var cm = terms.commitment;
+      if (!_sameRange(terms.pp3Outpoint, pp3Outpoint, 0, 36)) {
         throw ArgumentError('Deposit $k does not target this round: it names another PP3.');
       }
       var rc = (receipts ?? const <PoolReceipt>[]);
@@ -809,6 +812,97 @@ class ShieldedPoolTool {
       outpoint: getOutpoint(y.hash, outputIndex: 0),
       parts: [...input, ...anchorPKH],
     );
+  }
+
+  /// The output of [createDepositTxn] holding the covenant; change is 0.
+  static const depositVout = 1;
+
+  /// A depositor's payment into the pool: output [depositVout] is the
+  /// deposit covenant (design 7.1) for [satoshis], output 0 the change.
+  ///
+  /// [pp3Outpoint] is the live pool's PP3 (round N, output 3), so the deposit
+  /// can only be taken in by round N+1. If that round is built without it, it
+  /// is refunded to [refundPKH] from block height [refundAfter]. The
+  /// depositor must choose [refundAfter] far enough ahead for round N+1 to be
+  /// mined first: a coordinator skips deposits whose refund is close, since
+  /// a refund mined first would invalidate its round.
+  ///
+  /// [commitment] is the note's, which the depositor proves in a transfer
+  /// with two dummy inputs and the note as its first output; the coordinator
+  /// needs that proof as well as this transaction.
+  Transaction createDepositTxn({
+    required Transaction fundingTx,
+    required int fundingVout,
+    required TransactionSigner fundingSigner,
+    required SVPublicKey fundingPubKey,
+    required Address changeAddress,
+    required List<int> commitment,
+    required BigInt satoshis,
+    required List<int> pp3Outpoint,
+    required List<int> refundPKH,
+    required int refundAfter,
+  }) {
+    var lock = PoolDepositGen.lock(
+        commitment: commitment, pp3Outpoint: pp3Outpoint, refundPKH: refundPKH, refundAfter: refundAfter);
+    return (TransactionBuilder()
+          ..spendFromTxnWithSigner(fundingSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER,
+              P2PKHUnlockBuilder(fundingPubKey))
+          ..spendToLockBuilder(DefaultLockBuilder.fromScript(lock), satoshis)
+          ..withFeePerKb(100)
+          ..sendChangeToPKH(changeAddress))
+        .build(false);
+  }
+
+  /// The deposits among [candidates] that round N+1 can take in: deposit
+  /// covenants naming [pp3Outpoint], PP3_N, whose refund opens no earlier
+  /// than [minRefundAfter]. In the order found, with the receipt each needs;
+  /// pass the pairs to [createRoundTxn] as `deposits` and the receipts as
+  /// `receipts`, in the same order.
+  ///
+  /// This recognises the covenant by its bytes. It does not check the
+  /// depositor's proof, which the round's root proof does.
+  static List<({Transaction tx, int vout, PoolDepositTerms terms, PoolReceipt receipt})> findDeposits(
+      Iterable<Transaction> candidates, List<int> pp3Outpoint,
+      {required int minRefundAfter}) {
+    var found = <({Transaction tx, int vout, PoolDepositTerms terms, PoolReceipt receipt})>[];
+    for (var tx in candidates) {
+      for (var o = 0; o < tx.outputs.length; o++) {
+        var terms = PoolDepositGen.parse(tx.outputs[o].script.buffer);
+        if (terms == null || terms.refundAfter < minRefundAfter) continue;
+        if (!_sameRange(terms.pp3Outpoint, pp3Outpoint, 0, 36)) continue;
+        found.add((tx: tx, vout: o, terms: terms, receipt: PoolReceipt(terms.commitment, tx.outputs[o].satoshis)));
+      }
+    }
+    return found;
+  }
+
+  /// The depositor taking back a deposit no round took in, to [payTo], at
+  /// the covenant's refund height or later ([lockTime]). The input is not
+  /// final, so consensus holds the transaction back until [lockTime].
+  Transaction createDepositRefundTxn({
+    required Transaction depositTx,
+    required int depositVout,
+    required SVPrivateKey refundKey,
+    required Address payTo,
+    required int lockTime,
+    BigInt? fee,
+  }) {
+    var deposit = depositTx.outputs[depositVout];
+    var terms = PoolDepositGen.parse(deposit.script.buffer);
+    if (terms == null) throw ArgumentError('Not a deposit covenant.');
+    if (lockTime < terms.refundAfter || lockTime >= PoolDepositGen.lockTimeThreshold) {
+      throw ArgumentError('The refund opens at block height ${terms.refundAfter}; lockTime $lockTime is not a height at or after it.');
+    }
+    var t = Transaction()
+      ..version = 1
+      ..nLockTime = lockTime
+      ..addInput(TransactionInput(depositTx.id, depositVout, TransactionInput.MAX_SEQ_NUMBER - 1))
+      ..addOutput(TransactionOutput(deposit.satoshis - (fee ?? defaultFee), P2PKHLockBuilder.fromAddress(payTo).getScriptPubkey()));
+    var pre = Sighash().createSighashPreImage(t, PoolDepositGen.sighashRefund, 0, PoolDepositGen.scriptCode, deposit.satoshis)!;
+    var sig = DefaultTransactionSigner(PoolDepositGen.sighashRefund, refundKey).signPreimage(pre);
+    t.inputs[0].script = PoolDepositGen.unlockRefund(
+        hex.decode(sig.toTxFormat()), hex.decode(refundKey.publicKey.toHex()), pre);
+    return t;
   }
 
   /// Y's output 1: `OP_DUP OP_HASH160 <anchorPKH> OP_EQUALVERIFY OP_CHECKSIG`.

@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
@@ -62,13 +64,14 @@ void main() {
   late PoolReceipt receipt;
   late PoolWithdrawal withdrawal;
   late Transaction depositTx;
+  late (Transaction, int) deposit;
 
   Transaction round(
           {PoolRoundProof? withProof, TransactionSigner? slotSigner, List<PoolReceipt>? receipts, List<(Transaction, int)>? deposits}) =>
       svc.createRoundTxn(w0, r0, y0.tx, opPub, fundingA, signer, opPub, fundingB.hash, h1, y1.outpoint,
           nextSlotTx: y1.tx,
           receipts: receipts ?? [receipt],
-          deposits: deposits ?? [(depositTx, 0)],
+          deposits: deposits ?? [deposit],
           roundProof: withProof ?? proof,
           slotSigner: slotSigner);
 
@@ -187,18 +190,28 @@ void main() {
     r0 = svc.createTokenIssuanceTxn(fundingA, signer, opPub, opAddr, bodyHash, g, y0.outpoint, fundingB.hash, slotTx: y0.tx);
     w0 = svc.createWitnessTxn(signer, fundingB, r0, hex.decode(fundingA.serialize()), opPub, opPKH, ShieldedPoolAction.CREATE,
         slotParts: y0.parts, verifierBody: body);
-    // the depositor's covenant, targeting round 1 by naming PP3_0
-    depositTx = Transaction()
+    // the depositor pays into a covenant targeting round 1 by naming PP3_0,
+    // and the coordinator finds it among what it was sent
+    final depositor = strangerKey.publicKey.toAddress(NetworkType.TEST);
+    final depositorCoins = Transaction()
       ..addInputs([slotFunding(0x30)])
-      ..addOutputs([
-        TransactionOutput(
-            BigInt.from(500),
-            PoolDepositGen.lock(
-                commitment: receipt.commitment,
-                pp3Outpoint: svc.getOutpoint(r0.hash, outputIndex: 3),
-                refundPKH: hex.decode(strangerKey.publicKey.toAddress(NetworkType.TEST).pubkeyHash160),
-                refundAfter: 1000))
-      ]);
+      ..addOutputs([TransactionOutput(BigInt.from(10000), P2PKHLockBuilder.fromAddress(depositor).getScriptPubkey())]);
+    final pp3Of0 = svc.getOutpoint(r0.hash, outputIndex: 3);
+    depositTx = svc.createDepositTxn(
+        fundingTx: depositorCoins,
+        fundingVout: 0,
+        fundingSigner: DefaultTransactionSigner(0x41, strangerKey),
+        fundingPubKey: strangerKey.publicKey,
+        changeAddress: depositor,
+        commitment: receipt.commitment,
+        satoshis: receipt.satoshis,
+        pp3Outpoint: pp3Of0,
+        refundPKH: hex.decode(depositor.pubkeyHash160),
+        refundAfter: 1000);
+    final found = ShieldedPoolTool.findDeposits([depositorCoins, depositTx], pp3Of0, minRefundAfter: 1000);
+    expect(found.length, 1);
+    expect(found[0].receipt.lockingScript.buffer, receipt.lockingScript.buffer);
+    deposit = (found[0].tx, found[0].vout);
   });
 
   test('V accepts round 1 as createRoundTxn builds it, and the rest of the chain accepts it too', () {
@@ -211,7 +224,7 @@ void main() {
     print('  V ran in ${sw.elapsedMilliseconds} ms');
     spends(r1, 3, r0.outputs[3]);
     spends(r1, 4, y1.tx.outputs[1]);
-    spends(r1, 5, depositTx.outputs[0]);
+    spends(r1, 5, depositTx.outputs[ShieldedPoolTool.depositVout]);
     expect(r1.inputs.length, 6, reason: 'the deposit covenant at input 5');
     expect(r1.outputs[5].script.buffer, receipt.lockingScript.buffer, reason: 'its receipt at output 5');
     expect(r1.outputs[3].satoshis, BigInt.from(501));
@@ -262,6 +275,17 @@ void main() {
         withdrawals: [withdrawal]);
     spends(w2, 1, r2.outputs[1]);
     print('  round 2: ${hex.decode(r2.serialize()).length} B; witness 2: ${hex.decode(w2.serialize()).length} B');
+    // the chain as JSON, for tool/scratch/two_round_probe.dart to lay out
+    final dump = Platform.environment['POOL_CHAIN_DUMP'];
+    if (dump != null) {
+      File(dump).writeAsStringSync(jsonEncode({
+        for (final (n, t) in [('Y0', y0.tx), ('Y1', y1.tx), ('Y2', y2.tx), ('R0', r0), ('W0', w0),
+          ('D', depositTx), ('R1', r1), ('W1', w1), ('R2', r2), ('W2', w2)])
+          n: t.serialize(),
+        'fundingA': fundingA.serialize(),
+        'fundingB': fundingB.serialize(),
+      }));
+    }
   }, timeout: const Timeout(Duration(minutes: 20)));
 
   test('round 2 paying the withdrawal to someone else is refused by V', () {

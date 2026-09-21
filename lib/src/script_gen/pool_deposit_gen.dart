@@ -53,6 +53,9 @@ class PoolDepositGen {
   static const sighashRound = 0x43; // SINGLE | FORKID
   static const sighashRefund = 0x41; // ALL | FORKID
 
+  /// nLockTime values from here up are Unix times, not block heights.
+  static const lockTimeThreshold = 500000000;
+
   /// The round's input that spends PP3_N (`PP1SpScriptGen.poolPP3Input`).
   static const pp3Input = 3;
 
@@ -80,7 +83,9 @@ class PoolDepositGen {
     if (commitment.length != 32 || pp3Outpoint.length != 36 || refundPKH.length != 20) {
       throw ArgumentError('a 32-byte commitment, a 36-byte outpoint and a 20-byte key hash');
     }
-    if (refundAfter <= 0 || refundAfter >= 0x80000000) throw ArgumentError('refundAfter');
+    if (refundAfter <= 0 || refundAfter >= lockTimeThreshold) {
+      throw ArgumentError('refundAfter must be a block height, under $lockTimeThreshold');
+    }
     final t = ByteData(4)..setUint32(0, refundAfter, Endian.little);
     return SVScript.fromByteArray(Uint8List.fromList([
       32, ...commitment,
@@ -172,10 +177,18 @@ class PoolDepositGen {
     _op(f, OpCodes.OP_HASH160, pops: 1, pushes: 1);
     f.roll('pkh');
     _op(f, OpCodes.OP_EQUALVERIFY, pops: 2, pushes: 0);
-    // nLockTime (8 from the end) at least refundAfter, as block heights
+    // nLockTime (8 from the end) at least refundAfter, both block heights:
+    // from 500,000,000 up it is a Unix time, final since 1985, and would let
+    // the depositor take the deposit back at once, racing the round
     _fromEnd(f, 'pre', 8, 4, 'lt');
     f.roll('lt');
     _unsigned(f);
+    f.nameTop('ltn');
+    f.pick('ltn');
+    f.pushConst(lockTimeThreshold);
+    _op(f, OpCodes.OP_LESSTHAN);
+    _op(f, OpCodes.OP_VERIFY, pops: 1, pushes: 0);
+    f.roll('ltn');
     f.roll('T');
     _unsigned(f);
     _op(f, OpCodes.OP_GREATERTHANOREQUAL);
@@ -231,9 +244,42 @@ class PoolDepositGen {
     return b.build();
   }
 
+  /// The terms of a deposit covenant, or null when [lockingScript] is not
+  /// one: its four pushes at their fixed sizes, then exactly [body].
+  static PoolDepositTerms? parse(List<int> lockingScript) {
+    final l = lockingScript;
+    final b = body();
+    if (l.length != _headSize + b.length) return null;
+    if (l[0] != 32 || l[33] != 36 || l[70] != 20 || l[91] != 4) return null;
+    for (int i = 0; i < b.length; i++) {
+      if (l[_headSize + i] != b[i]) return null;
+    }
+    final t = ByteData.sublistView(Uint8List.fromList(l.sublist(92, 96))).getUint32(0, Endian.little);
+    return PoolDepositTerms(
+        commitment: l.sublist(1, 33), pp3Outpoint: l.sublist(34, 70), refundPKH: l.sublist(71, 91), refundAfter: t);
+  }
+
+  static const _headSize = 1 + 32 + 1 + 36 + 1 + 20 + 1 + 4;
+
   /// The receipt output's script the covenant requires.
   static List<int> receiptScript(List<int> commitment, BigInt value) {
     final v = ByteData(8)..setUint64(0, value.toInt(), Endian.little);
     return [0x00, 0x6a, 0x20, ...commitment, 0x08, ...v.buffer.asUint8List()];
   }
+}
+
+/// What a deposit covenant says: the note's commitment, the PP3 it targets,
+/// and who may take it back from which block height.
+class PoolDepositTerms {
+  final List<int> commitment;
+  final List<int> pp3Outpoint;
+  final List<int> refundPKH;
+  final int refundAfter;
+
+  const PoolDepositTerms({
+    required this.commitment,
+    required this.pp3Outpoint,
+    required this.refundPKH,
+    required this.refundAfter,
+  });
 }
