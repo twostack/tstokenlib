@@ -9,7 +9,9 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/script_gen/pool_verifier_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
+import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
 import 'pool_chain_fixture.dart';
 
 /// The pool's first two rounds, as `pool_round_v_test` builds them, mined on
@@ -24,7 +26,17 @@ import 'pool_chain_fixture.dart';
 ///   POOL_LOCALNET=1 dart test test/pool_localnet_test.dart
 ///
 /// POOL_BROADCAST=rpc sends through the node's sendrawtransaction instead
-/// of ARC, which says whether a refusal is ARC's or the node's.
+/// of ARC, which says whether a refusal is ARC's or the node's. Production
+/// needs it: localnet's ARC (v1.5.10) cannot parse a scriptSig over
+/// 1,636,802 bytes in its P2P handler, and every production witness's PP1
+/// unlock is larger (W0 1.87 MB), so ARC never sees the node accept it and
+/// answers ANNOUNCED_TO_NETWORK. Measured 2026-09-21.
+/// POOL_PRODUCTION=1 proves the 256-transfer production plan instead of
+/// the 4-transfer test plan (V about 1.8 MB, witnesses about 3.6 MB; set
+/// STARK_KERNELS_GPU=1 to prove on the GPU).
+/// POOL_PROOF_CACHE names a file the proofs are kept in: read if it exists,
+/// written if not. Production proving takes about 13 minutes, the chain
+/// under a minute, so a run that fails on the node need not prove again.
 /// POOL_FEE_RATE is satoshis per kB, default 1 (the node's minminingtxfee).
 /// POOL_CHAIN_DUMP writes the mined chain as JSON, for
 /// tool/scratch/two_round_probe.dart.
@@ -46,10 +58,11 @@ void main() {
     final stranger = strangerKey.publicKey.toAddress(NetworkType.TEST);
 
     await net.ready();
-    final sw = Stopwatch()..start();
-    final f = await PoolChainFixture.prove(withdrawalPKH: hex.decode(stranger.pubkeyHash160));
+    final production = env['POOL_PRODUCTION'] == '1';
+    final f = await _Proved.load(env['POOL_PROOF_CACHE'], production,
+        () => PoolChainFixture.prove(
+            withdrawalPKH: hex.decode(stranger.pubkeyHash160), production: production, verbose: production));
     final body = f.body;
-    print('proved rounds 1 and 2, V body ${body.length} B, in ${sw.elapsedMilliseconds} ms');
 
     // ---- coins: one output from the node's wallet, split into one output
     // per transaction that needs its own. Y and every witness have no change
@@ -60,7 +73,8 @@ void main() {
     final coins = await net.fund(opAddr, BigInt.from(100000000));
     final coinsVout = coins.outputs.indexWhere((o) => _pays(o, opPKH));
     final ySats = BigInt.from(((body.length + 1000) * feeRate + 999) ~/ 1000 + 2);
-    final wSats = BigInt.from(4000 * feeRate + 1);
+    // a witness carries V's body, its round and the round's bundles
+    final wSats = BigInt.from(((3 * body.length + 1000000) * feeRate + 999) ~/ 1000 + 1);
     final roundSats = BigInt.from(1000000);
     const iIssue = 1, iW0 = 2, iY0 = 3, iY1 = 4, iY2 = 5, iR1 = 6, iW1 = 7, iR2 = 8, iW2 = 9, iDep = 10;
     final split = (TransactionBuilder()
@@ -192,7 +206,57 @@ void main() {
       }));
     }
   }, skip: env['POOL_LOCALNET'] == null ? 'needs ../localnet up; set POOL_LOCALNET=1' : false,
-      timeout: const Timeout(Duration(minutes: 60)));
+      timeout: const Timeout(Duration(minutes: 120)));
+}
+
+/// What the chain needs from [PoolChainFixture], which can be kept in a
+/// file between runs.
+class _Proved {
+  final List<int> body, bundles, bundles2;
+  final PoolHeader g, h1, h2;
+  final PoolRoundProof proof, proof2;
+  final PoolReceipt receipt;
+  final PoolWithdrawal withdrawal;
+
+  _Proved(this.body, this.bundles, this.bundles2, this.g, this.h1, this.h2, this.proof, this.proof2, this.receipt,
+      this.withdrawal);
+
+  static Future<_Proved> load(String? path, bool production, Future<PoolChainFixture> Function() prove) async {
+    final file = path == null ? null : File(path);
+    if (file != null && file.existsSync()) {
+      final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      if (j['production'] != production) throw StateError('$path holds ${j['production'] ? '' : 'non-'}production proofs');
+      List<int> b(String k) => hex.decode(j[k] as String);
+      PoolRoundProof p(String k) => PoolRoundProof(
+          b('${k}Below'), [for (final h in j['${k}Hashes'] as List) hex.decode(h as String)]);
+      print('proofs read from $path');
+      return _Proved(b('body'), b('bundles'), b('bundles2'), PoolHeader.decode(b('g')), PoolHeader.decode(b('h1')),
+          PoolHeader.decode(b('h2')), p('proof'), p('proof2'), PoolReceipt(b('cm'), BigInt.parse(j['cmSats'] as String)),
+          PoolWithdrawal(b('wPKH'), BigInt.parse(j['wSats'] as String)));
+    }
+    final sw = Stopwatch()..start();
+    final f = await prove();
+    print('proved rounds 1 and 2, V body ${f.body.length} B, in ${sw.elapsedMilliseconds} ms');
+    final r = _Proved(f.body, f.bundles, f.bundles2, f.g, f.h1, f.h2, f.proof, f.proof2, f.receipt, f.withdrawal);
+    file?.writeAsStringSync(jsonEncode({
+      'production': production,
+      'body': hex.encode(r.body),
+      'bundles': hex.encode(r.bundles),
+      'bundles2': hex.encode(r.bundles2),
+      'g': hex.encode(r.g.encode()),
+      'h1': hex.encode(r.h1.encode()),
+      'h2': hex.encode(r.h2.encode()),
+      for (final (k, pr) in [('proof', r.proof), ('proof2', r.proof2)]) ...{
+        '${k}Below': hex.encode(pr.belowTail),
+        '${k}Hashes': [for (final h in pr.bundleHashes) hex.encode(h)],
+      },
+      'cm': hex.encode(r.receipt.commitment),
+      'cmSats': r.receipt.satoshis.toString(),
+      'wPKH': hex.encode(r.withdrawal.pubkeyHash),
+      'wSats': r.withdrawal.satoshis.toString(),
+    }));
+    return r;
+  }
 }
 
 /// A round built once to measure it and again with the fee its size costs.
@@ -222,6 +286,9 @@ class Localnet {
     final req = await _http.postUrl(rpcUri);
     req.headers.set('Authorization', 'Basic ${base64.encode(utf8.encode('bitcoin:bitcoin'))}');
     req.headers.contentType = ContentType.json;
+    // The node closes idle connections, and proving can idle this client
+    // for minutes, so a pooled connection may be dead when reused.
+    req.persistentConnection = false;
     req.write(jsonEncode({'jsonrpc': '1.0', 'id': method, 'method': method, 'params': params}));
     final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
