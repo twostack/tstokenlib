@@ -163,6 +163,18 @@ void main() {
       expect(checkTrace(progR.air(badWide), rows(badWide, after: fp), chk), isNotNull,
           reason: 'forged root over forged siblings: the walks must share siblings');
     }
+    // a one-lane operand on the VM's port A: the bus binds limb 0 only, so
+    // before 2026-09-21 its other three limbs were free, and a multiply by a
+    // query bit could be moved along them. They are now pinned to zero at
+    // the row itself. The row chosen reads limb 0 alone, so its result and
+    // the bus are unchanged and the old AIR accepted this trace.
+    {
+      final ak1 = progR.columns.columns[VerifierProgramColumns.ak1], limb = progR.columns.columns[VerifierProgramColumns.opLimb];
+      final r = [for (int i = 0; i < rowsR.length; i++) i].firstWhere((i) => ak1[i] == 1 && limb[i] == 1);
+      final forged = [for (final row in rowsR) [...row]];
+      forged[r][VerifierAir.colA + 1] = 7;
+      expect(checkTrace(airR, forged, [QM31.one, QM31.one + QM31.i, QM31.u]), matches(RegExp('constraint 7[789] fails at row $r ')));
+    }
     print('  root witness: ${lap('')}');
     final proofR = StarkProver.prove(rootP, airR, rowsR, rng: Random(6), hash: sha);
     print('  root proof (SHA256): ${lap('')} ${ProofSize.bytes(rootP, airR, sha)} B');

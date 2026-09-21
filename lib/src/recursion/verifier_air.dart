@@ -110,7 +110,7 @@ class VerifierAir extends Poseidon2Air {
   Object get preColumnsIdentity => prog;
   int get auxCol0 => numMainCols;
 
-  static const _mainCount = 77;
+  static const _mainCount = 80;
   @override
   int get numConstraints => _mainCount + numPublicLanes;
 
@@ -208,13 +208,19 @@ class VerifierAir extends Poseidon2Air {
     for (int k = 0; k < 4; k++) {
       out.add(f.mul(P(VerifierProgramColumns.assertZero), res[k])); // 73..76
     }
+    // a K1 operand on port A: the bus reads only limb 0, and the VM reads all
+    // four, so the other three must be zero or a product with it is the
+    // prover's choice along i B, u B and iu B
+    for (int k = 1; k < 4; k++) {
+      out.add(f.mul(P(VerifierProgramColumns.ak1), cur[colA + k])); // 77..79
+    }
     if (out.length != _mainCount) throw StateError('main constraint count ${out.length}');
     // the statement: the program pins a period's digest lanes to the public
     // inputs (digest mode) or its hash-input lanes to the public columns (wide)
     final pubs = publicsOverride?.cast<T>();
     for (int j = 0; j < 8; j++) {
       final T pv = wide ? per[numPeriodic + j] : (pubs == null ? f.constM31(publics[j]) : pubs[j]);
-      out.add(f.mul(P(VerifierProgramColumns.pinPub), f.sub(cur[(wide ? 8 : 0) + j], pv))); // 77..84
+      out.add(f.mul(P(VerifierProgramColumns.pinPub), f.sub(cur[(wide ? 8 : 0) + j], pv))); // 80..87
     }
     return out;
   }
