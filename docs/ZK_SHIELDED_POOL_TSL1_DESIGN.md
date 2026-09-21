@@ -420,19 +420,20 @@ Each item says what is assumed, what breaks if the assumption is wrong, and how 
 
 ### 11.3 PP3's partial hash is independent of the witness's size
 
-**RESOLVED 2026-09-20, measured.** A real SM witness was built through the tool and its geometry printed (`tool/scratch/witness_tail_probe.dart`):
+**RESOLVED 2026-09-20, measured. Re-measured 2026-09-21** against a pool witness carrying the verifier checks of 5.2, whose PP1 unlock is five times larger. `tool/scratch/witness_tail_probe.dart`, listing each input by the output it spends:
 
 ```
-WITNESS: 11315 B, 3 inputs, 1 output
-  input 0 (funding): 148 B
-  input 1 (PP1):   11047 B   unlock 11004 B
-  input 2 (PP2):      75 B   unlock 34 B
-  output 0:           35 B
-getInOutSize = 111 ; lastInputStart = 11200 ; 11200 % 64 == 0 ALIGNED
-remainder = last 128 B of the padded 11328 = [11200 .. 11328]
+ROUND WITNESS: 60723 B, 3 inputs, 1 outputs
+  input 0  spends coordinator funding    serialized   147 B   unlock   106 B
+  input 1  spends round N+1 out1 (PP1)   serialized 60456 B   unlock 60413 B
+  input 2  spends round N+1 out2 (PP2)   serialized    75 B   unlock    34 B
+  output 0 ModP2PKH to the owner         serialized    35 B
+  getInOutSize (last input + count varint + outputs) = 111 B
+  lastInputStart = 60608 ; % 64 = 0  ALIGNED
+  hashed tail = 115 B + 9 B minimum SHA padding = 124 of 128   headroom 4 B
 ```
 
-PP1's unlock sits at input 1 and is excluded from the hashed tail entirely, so a 1.5 MB push there costs PP3 nothing. The assumption holds and the design's witness shape is sound.
+The hashed tail begins at the last input, so the unlock spending PP1 is excluded from it entirely and a 1.5 MB push there costs PP3 nothing. That is now demonstrated rather than assumed: the unlock grew from 11,004 to 60,413 bytes between the two measurements and `getInOutSize` did not move off 111. The assumption holds and the design's witness shape is sound.
 
 **But the measurement exposes a hard constraint that was not in the design.** `TransactionUtils.computePartialHash` always takes the last 128 bytes, and `calculatePaddingBytes` aligns `lastInputStart` to a 64-byte boundary, so the remainder must cover exactly:
 
