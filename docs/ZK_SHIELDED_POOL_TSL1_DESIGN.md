@@ -290,9 +290,9 @@ Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a rou
 One header push, then the existing verifier program, then a tail that:
 
 1. **Requires a SIGHASH_ALL signature from the key hash in its second push**, so that only a round the owner signed can spend it. DECIDED 2026-09-21, replacing "checks hashPrevouts contains (round N, 3) at input 3", which cannot be built: Y_N exists before round N, because PP3_N embeds Y_N's txid, so V_N can never name round N. See "Why V needs a signer" below.
-2. Rebuilds round N+1's outputs from pushed bytes and checks hashOutputs. From them it reads header_{N+1}, PP3_{N+1}'s value, the withdrawal outputs and the deposit receipts.
+2. Rebuilds round N+1's outputs and checks hashOutputs. PP1's and PP3's programs are constants of V's body, so V pins both; the rest comes from pushed bytes. From them it reads header_{N+1}, PP3_{N+1}'s value, the withdrawal outputs and the deposit receipts.
 3. Verifies the proof against publics: header_N (embedded), header_{N+1}, the receipt list, the withdrawal list.
-4. Checks PP3_{N+1}.value = header_N.balance + sum(receipt values) − sum(withdrawal values).
+4. Checks PP3_{N+1}.value = header_{N+1}.balance = header_N.balance − the sum of the transfers' signed amounts (BSV only). Changed 2026-09-21 from "+ sum(receipts) − sum(withdrawals)"; see "Built" below.
 5. Ends with OP_CODESEPARATOR before its checksig so the preimage's scriptCode is the tail, not the 1.5 MB program. `CheckPreimageOCS` already supports this (`useCodeSeparator`, default true).
 6. **Does not need to pin PP3_{N+1}'s program; PP3 does.** DECIDED 2026-09-21. The program of the output holding the pool balance must be fixed at mining time, and there were two candidates: V, through the output rebuild of step 2 at the cost of one hash comparison, or PP3_N itself as a forward covenant at about 148 KB a round. PP3 was chosen, because it does not depend on V: the property holds now, before V exists, and it keeps holding if V's own checks are ever wrong. The cost is 2.8% of a round; see 5.4. V still gates the value (step 4), which PP3 cannot know. Whether V should also pin PP1's and PP2's programs is open. Substituting either looks, on reading the scripts, like it ends in the pool dying at the next witness rather than funds moving, but that is the kind of argument that breaks quietly, and in V it costs a hash each.
 
@@ -327,6 +327,16 @@ header.outHash = SHA256(c_0 ‖ … ‖ c_{n-1})
 PP1 in witness N+1 computes header.outHash from the published bundles, pushed as 2-byte-length-prefixed segments, one unrolled step per transfer up to 256 (`emitRoundOutHash`, 4,359 bytes, PP1 now 14,652 bytes; about 13 KB a round once paid three times). V needs 32 bytes per transfer, not the bundles: it checks the c_t list against header_{N+1}.outHash and each transfer's lanes against its withdrawal output and c_t. So neither a withdrawal's payee nor a recipient's ciphertext can be changed after the spender proved. Every BSV transfer taking money out has exactly one withdrawal, the next in tail order, for exactly its amount; no other transfer has one. Assets other than BSV moving in or out are refused until V carries them. `PoolOutHash.check` is that rule in Dart, tested in `test/pool_out_hash_test.dart`, and is what V's script will implement.
 
 With that, every field of the header and every output of the round has a source in the proof's statement, and V can be written.
+
+**Built 2026-09-21.** `PoolVerifierGen` in `lib/src/script_gen/pool_verifier_gen.dart`, with `PoolStatement` as the root statement's layout (checked against the real tree by `PoolStatement.of`). Three decisions made while building it:
+
+- **The balance steps by the transfers' amounts, not by the receipt and withdrawal outputs.** Every withdrawal is tied to a transfer, so the two agree whenever every deposit has a receipt. When one has none, the output formula would leave a note in the tree that PP3 holds no money for; stepping by amounts makes PP3 gain the amount, paid by whoever funded the round.
+- **PP1's and PP3's programs are constants of V's body.** Pushed in the round they are paid three times; in the body, twice (Y and the witness that certifies it), about 64 KB a round less. It also answers the open question of whether V pins PP1's program: it does. PP2 and the metadata script are pushed as they are, since a wrong one can only stop the pool.
+- **V checks 0 ≤ lane < p on every public lane it reads as bytes or as a number.** The verifier absorbs publics with `NUM2BIN 4` and treats them as non-negative, so lane p (which is 0) would otherwise match a header written as `ff ff ff 7f`. The test that builds exactly that is accepted with the check removed.
+
+The body ends `<ocsKey> OP_CODESEPARATOR OP_CHECKSIGVERIFY OP_CHECKSIG`, so the preimage's and the signer's scriptCode is those two opcodes. The fixed-size pushes (header_{N+1}, the change record, PP1's prefix, PP3's slot) are size-checked so the outputs V builds parse back into the same outputs; no attack on those checks has been built.
+
+**Measured.** At 4 transfers on bare lanes (`test/pool_verifier_test.dart`): the honest round and 28 attacks, and nine checks each removed in turn let their attack through. With a real root proof over four proved transfers (`test/pool_verifier_proof_test.dart`, 3.5 s to prove at test parameters): V is 411,596 bytes and runs in 0.8 s; a claimed rootAfter the tail accepts on bare lanes is refused by the proof. At production shape (256 transfers, 8 receipt slots, `tool/scratch/v_size_probe.dart`): the tail is 112,940 bytes and 51,664 opcodes (441 bytes a transfer), and V whole is 1,781,191 bytes and 823,536 opcodes, under the 1M-per-script limit.
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
 
@@ -487,7 +497,7 @@ For 256 aggregated transfers. Measured numbers are from `tool/scratch/agg_round_
 | Y_N | 1.5 MB | V plus one input |
 | Round outputs | ~80 KB | PP1 ~25 KB (est., SM is 11 to 15 KB), PP2 a few KB, PP3 ~38 KB, withdrawals 34 B each |
 | PP3_N unlock | 49.6 KB | measured 2026-09-21: the forward covenant needs PP3's whole script as scriptCode, so the separator is gone (5.4) |
-| V_N unlock | ~310 KB | proof 230 KB measured, outputs rebuild ~80 KB, preimage small |
+| V_N unlock | ~250 KB | proof 230 KB measured; the rest of the rebuild ~10 KB since PP1's and PP3's programs moved into V's body (5.5) |
 | Round total | ~0.43 MB | est. |
 | Witness PP1 unlock | ~3.3 MB | lhs ~0.35 MB, parent 0.43 MB, rebuild 0.08 MB, Y 1.5 MB, bundles 0.92 MB measured, preimage ~25 KB |
 | Witness total | ~3.3 MB | est. |
