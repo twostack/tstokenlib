@@ -98,10 +98,12 @@ The pool balance lives in PP3's value. PP3 is spent only on the transfer path, i
 | Input | Spends | Unlocking data |
 |---|---|---|
 | | coordinator funding | signature |
-| | round N+1 out1 (PP1) | preimage, lhs of round N+1, round N raw (parent), round N+1's rebuilt outputs, **Y_{N+1} raw**, **the ciphertext bundles of round N+1**, padding, action flag |
+| | round N+1 out1 (PP1) | preimage, lhs of round N+1, round N raw (parent), round N+1's rebuilt outputs, **(Y_{N+1}, 0)**, **Y_{N+1}'s single input**, **the verifier body**, **the ciphertext bundles of round N+1**, padding, action flag |
 | | round N+1 out2 (PP2) | preimage and fields as today |
 
 Single output: ModP2PKH to the coordinator, as today. Input order is whatever the existing tool uses to keep PP3's remainder small; see 11.3.
+
+Y_{N+1} is pushed as its outpoint plus its one input rather than whole, because PP1 rebuilds it rather than parsing it; see 5.2.
 
 ## 5. Header and script changes
 
@@ -127,11 +129,12 @@ The ring rotation is a circuit constraint, not a script one. The proof relates h
 The script header is therefore:
 
 ```
-[0:1]     0x14       [1:21]    ownerPKH      (20,  mutable)
-[21:22]   0x20       [22:54]   tokenId       (32,  immutable)
-[54:56]   0x4c 0xec  [56:292]  genesisHeader (236, immutable)
-[292:294] 0x4c 0xec  [294:530] header        (236, mutable)
-[530:]    script body (immutable)
+[0:1]     0x14       [1:21]    ownerPKH         (20,  mutable)
+[21:22]   0x20       [22:54]   tokenId          (32,  immutable)
+[54:55]   0x20       [55:87]   verifierBodyHash (32,  immutable)
+[87:89]   0x4c 0xec  [89:325]  genesisHeader    (236, immutable)
+[325:327] 0x4c 0xec  [327:563] header           (236, mutable)
+[563:]    script body (immutable)
 ```
 
 Both header pushes carry a two-byte `OP_PUSHDATA1` prefix, because 236 is past the 75-byte direct-push limit. Everything else is a direct push.
@@ -140,41 +143,60 @@ Both header pushes carry a two-byte `OP_PUSHDATA1` prefix, because 236 is past t
 
 What the field does not buy is honesty: a coordinator still picks their own genesis. It fixes it at issuance and publishes it, which is what lets anyone else check it.
 
-Immutable: `tokenId`, carried in PP1 as in every TSL1 token, and `genesisHeader`.
+`verifierBodyHash` is SHA-256 of the verifier script body, without its header push. It is a header field for the second of the two reasons above: baked into the body it would give every circuit configuration its own template. It says which verifier this pool's rounds must be checked by, which is the other thing a depositor wants to be able to read.
+
+Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyHash` and `genesisHeader`.
+
+`balance` is the value PP3 actually holds, not a bookkeeping figure, and PP1 checks the two are equal on every round. A pool therefore opens holding one satoshi, the dust PP3's output needs to exist, rather than zero: opening at zero would either make the invariant false from the start or leave an output nobody can spend.
 
 **No Rabin key.** For a state machine token the Rabin attestation binds the token to a registered issuer identity. For a pool, who the coordinator is *is* `ownerPKH`, and what makes the chain unique is the funding outpoint that create anchors to (11.5). Attesting the coordinator's off-chain identity, if a deployment wants it, belongs in the metadata output rather than in the covenant. Dropping it removes four parameters and five phases from the create branch.
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 2,995 bytes: 530 header, 2,465 body. The state machine it came from was 10,537 bytes, of which 10,376 was body. The verifier work in 5.2 is still to come, so this is a floor rather than a final number.
+**Measured.** Script 3,319 bytes: 563 header, 2,756 body, with the verifier checks of 5.2 included. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
-Tests: `test/sp_token_test.dart`, groups "Pool header codec", "SP lock builder parse roundtrip", "SP script generation", "SP create witness" and "SP round". 34 tests, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, and a selector that names no branch.
+Tests: `test/sp_token_test.dart`, 45 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, and a selector that names no branch.
 
 ### 5.2 PP1, pool variant
 
-The round branch does the ordinary TSL1 inductive transfer: it rebuilds round N+1 byte for byte from the witness's pushes, checks the result hashes to its own outpoint's txid, and substitutes `ownerPKH` and `header` into the next PP1. **BUILT 2026-09-20** together with the header; `_emitRebuildPP1Pool` is two fixed-window substitutions where the state machine's was four, because the header is one push.
+**BUILT 2026-09-21.** The round branch does the ordinary TSL1 inductive transfer, rebuilding round N+1 byte for byte from the witness's pushes and checking the result hashes to its own outpoint's txid, plus four pool checks. `_emitRebuildPP1Pool` is two fixed-window substitutions where the state machine's was four, because the header is one push.
 
-Authorisation is the owner's signature, as in every other archetype's transfer branch. That says the coordinator wants this round; it is not what makes the round *correct*. Correctness comes from the verifier slot, and the three mechanisms that tie the round to it are built but not yet wired into this branch:
+**The shape of the problem.** PP1 cannot run the verifier. It lives in the witness, which is built after the round is mined and its withdrawals are paid; by the time PP1 has anything to say, the money has moved. So the round branch's job is not to check this round. It is to make the *next* round's verification impossible to skip, and that is why every check below is forward-looking.
 
-1. Input 3 of round N+1 (from lhs) equals the `nextSlot` embedded in PP3_N, read from the pushed parent.
-2. **BUILT 2026-09-20**, as `PP1SpScriptGen.emitVerifySlotIsVerifier`. PP3's pin proves only that *something* at the named outpoint was spent; an `OP_TRUE` would satisfy it while skipping verification entirely. PP1 closes that. Rather than parse Y to find its output, which needs variable-length walking over inputs and outputs, it **rebuilds** Y from parts, which is the pattern already used everywhere else in TSL1:
+The mechanism is a pair. PP3_{N+1} pins the outpoint round N+2 must spend, and PP3 is enforced at mining time. PP1 in witness N+1 certifies that the script at that outpoint is this pool's verifier carrying header_{N+1}. Neither half is sufficient: PP3's pin says nothing about what sits at the outpoint, and PP1's certificate arrives too late to protect its own round. Together they mean round N+2 can only be mined beside a verifier that already knows the true state it must check against.
+
+The ordering works because round N+2 spends witness N+1's output 0, so witness N+1 always exists first. There is no window in which a round can outrun the certificate for the slot it needs.
+
+The checks, in the order the script does them:
+
+1. **The round's ciphertext bundles hash to header_{N+1}.outHash.** The bundles are what lets a recipient find and open their note. They are pushed in the witness rather than written to an output because of where TSL1 pays for bytes (section 2): an output's bytes are paid three times, a witness's once, and no script needs to read inside them. Riding in a mined witness is what publishes them; this check is what binds them to the round.
+
+2. **The slot PP3 will pin holds this pool's verifier, initialised with header_{N+1}**, as `PP1SpScriptGen.emitVerifySlotIsVerifier`. Rather than parse Y to find its output, which needs variable-length walking over inputs and outputs, it **rebuilds** Y from parts, the pattern used everywhere else in TSL1:
 
 ```
+V = OP_PUSHDATA1 0xec ‖ header_{N+1} ‖ body
 Y = version=1 ‖ 0x01 ‖ yInput ‖ 0x01 ‖ output(V, 1 sat) ‖ nLockTime=0
-SHA256d(Y) == nextSlot[0:32]      and      nextSlot[32:36] == 0
-SHA256(V)  == bakedBodyHash
+SHA256(body) == verifierBodyHash
+SHA256d(Y)   == nextSlot[0:32]      and      nextSlot[32:36] == 0
 ```
 
-Only `yInput` and `V` are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for the value and varint. Requiring exactly one input and one output is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing.
+Only `yInput` and `body` are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for the value and varint. Requiring exactly one input and one output is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing.
 
-The txid is what binds the claim. Supplying the genuine V alongside a Y that does not contain it fails, because the rebuild then hashes to a different txid. Four tests cover it: the honest slot, a slot holding a decoy, a decoy slot with the verifier falsely claimed, and a pin naming an output other than 0.
+Checking the body alone would not be enough, and this is the check that earns the header's single-push layout. A slot can hold a genuine, correct, spendable copy of the pool's verifier that was simply initialised with some other round's header. Round N+2's proof would then be verified against publics that are not the state it follows. Rebuilding V from `header_{N+1}` and comparing the txid closes it, and costs one `OP_CAT` over a value the branch already has on the stack. There is a test for exactly that case: the right verifier, the wrong header.
 
-Still to add here: splitting V into a header push and a body, so the check also binds header_{N+1}. Today it binds only the body hash, which proves the slot holds the verifier but not yet that it holds the right *state*. The header being a single 236-byte push is what makes that cheap: the rebuild is `push(header_{N+1}) ‖ bakedBody`, one CAT and one SHA256, with `header_{N+1}` already on the stack because the round branch pushes it.
-3. PP3_{N+1}'s value equals header_{N+1}.balance.
-4. The pushed ciphertext bundles hash to header_{N+1}.outHash.
-5. Deposit receipts and withdrawals are accepted as a variable tail of outputs; see 11.4.
+The txid is what binds every part of the claim. Supplying the genuine body alongside a Y that does not contain it fails, because the rebuild then hashes to a different txid.
 
-Points 2 and 3 are the ones that make V trustworthy in the next round: V_{N+1} embeds header_{N+1} and PP1 is what ties that embedding to the real round.
+3. **PP3_{N+1} names that slot and holds header_{N+1}.balance.** Neither is a separate comparison. The rebuild produces PP3 from the pinned slot and the header's balance field, and the rebuilt output goes into the transaction the script hashes against its own outpoint's txid, so a round whose PP3 names a different slot or holds a different amount simply cannot be spent afterwards. `emitRebuildPP3WithNextSlot` does the substitution and `_emitBuildOutputWithRawValue` splices the balance in as raw LE64 rather than round-tripping it through `OP_BIN2NUM` and `OP_NUM2BIN`.
+
+4. **Round N+1 spent, at input 3, the slot PP3_N pinned**, as `emitVerifySpentPinnedSlot`. PP3_N already enforces this at mining time by folding `nextSlot` into the `hashPrevouts` it demands, so this is deliberately redundant: a second, independent binding in a different script, so that the covenant on the money and the covenant on the token both have to agree the round brought the verifier it was told to. The outpoint is read out of the round's own left-hand side, which the inductive proof has already tied to the round's txid, so it is not the spender's word for what input 3 was.
+
+Still to add: deposit receipts and withdrawals as a variable tail of outputs, see 5.7 and 11.4.
+
+**Authorisation** is the owner's signature, as in every other archetype's transfer branch. That says the coordinator wants this round; it is not what makes the round correct, and it is not what protects depositors. A coordinator who signs a round that the verifier would reject simply cannot produce the next one.
+
+Measured: the four checks cost 291 script bytes, 2,465 to 2,756 of body.
+
+Tests in `test/sp_token_test.dart`: the whole lifecycle end to end, plus bundles that do not hash to `outHash`, a slot whose verifier was built for another header, a slot holding a decoy, the verifier falsely claimed for a decoy slot, a round whose PP3 names a slot other than the certified one, and `emitVerifySpentPinnedSlot` driven directly against a hand-built left-hand side.
 
 ### 5.3 PP2
 
@@ -214,7 +236,7 @@ The burn branch removal is still pending; see 5.6.
 
 ### 5.5 V, the verifier slot script
 
-Header pushes, then the existing verifier program, then a tail that:
+One header push, then the existing verifier program, then a tail that:
 
 1. Checks hashPrevouts contains (round N, 3) at input 2, so V_N can only be spent beside PP3_N.
 2. Rebuilds round N+1's outputs from pushed bytes and checks hashOutputs. From them it reads header_{N+1}, PP3_{N+1}'s value, the withdrawal outputs and the deposit receipts.
@@ -223,6 +245,8 @@ Header pushes, then the existing verifier program, then a tail that:
 5. Ends with OP_CODESEPARATOR before its checksig so the preimage's scriptCode is the tail, not the 1.5 MB program. `CheckPreimageOCS` already supports this (`useCodeSeparator`, default true).
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
+
+The shape is now fixed by 5.2, which rebuilds V as `OP_PUSHDATA1 0xec ‖ header ‖ body` and requires `SHA256(body) == verifierBodyHash`. So the header is exactly one push at the front, and everything after it is the same bytes in every round of a pool. The verifier reads its own header by splitting that push at the offsets in 5.1.
 
 ### 5.6 Burn
 
@@ -490,10 +514,10 @@ Until both are done this document is arithmetic.
 
 Carries over unchanged: the spend circuit, key hierarchy, aggregation levels and prover pool, the verifier program and `ProgramScriptGen`, the append slot, `PoolChainReader`'s leaf placement, the hybrid KEM bundles.
 
-Carries over with changes: `PartialWitnessLockBuilder` gains `nextSlot` and the input-3 check (DONE); the verifier slot generator gains the header embedding and the tail in 5.5; `ShieldedPoolTool` builds Y and the deposit covenant as well as the two transaction pairs.
+Carries over with changes: `PartialWitnessLockBuilder` gains `nextSlot` and the input-3 check (DONE); the verifier slot generator gains the header embedding and the tail in 5.5; `ShieldedPoolTool` builds Y (`buildSlotTxn`, DONE) and the deposit covenant as well as the two transaction pairs.
 
-The pool archetype is `PP1SpScriptGen`, cloned from `PP1SmScriptGen` and since diverged: its own header (5.1, DONE), two branches instead of seven (5.1 and 5.6, DONE), the anchored base case (11.5, DONE), and the verifier checks in 5.2 still to wire in. `PP1SmScriptGen` itself is untouched, so the state machine archetype keeps its full lifecycle.
+The pool archetype is `PP1SpScriptGen`, cloned from `PP1SmScriptGen` and since diverged: its own header (5.1, DONE), two branches instead of seven (5.1 and 5.6, DONE), the anchored base case (11.5, DONE) and the verifier checks (5.2, DONE). What is left in PP1 is the variable output tail of 5.7. `PP1SmScriptGen` itself is untouched, so the state machine archetype keeps its full lifecycle.
 
 Retired: the original pool scripts, now `PP1SpLegacyScriptGen` and `ShieldedPoolLegacyTool`, along with their in-script nullifier insertion and their `extraPrevouts` weakness. The Rabin create funnel is retired from the pool only; every other archetype keeps it.
 
-Not started: the sorted-insertion nullifier AIR, the deposit covenant script, the variable output tail (5.7).
+Not started: the sorted-insertion nullifier AIR, the deposit covenant script, the variable output tail (5.7), and V itself, which is stubbed as a header push followed by `OP_DROP OP_1` so the covenant around it can be exercised.

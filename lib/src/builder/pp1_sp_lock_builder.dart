@@ -22,13 +22,14 @@ import '../shielded_pool/pool_header.dart';
 
 /// Builds the locking script for the PP1_SP (shielded pool) output.
 ///
-/// Header layout (530 bytes):
+/// Header layout (563 bytes):
 /// ```
-/// [0:1]     0x14       [1:21]    ownerPKH      (20,  mutable)
-/// [21:22]   0x20       [22:54]   tokenId       (32,  immutable)
-/// [54:56]   0x4c 0xec  [56:292]  genesisHeader (236, immutable)
-/// [292:294] 0x4c 0xec  [294:530] header        (236, mutable) — see PoolHeader
-/// [530:]    script body (immutable)
+/// [0:1]     0x14       [1:21]    ownerPKH         (20,  mutable)
+/// [21:22]   0x20       [22:54]   tokenId          (32,  immutable)
+/// [54:55]   0x20       [55:87]   verifierBodyHash (32,  immutable)
+/// [87:89]   0x4c 0xec  [89:325]  genesisHeader    (236, immutable)
+/// [325:327] 0x4c 0xec  [327:563] header           (236, mutable) — see PoolHeader
+/// [563:]    script body (immutable)
 /// ```
 ///
 /// The genesis header is carried in full rather than as a commitment, so a
@@ -37,6 +38,7 @@ import '../shielded_pool/pool_header.dart';
 class PP1SpLockBuilder extends LockingScriptBuilder {
   Address? _ownerAddress;
   List<int>? _tokenId;
+  List<int>? _verifierBodyHash;
   PoolHeader? _header;
   List<int>? _genesisHeader;
   NetworkType? networkType;
@@ -47,6 +49,7 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
   PP1SpLockBuilder(
       this._ownerAddress,
       this._tokenId,
+      this._verifierBodyHash,
       this._header,
       this._genesisHeader,
       {this.networkType}) {
@@ -55,6 +58,10 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     }
     if (_tokenId == null || _tokenId!.length != 32) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Token ID must be 32 bytes");
+    }
+    if (_verifierBodyHash == null || _verifierBodyHash!.length != 32) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+          "Verifier body hash must be a 32-byte SHA256");
     }
     if (_header == null) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Pool header is required");
@@ -71,6 +78,7 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     return PP1SpScriptGen.generate(
       ownerPKH: ownerPKH,
       tokenId: _tokenId!,
+      verifierBodyHash: _verifierBodyHash!,
       header: _header!.encode(),
       genesisHeader: _genesisHeader!,
     );
@@ -99,6 +107,10 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
         hex.encode(buf.sublist(PP1SpScriptGen.pkhDataStart, PP1SpScriptGen.pkhDataEnd).toList()),
         networkType ?? NetworkType.TEST);
     _tokenId = buf.sublist(PP1SpScriptGen.tokenIdDataStart, PP1SpScriptGen.tokenIdDataEnd).toList();
+    _verifierBodyHash = buf
+        .sublist(PP1SpScriptGen.verifierBodyHashDataStart,
+            PP1SpScriptGen.verifierBodyHashDataEnd)
+        .toList();
     _genesisHeader =
         buf.sublist(PP1SpScriptGen.genesisDataStart, PP1SpScriptGen.genesisDataEnd).toList();
     _header = PoolHeader.decode(
@@ -107,6 +119,7 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
 
   Address? get ownerAddress => _ownerAddress;
   List<int>? get tokenId => _tokenId;
+  List<int>? get verifierBodyHash => _verifierBodyHash;
   PoolHeader? get header => _header;
   List<int>? get genesisHeader => _genesisHeader;
 }

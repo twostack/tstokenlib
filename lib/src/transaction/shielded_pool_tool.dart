@@ -60,23 +60,26 @@ class ShieldedPoolTool {
   ///
   /// [tokenFundingTx] funds the issuance and its txid becomes the tokenId.
   /// [ownerAddress] is the coordinator.
-  /// [genesisHeader] is the pool's starting state. It is baked into every PP1_SP
-  ///   of this pool as a hash, and the create branch refuses any other starting
+  /// [verifierBodyHash] is SHA-256 of the verifier script body, without its
+  ///   header push. It says which verifier this pool's rounds are checked by.
+  /// [genesisHeader] is the pool's starting state. It is carried by every
+  ///   PP1_SP of this pool and the create branch refuses any other starting
   ///   header, so the coordinator cannot open with a commitment tree that
   ///   already holds notes nobody deposited for.
-  /// [nextSlot] pins the verifier slot the first round must spend; null for a
-  ///   pool being exercised without the verifier wired in.
+  /// [nextSlot] pins the verifier slot round 1 must spend: the outpoint of the
+  ///   slot transaction carrying V for [genesisHeader].
   Transaction createTokenIssuanceTxn(
       Transaction tokenFundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       Address ownerAddress,
+      List<int> verifierBodyHash,
       PoolHeader genesisHeader,
+      List<int> nextSlot,
       List<int> witnessFundingTxId,
       {int fundingVout = 1,
        int witnessFundingVout = 1,
-       List<int>? metadataBytes,
-       List<int>? nextSlot}) {
+       List<int>? metadataBytes}) {
 
     // PP1_SP's create branch requires input 0 to spend (tokenId, 1), which is
     // what makes tokenId unique. Funding from any other index would build an
@@ -96,7 +99,7 @@ class ShieldedPoolTool {
     tokenTxBuilder.withFeePerKb(100);
 
     var pp1Locker = PP1SpLockBuilder(
-        ownerAddress, tokenId, genesisHeader, encodedGenesis);
+        ownerAddress, tokenId, verifierBodyHash, genesisHeader, encodedGenesis);
     tokenTxBuilder.spendToLockBuilder(pp1Locker, BigInt.one);
 
     var pp2Locker = PP2LockBuilder(
@@ -106,10 +109,11 @@ class ShieldedPoolTool {
     tokenTxBuilder.spendToLockBuilder(pp2Locker, BigInt.one);
 
     // nextSlot makes PP3 refuse to be spent unless the verifier slot it names is
-    // also an input of the spending round. Null for plain TSL1 tokens.
+    // also an input of the spending round. PP3 holds the pool balance, which at
+    // genesis is the dust the output needs to exist.
     var shaLocker = PartialWitnessLockBuilder(hex.decode(ownerAddress.pubkeyHash160),
         nextSlot: nextSlot);
-    tokenTxBuilder.spendToLockBuilder(shaLocker, BigInt.one);
+    tokenTxBuilder.spendToLockBuilder(shaLocker, genesisHeader.balance);
 
     var metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
     tokenTxBuilder.spendToLockBuilder(metadataLocker, BigInt.zero);
@@ -124,7 +128,10 @@ class ShieldedPoolTool {
   /// [action] selects which PP1_SP branch runs. For [ShieldedPoolAction.ROUND],
   /// [newOwnerPKH] and [newHeader] must describe the PP1_SP output the token
   /// transaction actually built, because PP1 rebuilds that output from them and
-  /// compares the result against its own outpoint's txid.
+  /// compares the result against its own outpoint's txid. [nextSlot], [yInput]
+  /// and [verifierBody] describe the slot transaction round N+2 will have to
+  /// spend, which PP1 certifies here; [bundles] are the round's ciphertexts,
+  /// published by riding in this witness and bound by `newHeader.outHash`.
   Transaction createWitnessTxn(
       TransactionSigner signer,
       Transaction fundingTx,
@@ -136,6 +143,10 @@ class ShieldedPoolTool {
       {int fundingVout = 1,
       List<int>? newOwnerPKH,
       List<int>? newHeader,
+      List<int>? nextSlot,
+      List<int>? yInput,
+      List<int>? verifierBody,
+      List<int>? bundles,
       int? nLockTime,
       int pp1OutputIndex = 1,
       int pp2OutputIndex = 2}) {
@@ -183,7 +194,8 @@ class ShieldedPoolTool {
         preImagePP1!, pp2Output, ownerPubkey, tokenChangePKH,
         tokenChangeAmount, tokenTxLHS, pp1ParentBytes, padding,
         action, fundingOutpoint,
-        newOwnerPKH: newOwnerPKH, newHeader: newHeader);
+        newOwnerPKH: newOwnerPKH, newHeader: newHeader, nextSlot: nextSlot,
+        yInput: yInput, verifierBody: verifierBody, bundles: bundles);
 
     // Two passes: the padding that makes PP3's partial hash land on a 64-byte
     // boundary depends on the witness's own size, so the witness is built once
@@ -215,33 +227,55 @@ class ShieldedPoolTool {
   /// It spends the previous witness's ModP2PKH output and the previous token
   /// transaction's PP3, which is the spend that carries the induction forward.
   ///
+  /// [prevSlotTx] is Y_N, whose output 0 carries the verifier for the parent
+  /// header. PP3_N pins it, so it has to be input 3.
   /// [newOwnerPKH] defaults to the current owner; supply it to rotate the
   /// coordinator's key.
   /// [nextSlot] pins the verifier slot that round N+2 must spend.
   Transaction createRoundTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
+      Transaction prevSlotTx,
       SVPublicKey ownerPubkey,
       Transaction fundingTx,
       TransactionSigner fundingTxSigner,
       SVPublicKey fundingPubKey,
       List<int> witnessFundingTxId,
       PoolHeader newHeader,
+      List<int> nextSlot,
       {int fundingVout = 1,
        int witnessFundingVout = 1,
        List<int>? newOwnerPKH,
-       List<int>? nextSlot}) {
+       UnlockingScriptBuilder? slotUnlocker}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
+
+    // PP3_N pins the slot this round must spend at input 3. Without a slot in
+    // the parent there is nothing to spend and the round can never be mined, so
+    // say that here rather than leaving it to the interpreter.
+    var parentPP3 = prevTokenTx.outputs[3].script.buffer;
+    if (parentPP3.length < PP1SpScriptGen.pp3NextSlotEnd || parentPP3[21] != 0x24) {
+      throw ArgumentError(
+          'The parent PP3 carries no verifier slot, so this round has nothing '
+          'to spend at input 3. The pool was issued without a nextSlot.');
+    }
+    var parentSlot =
+        parentPP3.sublist(PP1SpScriptGen.pp3NextSlotStart, PP1SpScriptGen.pp3NextSlotEnd);
+    if (!_sameRange(parentSlot, getOutpoint(prevSlotTx.hash, outputIndex: 0), 0, 36)) {
+      throw ArgumentError(
+          'prevSlotTx is not the slot PP3 named. PP3 pins output 0 of '
+          '${hex.encode(parentSlot.sublist(0, 32).reversed.toList())}.');
+    }
 
     var nextOwnerPKH = newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160);
     var nextOwnerAddress =
         Address.fromPubkeyHash(hex.encode(nextOwnerPKH), networkType);
 
-    // The genesis header is immutable, so it comes straight off the parent.
-    var pp1Locker = PP1SpLockBuilder(
-        nextOwnerAddress, prevPP1.tokenId!, newHeader, prevPP1.genesisHeader!);
+    // The genesis header and the verifier body hash are immutable, so they come
+    // straight off the parent.
+    var pp1Locker = PP1SpLockBuilder(nextOwnerAddress, prevPP1.tokenId!,
+        prevPP1.verifierBodyHash!, newHeader, prevPP1.genesisHeader!);
 
     // PP1 rebuilds the next script as parent[0:1] + newPKH + parent[21:294] +
     // newHeader + parent[530:], so anything the generator would change outside
@@ -261,6 +295,8 @@ class ShieldedPoolTool {
     var pp2Locker = PP2LockBuilder(
         getOutpoint(witnessFundingTxId, outputIndex: witnessFundingVout),
         nextOwnerPKH, 1, nextOwnerPKH);
+    // PP3 holds the pool balance and names the slot round N+2 must spend. PP1
+    // checks both against the header when this round's witness is built.
     var shaLocker = PartialWitnessLockBuilder(nextOwnerPKH, nextSlot: nextSlot);
 
     var metadataScript = prevTokenTx.outputs[4].script;
@@ -270,13 +306,17 @@ class ShieldedPoolTool {
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
 
+    var slotUnlock = slotUnlocker ??
+        DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+
     var childPreImageTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
+        .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
+        .spendToLockBuilder(shaLocker, newHeader.balance)
         .spendToLockBuilder(metadataLocker, BigInt.zero)
         .sendChangeToPKH(ownerAddress)
         .withFee(defaultFee)
@@ -294,25 +334,63 @@ class ShieldedPoolTool {
     roundFundingOutpoint.setAll(0, fundingTx.hash);
     roundFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
+    // A pool PP3 always pops extraPrevouts, even when there is nothing after
+    // input 3, so the empty list has to be pushed. Omitting it leaves the
+    // script reading the wrong stack item.
     var sha256Unlocker = PartialWitnessUnlockBuilder(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
-        roundFundingOutpoint);
+        roundFundingOutpoint,
+        extraPrevouts: const <int>[]);
 
     var childTxn = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
+        .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
-        .spendToLockBuilder(shaLocker, BigInt.one)
+        .spendToLockBuilder(shaLocker, newHeader.balance)
         .spendToLockBuilder(metadataLocker, BigInt.zero)
         .sendChangeToPKH(ownerAddress)
         .withFee(defaultFee)
         .build(false);
 
     return childTxn;
+  }
+
+  /// Builds the slot transaction Y whose single output carries the verifier V
+  /// for [header], and returns it with the outpoint that names it and the bytes
+  /// of its input that PP1 needs to rebuild it.
+  ///
+  /// Exactly one input and one output is a requirement, not a convention. It is
+  /// what forces V to be output 0: a Y with more outputs could park the real
+  /// verifier somewhere inert and put an OP_TRUE where the next round looks.
+  /// The coordinator builds Y, so meeting the shape costs nothing.
+  ///
+  /// V is `OP_PUSHDATA1 0xec ‖ header ‖ verifierBody`, which is what lets PP1
+  /// check the slot runs this pool's verifier *and* that the verifier was
+  /// initialised with this header.
+  ({Transaction tx, List<int> outpoint, List<int> input}) buildSlotTxn({
+    required PoolHeader header,
+    required List<int> verifierBody,
+    required TransactionInput fundingInput,
+  }) {
+    var v = Uint8List.fromList(
+        [0x4c, PoolHeader.byteSize, ...header.encode(), ...verifierBody]);
+
+    var y = Transaction()
+      ..version = 1
+      ..nLockTime = 0
+      ..addInput(fundingInput)
+      ..addOutput(TransactionOutput(BigInt.one, SVScript.fromByteArray(v)));
+
+    return (
+      tx: y,
+      outpoint: getOutpoint(y.hash, outputIndex: 0),
+      input: y.inputs[0].serialize(),
+    );
   }
 
   static bool _sameRange(List<int> a, List<int> b, int start, int end) {

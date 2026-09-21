@@ -49,6 +49,10 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   // Round-specific
   List<int>? _newOwnerPKH;
   List<int>? _newHeader;
+  List<int>? _nextSlot;
+  List<int>? _yInput;
+  List<int>? _verifierBody;
+  List<int>? _bundles;
 
   List<int>? _sigBytes;
 
@@ -70,9 +74,17 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       this.action,
       this._fundingOutpoint,
       {List<int>? newOwnerPKH,
-      List<int>? newHeader})
+      List<int>? newHeader,
+      List<int>? nextSlot,
+      List<int>? yInput,
+      List<int>? verifierBody,
+      List<int>? bundles})
       : _newOwnerPKH = newOwnerPKH,
-        _newHeader = newHeader;
+        _newHeader = newHeader,
+        _nextSlot = nextSlot,
+        _yInput = yInput,
+        _verifierBody = verifierBody,
+        _bundles = bundles;
 
   PP1SpUnlockBuilder.fromScript(SVScript script,
       {ShieldedPoolAction this.action = ShieldedPoolAction.ROUND})
@@ -110,7 +122,13 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
 
       case ShieldedPoolAction.ROUND:
         // Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
-        //         newOwnerPKH, newHeader, scriptLHS, parentRawTx, padding, OP_1]
+        //         newOwnerPKH, newHeader, nextSlot, yInput, vBody, bundles,
+        //         scriptLHS, parentRawTx, padding, OP_1]
+        //
+        // nextSlot, yInput and vBody describe the verifier slot that round N+2
+        // will have to spend; PP1 certifies it holds this pool's verifier
+        // carrying newHeader. bundles are the round's ciphertexts, published by
+        // being in this witness and bound by newHeader.outHash.
         if (_newHeader == null || _newHeader!.length != PoolHeader.byteSize) {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs a ${PoolHeader.byteSize}-byte header");
@@ -118,6 +136,14 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
         if (_newOwnerPKH == null || _newOwnerPKH!.length != 20) {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs a 20-byte newOwnerPKH");
+        }
+        if (_nextSlot == null || _nextSlot!.length != 36) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "A round needs a 36-byte nextSlot outpoint");
+        }
+        if (_yInput == null || _verifierBody == null) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "A round needs the slot transaction's input and the verifier body");
         }
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
@@ -127,6 +153,10 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
         result.addData(Uint8List.fromList(_sigBytes!));
         result.addData(Uint8List.fromList(_newOwnerPKH!));
         result.addData(Uint8List.fromList(_newHeader!));
+        result.addData(Uint8List.fromList(_nextSlot!));
+        result.addData(Uint8List.fromList(_yInput!));
+        result.addData(Uint8List.fromList(_verifierBody!));
+        result.addData(Uint8List.fromList(_bundles ?? const <int>[]));
         result.addData(Uint8List.fromList(_tokenLHS!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
         result.addData(Uint8List.fromList(_witnessPadding!));
@@ -148,9 +178,13 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
     _sigBytes = chunkList[5].buf;
     _newOwnerPKH = chunkList[6].buf;
     _newHeader = chunkList[7].buf;
-    _tokenLHS = chunkList[8].buf;
-    _prevTokenTx = chunkList[9].buf;
-    _witnessPadding = chunkList[10].buf;
+    _nextSlot = chunkList[8].buf;
+    _yInput = chunkList[9].buf;
+    _verifierBody = chunkList[10].buf;
+    _bundles = chunkList[11].buf;
+    _tokenLHS = chunkList[12].buf;
+    _prevTokenTx = chunkList[13].buf;
+    _witnessPadding = chunkList[14].buf;
   }
 
   List<int>? get pp2Output => _pp2Output;
@@ -164,4 +198,8 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get sigBytes => _sigBytes;
   List<int>? get newOwnerPKH => _newOwnerPKH;
   List<int>? get newHeader => _newHeader;
+  List<int>? get nextSlot => _nextSlot;
+  List<int>? get yInput => _yInput;
+  List<int>? get verifierBody => _verifierBody;
+  List<int>? get bundles => _bundles;
 }

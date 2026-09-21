@@ -61,6 +61,16 @@ PoolHeader nextHeader(PoolHeader from) => from.advance(
       outHash: List<int>.generate(32, (i) => 0xE0 + i % 16),
     );
 
+/// A stand-in for the real verifier program: it drops the header it was built
+/// with and succeeds. PP1 only ever checks its hash and the header push in
+/// front of it, so the shape is what matters here, not what it proves.
+final verifierBody = Uint8List.fromList([OpCodes.OP_DROP, OpCodes.OP_1]);
+final decoyBody = Uint8List.fromList([OpCodes.OP_DROP, OpCodes.OP_DROP, OpCodes.OP_1]);
+final verifierBodyHash = crypto.sha256.convert(verifierBody).bytes;
+
+TransactionInput slotFunding(int n) =>
+    TransactionInput(hex.encode(List.filled(32, n)), 0, 0xffffffff);
+
 List<int> outpoint(List<int> txId, int vout) {
   var o = Uint8List(36);
   o.setAll(0, txId);
@@ -102,10 +112,13 @@ void main() {
       expect(h1.ring.length, PoolHeader.ringEntries);
     });
 
-    test('genesis has no leaves, no money and no bundles', () {
+    test('genesis has no leaves, no bundles and only its dust', () {
       var g = genesisHeader();
       expect(g.size, 0);
-      expect(g.balance, BigInt.zero);
+      // balance is the value PP3 actually holds, not a bookkeeping figure, and
+      // PP1 checks the two are equal on every round. Opening at zero would
+      // either make that invariant false or leave an unspendable output.
+      expect(g.balance, BigInt.one);
       expect(g.outHash, List<int>.filled(32, 0));
       expect(g.ring.every((r) => _same(r, emptyCmRoot)), true,
           reason: 'round 1 spend proofs need a legitimate anchor');
@@ -120,30 +133,33 @@ void main() {
   });
 
   group('SP lock builder parse roundtrip', () {
-    test('530-byte header roundtrip', () {
+    test('563-byte header roundtrip', () {
       var tokenId = List<int>.filled(32, 0xAA);
       var g = genesisHeader();
       var h = nextHeader(g);
 
-      var script = PP1SpLockBuilder(operatorAddress, tokenId, h, g.encode())
+      var script = PP1SpLockBuilder(
+              operatorAddress, tokenId, verifierBodyHash, h, g.encode())
           .getScriptPubkey();
 
       var parsed = PP1SpLockBuilder.fromScript(script);
       expect(parsed.ownerAddress!.pubkeyHash160, operatorPubkeyHash);
       expect(parsed.tokenId, tokenId);
+      expect(parsed.verifierBodyHash, verifierBodyHash);
       expect(parsed.header!.encode(), h.encode());
       expect(parsed.genesisHeader, g.encode());
     });
 
     test('script header byte offsets match constants', () {
       var g = genesisHeader();
-      var script = PP1SpLockBuilder(
-              operatorAddress, List<int>.filled(32, 0xCC), g, g.encode())
+      var script = PP1SpLockBuilder(operatorAddress, List<int>.filled(32, 0xCC),
+              verifierBodyHash, g, g.encode())
           .getScriptPubkey();
       var buf = script.buffer;
 
       expect(buf[0], 0x14);                             // ownerPKH push
       expect(buf[PP1SpScriptGen.tokenIdDataStart - 1], 0x20);  // tokenId push
+      expect(buf[PP1SpScriptGen.verifierBodyHashDataStart - 1], 0x20);
       // 236 bytes is past the 75-byte direct-push limit, so the header push is
       // OP_PUSHDATA1 followed by its length. That is why headerDataStart is 56
       // and not 55.
@@ -151,10 +167,10 @@ void main() {
       expect(buf[PP1SpScriptGen.genesisPushStart + 1], PoolHeader.byteSize);
       expect(buf[PP1SpScriptGen.headerPushStart], 0x4c);
       expect(buf[PP1SpScriptGen.headerPushStart + 1], PoolHeader.byteSize);
-      expect(PP1SpScriptGen.genesisDataStart, 56);
-      expect(PP1SpScriptGen.headerDataStart, 294);
-      expect(PP1SpScriptGen.headerDataEnd, 530);
-      expect(PP1SpScriptGen.scriptBodyStart, 530);
+      expect(PP1SpScriptGen.genesisDataStart, 89);
+      expect(PP1SpScriptGen.headerDataStart, 327);
+      expect(PP1SpScriptGen.headerDataEnd, 563);
+      expect(PP1SpScriptGen.scriptBodyStart, 563);
 
       expect(buf.sublist(PP1SpScriptGen.genesisDataStart, PP1SpScriptGen.genesisDataEnd),
           g.encode());
@@ -166,21 +182,23 @@ void main() {
       // It is carried in full rather than as a commitment, so a depositor can
       // check what state the pool opened on without being handed a preimage.
       var g = genesisHeader();
-      var script = PP1SpLockBuilder(
-              operatorAddress, List<int>.filled(32, 0xCC), nextHeader(g), g.encode())
+      var script = PP1SpLockBuilder(operatorAddress, List<int>.filled(32, 0xCC),
+              verifierBodyHash, nextHeader(g), g.encode())
           .getScriptPubkey();
       expect(PP1SpLockBuilder.fromScript(script).genesisHeader, g.encode());
     });
 
     test('validation rejects a wrong-length tokenId', () {
       var g = genesisHeader();
-      expect(() => PP1SpLockBuilder(operatorAddress, [1, 2, 3], g, g.encode()),
+      expect(() => PP1SpLockBuilder(
+              operatorAddress, [1, 2, 3], verifierBodyHash, g, g.encode()),
           throwsA(isA<ScriptException>()));
     });
 
     test('validation rejects a wrong-length genesis header', () {
       var g = genesisHeader();
-      expect(() => PP1SpLockBuilder(operatorAddress, List<int>.filled(32, 0), g, [1, 2]),
+      expect(() => PP1SpLockBuilder(operatorAddress, List<int>.filled(32, 0),
+              verifierBodyHash, g, [1, 2]),
           throwsA(isA<ScriptException>()));
     });
   });
@@ -191,6 +209,7 @@ void main() {
       var script = PP1SpScriptGen.generate(
         ownerPKH: hex.decode(operatorPubkeyHash),
         tokenId: List<int>.filled(32, 0xAA),
+        verifierBodyHash: verifierBodyHash,
         header: g.encode(),
         genesisHeader: g.encode(),
       );
@@ -211,9 +230,11 @@ void main() {
 
       var a = PP1SpScriptGen.generate(
           ownerPKH: hex.decode(operatorPubkeyHash), tokenId: tokenId,
+          verifierBodyHash: verifierBodyHash,
           header: g1.encode(), genesisHeader: g1.encode()).buffer;
       var b = PP1SpScriptGen.generate(
           ownerPKH: hex.decode(counterpartyPubkeyHash), tokenId: tokenId,
+          verifierBodyHash: crypto.sha256.convert(decoyBody).bytes,
           header: g2.encode(), genesisHeader: g2.encode()).buffer;
 
       expect(a.length, b.length);
@@ -226,6 +247,7 @@ void main() {
       expect(() => PP1SpScriptGen.generate(
           ownerPKH: hex.decode(operatorPubkeyHash),
           tokenId: List<int>.filled(32, 0xAA),
+          verifierBodyHash: verifierBodyHash,
           header: [1, 2, 3], genesisHeader: g.encode()),
           throwsA(isA<ArgumentError>()));
     });
@@ -238,30 +260,37 @@ void main() {
       var fundingTx = getOperatorFundingTx();
       var g = genesisHeader();
 
+      var y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
       var issuanceTx = service.createTokenIssuanceTxn(
-          fundingTx, operatorSigner, operatorPub, operatorAddress, g,
-          getOperatorFundingTx2().hash);
+          fundingTx, operatorSigner, operatorPub, operatorAddress,
+          verifierBodyHash, g, y0.outpoint, getOperatorFundingTx2().hash);
 
       expect(issuanceTx.outputs.length, 5);
       expect(issuanceTx.inputs.length, 1);
       expect(issuanceTx.outputs[0].satoshis > BigInt.zero, true);
       expect(issuanceTx.outputs[1].satoshis, BigInt.one);
       expect(issuanceTx.outputs[2].satoshis, BigInt.one);
-      expect(issuanceTx.outputs[3].satoshis, BigInt.one);
+      expect(issuanceTx.outputs[3].satoshis, g.balance,
+          reason: 'PP3 holds the pool balance, which at genesis is the dust');
       expect(issuanceTx.outputs[4].satoshis, BigInt.zero);
 
       var pp1Lock = PP1SpLockBuilder.fromScript(issuanceTx.outputs[1].script);
       expect(pp1Lock.tokenId, fundingTx.hash);
       expect(pp1Lock.ownerAddress!.pubkeyHash160, operatorPubkeyHash);
+      expect(pp1Lock.verifierBodyHash, verifierBodyHash);
       expect(pp1Lock.header!.encode(), g.encode());
     });
 
     test('refuses to fund issuance from any output but 1', () {
       var service = ShieldedPoolTool();
+      var g = genesisHeader();
+      var y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
       expect(() => service.createTokenIssuanceTxn(
               getOperatorFundingTx(),
               DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
-              operatorPub, operatorAddress, genesisHeader(),
+              operatorPub, operatorAddress, verifierBodyHash, g, y0.outpoint,
               getOperatorFundingTx2().hash, fundingVout: 0),
           throwsA(isA<ArgumentError>()));
     });
@@ -274,8 +303,11 @@ void main() {
       var fundB = getOperatorFundingTx2();
       var signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
 
-      var issuanceTx = service.createTokenIssuanceTxn(
-          fundA, signer, operatorPub, operatorAddress, genesisHeader(), fundB.hash);
+      var g = genesisHeader();
+      var y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
+      var issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
 
       var witnessTx = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
@@ -302,7 +334,8 @@ void main() {
                 TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
             ..withFeePerKb(100)
             ..spendToLockBuilder(
-                PP1SpLockBuilder(operatorAddress, fundA.hash, stuffed, g.encode()),
+                PP1SpLockBuilder(operatorAddress, fundA.hash, verifierBodyHash,
+                    stuffed, g.encode()),
                 BigInt.one)
             ..spendToLockBuilder(
                 PP2LockBuilder(outpoint(fundB.hash, 1),
@@ -342,7 +375,8 @@ void main() {
                 TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(fundingKey.publicKey))
             ..withFeePerKb(100)
             ..spendToLockBuilder(
-                PP1SpLockBuilder(owner, tokenId, g, g.encode()), BigInt.one)
+                PP1SpLockBuilder(owner, tokenId, verifierBodyHash, g, g.encode()),
+                BigInt.one)
             ..spendToLockBuilder(
                 PP2LockBuilder(outpoint(getOperatorFundingTx().hash, 1),
                     ownerPKH, 1, ownerPKH),
@@ -386,6 +420,8 @@ void main() {
     late Transaction fundA, fundB, issuanceTx, createWitness;
     late DefaultTransactionSigner signer;
     late PoolHeader g, h1;
+    late ({Transaction tx, List<int> outpoint, List<int> input}) y0, y1;
+    late List<int> bundles;
 
     setUp(() {
       service = ShieldedPoolTool();
@@ -393,55 +429,93 @@ void main() {
       fundB = getOperatorFundingTx2();
       signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       g = genesisHeader();
-      h1 = nextHeader(g);
+      bundles = <int>[1, 2, 3, 4, 5];
+      // outHash binds the round's ciphertexts, so the header the round carries
+      // has to be built around the bundles that ride in its witness.
+      var base = nextHeader(g);
+      h1 = PoolHeader(
+          cmRoot: base.cmRoot, nfRoot: base.nfRoot, ring: base.ring,
+          size: base.size, balance: base.balance,
+          outHash: crypto.sha256.convert(bundles).bytes);
 
-      issuanceTx = service.createTokenIssuanceTxn(
-          fundA, signer, operatorPub, operatorAddress, g, fundB.hash);
+      y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
+      y1 = service.buildSlotTxn(
+          header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11));
+
+      issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
       createWitness = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
           operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
     });
 
-    Transaction round(PoolHeader header) => service.createRoundTxn(
-        createWitness, issuanceTx, operatorPub, fundA, signer, operatorPub,
-        fundB.hash, header);
+    Transaction round(PoolHeader header, List<int> slot) => service.createRoundTxn(
+        createWitness, issuanceTx, y0.tx, operatorPub, fundA, signer,
+        operatorPub, fundB.hash, header, slot);
 
-    Transaction roundWitness(Transaction roundTx, PoolHeader claimed) =>
+    Transaction roundWitness(Transaction roundTx, {
+      required PoolHeader claimedHeader,
+      required List<int> claimedSlot,
+      required List<int> yInput,
+      required List<int> vBody,
+      required List<int> claimedBundles,
+    }) =>
         service.createWitnessTxn(
             signer, fundB, roundTx, hex.decode(issuanceTx.serialize()),
             operatorPub, operatorPubkeyHash, ShieldedPoolAction.ROUND,
             newOwnerPKH: hex.decode(operatorPubkeyHash),
-            newHeader: claimed.encode());
+            newHeader: claimedHeader.encode(), nextSlot: claimedSlot,
+            yInput: yInput, verifierBody: vBody, bundles: claimedBundles);
+
+    void spendPP1(Transaction roundTx, Transaction witness) =>
+        Interpreter().correctlySpends(witness.inputs[1].script!,
+            roundTx.outputs[1].script, witness, 1, verifyFlags,
+            Coin.valueOf(BigInt.one));
+
+    Transaction honestWitness(Transaction roundTx) => roundWitness(roundTx,
+        claimedHeader: h1, claimedSlot: y1.outpoint, yInput: y1.input,
+        vBody: verifierBody, claimedBundles: bundles);
 
     test('issue, create witness, round, round witness', () {
-      var roundTx = round(h1);
+      var roundTx = round(h1, y1.outpoint);
+      expect(roundTx.inputs.length, 4,
+          reason: 'funding, the previous witness, PP3, and the verifier slot');
       expect(roundTx.outputs.length, 5);
 
-      // The spend of the parent PP3 is what carries the induction forward.
+      // The spend of the parent PP3 is what carries the induction forward, and
+      // what refuses to happen unless the verifier slot is an input.
       Interpreter().correctlySpends(roundTx.inputs[2].script!,
           issuanceTx.outputs[3].script, roundTx, 2, verifyFlags,
           Coin.valueOf(BigInt.one));
 
-      var witness = roundWitness(roundTx, h1);
-      Interpreter().correctlySpends(witness.inputs[1].script!,
-          roundTx.outputs[1].script, witness, 1, verifyFlags,
-          Coin.valueOf(BigInt.one));
+      spendPP1(roundTx, honestWitness(roundTx));
+    });
+
+    test('PP3 holds the pool balance and names the next slot', () {
+      var roundTx = round(h1, y1.outpoint);
+      expect(roundTx.outputs[3].satoshis, h1.balance);
+      expect(
+          roundTx.outputs[3].script.buffer.sublist(
+              PP1SpScriptGen.pp3NextSlotStart, PP1SpScriptGen.pp3NextSlotEnd),
+          y1.outpoint);
     });
 
     test('the round carries the new header forward', () {
-      var after = PP1SpLockBuilder.fromScript(round(h1).outputs[1].script);
+      var after = PP1SpLockBuilder.fromScript(round(h1, y1.outpoint).outputs[1].script);
       expect(after.header!.encode(), h1.encode());
-      expect(after.header!.balance, BigInt.from(123456789));
-      expect(after.header!.size, 7);
+      expect(after.header!.balance, h1.balance);
       expect(after.tokenId, fundA.hash, reason: 'tokenId is immutable');
+      expect(after.verifierBodyHash, verifierBodyHash, reason: 'so is the verifier');
+      expect(after.genesisHeader, g.encode(), reason: 'and so is the genesis');
     });
 
     test('the round leaves the body byte-identical to its parent', () {
-      // PP1 rebuilds the next script as parent[0:1] + newPKH + parent[21:56] +
-      // newHeader + parent[292:]. Anything else changing would make the round
+      // PP1 rebuilds the next script as parent[0:1] + newPKH + parent[21:327] +
+      // newHeader + parent[563:]. Anything else changing would make the round
       // unspendable.
       var parent = issuanceTx.outputs[1].script.buffer;
-      var child = round(h1).outputs[1].script.buffer;
+      var child = round(h1, y1.outpoint).outputs[1].script.buffer;
       expect(child.length, parent.length);
       expect(_same(child.sublist(PP1SpScriptGen.scriptBodyStart),
                    parent.sublist(PP1SpScriptGen.scriptBodyStart)), true);
@@ -455,37 +529,91 @@ void main() {
       // PP1 rebuilds the round from the pushed header and matches the result
       // against its own outpoint's txid, so a claimed header that the token
       // transaction does not actually carry cannot be made to hash correctly.
-      var roundTx = round(h1);
+      var roundTx = round(h1, y1.outpoint);
       var lie = h1.advance(
           cmRoot: List<int>.filled(32, 0x77), nfRoot: List<int>.filled(32, 0x88),
           size: 999, balance: BigInt.from(1), outHash: List<int>.filled(32, 0x99));
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: lie, claimedSlot: y1.outpoint, yInput: y1.input,
+              vBody: verifierBody, claimedBundles: bundles)),
+          throwsA(isA<ScriptException>()));
+    });
 
-      var witness = roundWitness(roundTx, lie);
-      expect(
-          () => Interpreter().correctlySpends(witness.inputs[1].script!,
-              roundTx.outputs[1].script, witness, 1, verifyFlags,
-              Coin.valueOf(BigInt.one)),
+    test('rejects bundles that do not hash to outHash', () {
+      // The bundles are what lets a recipient find and open their note. They
+      // ride in the witness rather than an output because of where TSL1 pays
+      // for bytes; this is what stops the coordinator publishing something
+      // other than what the round committed to.
+      var roundTx = round(h1, y1.outpoint);
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: h1, claimedSlot: y1.outpoint, yInput: y1.input,
+              vBody: verifierBody, claimedBundles: const <int>[9, 9, 9])),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a slot whose verifier was built for another header', () {
+      // The decisive case for the whole design. The slot really does hold this
+      // pool's verifier, with the right body, spendable and everything; it was
+      // simply initialised with the genesis header instead of this round's. If
+      // PP1 checked only the body hash it would pass, and round N+2 would then
+      // be verified against a state that is not the one it follows.
+      var stale = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
+      var roundTx = round(h1, stale.outpoint);
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: h1, claimedSlot: stale.outpoint,
+              yInput: stale.input, vBody: verifierBody, claimedBundles: bundles)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a slot holding something that is not the verifier', () {
+      var decoy = service.buildSlotTxn(
+          header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
+      var roundTx = round(h1, decoy.outpoint);
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: h1, claimedSlot: decoy.outpoint,
+              yInput: decoy.input, vBody: decoyBody, claimedBundles: bundles)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects claiming the verifier is in a slot that holds a decoy', () {
+      var decoy = service.buildSlotTxn(
+          header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
+      var roundTx = round(h1, decoy.outpoint);
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: h1, claimedSlot: decoy.outpoint,
+              yInput: decoy.input, vBody: verifierBody, claimedBundles: bundles)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a round whose PP3 names a slot other than the certified one', () {
+      // Certifying one slot and pinning another would leave round N+2 free to
+      // spend an uncertified one.
+      var decoy = service.buildSlotTxn(
+          header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
+      var roundTx = round(h1, decoy.outpoint);
+      expect(() => spendPP1(roundTx, roundWitness(roundTx,
+              claimedHeader: h1, claimedSlot: y1.outpoint, yInput: y1.input,
+              vBody: verifierBody, claimedBundles: bundles)),
           throwsA(isA<ScriptException>()));
     });
 
     test('rejects a witness signed by someone other than the owner', () {
-      var roundTx = round(h1);
+      var roundTx = round(h1, y1.outpoint);
       var outsider = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
       var witness = service.createWitnessTxn(
           outsider, getCounterpartyFundingTx(), roundTx,
           hex.decode(issuanceTx.serialize()), counterpartyPub,
           counterpartyPubkeyHash, ShieldedPoolAction.ROUND,
-          newOwnerPKH: hex.decode(operatorPubkeyHash), newHeader: h1.encode());
-      expect(
-          () => Interpreter().correctlySpends(witness.inputs[1].script!,
-              roundTx.outputs[1].script, witness, 1, verifyFlags,
-              Coin.valueOf(BigInt.one)),
-          throwsA(isA<ScriptException>()));
+          newOwnerPKH: hex.decode(operatorPubkeyHash), newHeader: h1.encode(),
+          nextSlot: y1.outpoint, yInput: y1.input, verifierBody: verifierBody,
+          bundles: bundles);
+      expect(() => spendPP1(roundTx, witness), throwsA(isA<ScriptException>()));
     });
 
     test('rejects a selector that names no branch', () {
-      var roundTx = round(h1);
-      var witness = roundWitness(roundTx, h1);
+      var roundTx = round(h1, y1.outpoint);
+      var witness = honestWitness(roundTx);
       // Replace the trailing OP_1 with OP_2, which used to select "confirm".
       var raw = Uint8List.fromList(witness.inputs[1].script!.buffer);
       expect(raw[raw.length - 1], OpCodes.OP_1);
@@ -495,6 +623,14 @@ void main() {
               roundTx.outputs[1].script, witness, 1, verifyFlags,
               Coin.valueOf(BigInt.one)),
           throwsA(isA<ScriptException>()));
+    });
+
+    test('the tool refuses a round that brings its own verifier slot', () {
+      var stray = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x14));
+      expect(() => service.createRoundTxn(createWitness, issuanceTx, stray.tx,
+              operatorPub, fundA, signer, operatorPub, fundB.hash, h1, y1.outpoint),
+          throwsA(isA<ArgumentError>()));
     });
   });
 
@@ -514,8 +650,8 @@ void main() {
       var service = ShieldedPoolTool();
       tokenTx = service.createTokenIssuanceTxn(
         opFunding, DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
-        operatorPub, operatorAddress, genesisHeader(), cpFunding.hash,
-        nextSlot: outpoint(slotTx.hash, 0),
+        operatorPub, operatorAddress, verifierBodyHash, genesisHeader(),
+        outpoint(slotTx.hash, 0), cpFunding.hash,
       );
       pp3Script = tokenTx.outputs[3].script;
       witnessTx = service.createWitnessTxn(
@@ -612,12 +748,16 @@ void main() {
 
   group('SP the pinned slot must hold the verifier', () {
     // PP3 proves only that *something* at the pinned outpoint was spent. An
-    // OP_TRUE would satisfy it while skipping verification entirely. PP1 closes
-    // that by rebuilding the slot transaction and matching its txid, then
-    // hashing the script it carries.
-    var verifier = ScriptBuilder().opCode(OpCodes.OP_NOP).opCode(OpCodes.OP_1).build();
-    var decoy = ScriptBuilder().opCode(OpCodes.OP_1).build();
-    var bodyHash = crypto.sha256.convert(verifier.buffer).bytes;
+    // OP_TRUE would satisfy it while skipping verification entirely, and a
+    // verifier holding some other round's state would verify the next round's
+    // proof against the wrong publics. PP1 closes both by rebuilding the slot
+    // transaction and matching its txid, then rebuilding V from the header it
+    // must embed and the body it must run.
+    var header = nextHeader(genesisHeader());
+    var other = genesisHeader();
+
+    SVScript verifier(PoolHeader h, List<int> body) => SVScript.fromByteArray(
+        Uint8List.fromList([0x4c, PoolHeader.byteSize, ...h.encode(), ...body]));
 
     Transaction slotTx(SVScript carried) => Transaction()
       ..version = 1
@@ -625,17 +765,24 @@ void main() {
       ..addInput(TransactionInput('11' * 32, 3, 0xffffffff))
       ..addOutput(TransactionOutput(BigInt.one, carried));
 
-    void check({required SVScript carried, required SVScript claimed, int vout = 0}) {
+    void check({
+      required SVScript carried,
+      required List<int> claimedBody,
+      required PoolHeader claimedHeader,
+      int vout = 0,
+    }) {
       var y = slotTx(carried);
       var slot = Uint8List(36)..setAll(0, y.hash);
       slot.buffer.asByteData().setUint32(32, vout, Endian.little);
       var sig = ScriptBuilder()
           .addData(Uint8List.fromList(y.inputs[0].serialize()))
-          .addData(Uint8List.fromList(claimed.buffer))
+          .addData(Uint8List.fromList(claimedBody))
+          .addData(Uint8List.fromList(verifierBodyHash))
+          .addData(Uint8List.fromList(claimedHeader.encode()))
           .addData(slot)
           .build();
       var b = ScriptBuilder();
-      PP1SpScriptGen.emitVerifySlotIsVerifier(b, bodyHash: bodyHash);
+      PP1SpScriptGen.emitVerifySlotIsVerifier(b);
       b.opCode(OpCodes.OP_1);
       var tx = Transaction()
         ..addInput(TransactionInput('00' * 32, 0, 0xffffffff))
@@ -644,22 +791,91 @@ void main() {
           {VerifyFlag.UTXO_AFTER_GENESIS}, Coin.valueOf(BigInt.one));
     }
 
-    test('accepts a slot that really holds the verifier', () {
-      check(carried: verifier, claimed: verifier);
+    test('accepts a slot that holds the verifier for this header', () {
+      check(carried: verifier(header, verifierBody), claimedBody: verifierBody,
+          claimedHeader: header);
     });
 
     test('rejects a slot holding something else', () {
-      expect(() => check(carried: decoy, claimed: decoy), throwsA(isA<ScriptException>()));
+      check2() => check(carried: verifier(header, decoyBody),
+          claimedBody: decoyBody, claimedHeader: header);
+      expect(check2, throwsA(isA<ScriptException>()));
     });
 
     test('rejects claiming the verifier is there when it is not', () {
       // The txid binds the claim, so the decoy cannot be passed off as the
       // verifier even though the hash of what is claimed would check out.
-      expect(() => check(carried: decoy, claimed: verifier), throwsA(isA<ScriptException>()));
+      expect(() => check(carried: verifier(header, decoyBody),
+              claimedBody: verifierBody, claimedHeader: header),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects the right verifier carrying the wrong header', () {
+      expect(() => check(carried: verifier(other, verifierBody),
+              claimedBody: verifierBody, claimedHeader: header),
+          throwsA(isA<ScriptException>()));
     });
 
     test('rejects a pin that names any output but 0', () {
-      expect(() => check(carried: verifier, claimed: verifier, vout: 1),
+      expect(() => check(carried: verifier(header, verifierBody),
+              claimedBody: verifierBody, claimedHeader: header, vout: 1),
+          throwsA(isA<ScriptException>()));
+    });
+  });
+
+  group('SP the round must spend the slot its parent pinned', () {
+    // A second, independent binding of the same fact PP3 enforces at mining
+    // time. The outpoint is read out of the round's own left-hand side, which
+    // the inductive proof has already tied to the round's txid.
+    var pinned = outpoint(List<int>.filled(32, 0x55), 0);
+
+    SVScript parentPP3(List<int> slot) =>
+        PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash), nextSlot: slot)
+            .getScriptPubkey();
+
+    /// version + input count + four inputs, which is the shape getTxLHS gives.
+    List<int> lhsWithInputAt3(List<int> slotOutpoint) {
+      var out = <int>[0x01, 0x00, 0x00, 0x00, 0x04];
+      for (var i = 0; i < 3; i++) {
+        out
+          ..addAll(List<int>.filled(36, i))
+          ..add(0x02)                      // a two-byte unlocking script
+          ..addAll([0x51, 0x51])
+          ..addAll([0xff, 0xff, 0xff, 0xff]);
+      }
+      out
+        ..addAll(slotOutpoint)
+        ..add(0x00)
+        ..addAll([0xff, 0xff, 0xff, 0xff]);
+      return out;
+    }
+
+    void check(List<int> pinnedSlot, List<int> spentSlot) {
+      var sig = ScriptBuilder()
+          .addData(Uint8List.fromList(parentPP3(pinnedSlot).buffer))
+          .addData(Uint8List.fromList(lhsWithInputAt3(spentSlot)))
+          .build();
+      var b = ScriptBuilder();
+      PP1SpScriptGen.emitVerifySpentPinnedSlot(b);
+      b.opCode(OpCodes.OP_1);
+      var tx = Transaction()
+        ..addInput(TransactionInput('00' * 32, 0, 0xffffffff))
+        ..addOutput(TransactionOutput(BigInt.one, SVScript()));
+      Interpreter().correctlySpends(sig, b.build(), tx, 0,
+          {VerifyFlag.UTXO_AFTER_GENESIS}, Coin.valueOf(BigInt.one));
+    }
+
+    test('accepts a round whose input 3 is the pinned slot', () {
+      check(pinned, pinned);
+    });
+
+    test('rejects a round that brought its own verifier slot', () {
+      expect(() => check(pinned, outpoint(List<int>.filled(32, 0x66), 0)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects the pinned txid at a different output index', () {
+      expect(() => check(pinned, outpoint(List<int>.filled(32, 0x55), 1)),
           throwsA(isA<ScriptException>()));
     });
   });

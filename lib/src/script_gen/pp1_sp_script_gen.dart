@@ -29,11 +29,12 @@ import 'pp1_ft_script_gen.dart';
 /// plus the pool's own state:
 ///
 /// ```
-/// [0:1]     0x14       [1:21]    ownerPKH      (20,  mutable)
-/// [21:22]   0x20       [22:54]   tokenId       (32,  immutable)
-/// [54:56]   0x4c 0xec  [56:292]  genesisHeader (236, immutable)
-/// [292:294] 0x4c 0xec  [294:530] header        (236, mutable)  see [PoolHeader]
-/// [530:]    script body (immutable)
+/// [0:1]     0x14       [1:21]    ownerPKH         (20,  mutable)
+/// [21:22]   0x20       [22:54]   tokenId          (32,  immutable)
+/// [54:55]   0x20       [55:87]   verifierBodyHash (32,  immutable)
+/// [87:89]   0x4c 0xec  [89:325]  genesisHeader    (236, immutable)
+/// [325:327] 0x4c 0xec  [327:563] header           (236, mutable)  see [PoolHeader]
+/// [563:]    script body (immutable)
 /// ```
 ///
 /// Each 236-byte header needs OP_PUSHDATA1, hence a two-byte prefix where every
@@ -49,6 +50,10 @@ import 'pp1_ft_script_gen.dart';
 /// tree started empty before putting money in; with only a commitment they
 /// would have to be handed the preimage and trust it. It also keeps the script
 /// body identical across pools, so one template serves all of them.
+///
+/// `verifierBodyHash` is a header field for the same second reason: baked into
+/// the body it would give every circuit configuration its own template. It
+/// identifies which verifier this pool's rounds must be checked by.
 ///
 /// Two branches, dispatched on a selector left on top of the stack:
 ///
@@ -73,23 +78,30 @@ class PP1SpScriptGen {
   static const int pkhDataEnd = 21;
   static const int tokenIdDataStart = 22;
   static const int tokenIdDataEnd = 54;
+  static const int verifierBodyHashDataStart = 55;
+  static const int verifierBodyHashDataEnd = 87;
 
   /// Each header push is `OP_PUSHDATA1 0xec`, two bytes, so its data starts two
   /// bytes after the push rather than one.
-  static const int genesisPushStart = 54;
-  static const int genesisDataStart = 56;
-  static const int genesisDataEnd = genesisDataStart + PoolHeader.byteSize; // 292
+  static const int genesisPushStart = verifierBodyHashDataEnd;  // 87
+  static const int genesisDataStart = genesisPushStart + 2;     // 89
+  static const int genesisDataEnd = genesisDataStart + PoolHeader.byteSize; // 325
 
-  static const int headerPushStart = genesisDataEnd;        // 292
-  static const int headerDataStart = headerPushStart + 2;   // 294
-  static const int headerDataEnd = headerDataStart + PoolHeader.byteSize; // 530
+  static const int headerPushStart = genesisDataEnd;        // 325
+  static const int headerDataStart = headerPushStart + 2;   // 327
+  static const int headerDataEnd = headerDataStart + PoolHeader.byteSize; // 563
   static const int scriptBodyStart = headerDataEnd;
 
   /// The immutable run between the mutable ownerPKH and the mutable header: the
-  /// tokenId push, the genesis header push, and the header's own two-byte
-  /// prefix. The rebuild copies it across untouched.
+  /// tokenId push, the verifier body hash, the genesis header push, and the
+  /// header's own two-byte prefix. The rebuild copies it across untouched.
   static const int immutableMidStart = pkhDataEnd;          // 21
-  static const int immutableMidLength = headerDataStart - pkhDataEnd; // 273
+  static const int immutableMidLength = headerDataStart - pkhDataEnd; // 306
+
+  /// A pool PP3 begins `<0x14> ownerPKH(20) <0x24> nextSlot(36) OP_DROP ...`,
+  /// so the outpoint it pins the next round to is a fixed window.
+  static const int pp3NextSlotStart = 22;
+  static const int pp3NextSlotEnd = 58;
 
   static const int pp2FundingOutpointStart = 117;
   static const int pp2WitnessChangePKHStart = 154;
@@ -108,6 +120,7 @@ class PP1SpScriptGen {
   static SVScript generate({
     required List<int> ownerPKH,
     required List<int> tokenId,
+    required List<int> verifierBodyHash,
     required List<int> header,
     required List<int> genesisHeader,
   }) {
@@ -116,6 +129,10 @@ class PP1SpScriptGen {
     }
     if (tokenId.length != 32) {
       throw ArgumentError.value(tokenId.length, 'tokenId', 'must be 32 bytes');
+    }
+    if (verifierBodyHash.length != 32) {
+      throw ArgumentError.value(
+          verifierBodyHash.length, 'verifierBodyHash', 'must be a 32-byte SHA256');
     }
     if (header.length != PoolHeader.byteSize) {
       throw ArgumentError.value(
@@ -130,12 +147,13 @@ class PP1SpScriptGen {
 
     b.addData(Uint8List.fromList(ownerPKH));
     b.addData(Uint8List.fromList(tokenId));
+    b.addData(Uint8List.fromList(verifierBodyHash));
     b.addData(Uint8List.fromList(genesisHeader));
     b.addData(Uint8List.fromList(header));
 
-    // Alt bottom to top: [header, genesisHeader, tokenId, ownerPKH]
-    // Pop order therefore: ownerPKH, tokenId, genesisHeader, header
-    for (var i = 0; i < 4; i++) {
+    // Alt bottom to top: [header, genesisHeader, verifierBodyHash, tokenId, ownerPKH]
+    // Pop order therefore: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
+    for (var i = 0; i < 5; i++) {
       b.opCode(OpCodes.OP_TOALTSTACK);
     }
 
@@ -167,7 +185,7 @@ class PP1SpScriptGen {
   // =========================================================================
 
   /// Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding]
-  /// Altstack pop order: ownerPKH, tokenId, genesisHeader, header
+  /// Altstack pop order: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
   static void _emitCreate(ScriptBuilder b) {
     // Stack indices from the top:
     //   witnessPadding=0, fundingOutpoint=1, preImage=2, tokenRawTx=3
@@ -247,6 +265,7 @@ class PP1SpScriptGen {
     // --- Phase 2: the pool must open on its declared genesis header ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // ownerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId, checked above
+    b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // verifierBodyHash
     b.opCode(OpCodes.OP_FROMALTSTACK);                            // genesisHeader
     b.opCode(OpCodes.OP_FROMALTSTACK);                            // header
     b.opCode(OpCodes.OP_EQUALVERIFY);
@@ -298,53 +317,123 @@ class PP1SpScriptGen {
   // =========================================================================
 
   /// One round of the pool: the ordinary TSL1 inductive transfer, with the
-  /// pool header substituted instead of the state machine's fields.
+  /// pool header substituted instead of the state machine's fields, plus the
+  /// four checks that make the next round's verification unavoidable.
   ///
   /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
-  ///         newOwnerPKH, newHeader, scriptLHS, parentRawTx, padding]
-  /// Altstack pop order: ownerPKH, tokenId, genesisHeader, header
+  ///         newOwnerPKH, newHeader, nextSlot, yInput, vBody, bundles,
+  ///         scriptLHS, parentRawTx, padding]
+  /// Altstack pop order: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
   ///
-  /// The owner signature says the coordinator wants this round. It is not what
-  /// makes the round *correct*: that comes from the verifier slot, which PP3
-  /// pins and PP1 checks. Those checks are not wired in here yet.
+  /// The owner signature says the coordinator wants this round. What makes the
+  /// round *correct* is the verifier, and PP1 cannot run it: PP1 lives in the
+  /// witness, which is built after the round is mined and its withdrawals are
+  /// paid. So the job here is to make the verification the *next* round cannot
+  /// skip. PP3_{N+1} pins the outpoint round N+2 must spend, and this branch
+  /// certifies that the script at that outpoint is the pool's verifier holding
+  /// header_{N+1}. The two together mean round N+2 can only be mined beside a
+  /// verifier that already knows the true state it must check against.
+  ///
+  /// The certification is deliberately forward-looking. PP3's pin is enforced
+  /// at mining time but says nothing about what sits at the pinned outpoint;
+  /// only a witness can inspect that, and by then the round it belongs to has
+  /// already been paid. Doing it one round early is what closes the gap, and it
+  /// is safe because round N+2 spends witness N+1's output, so witness N+1
+  /// always exists first.
   static void _emitRound(ScriptBuilder b) {
-    // Stack indices from the top (11):
-    //   pad=0, rawTx=1, lhs=2, newHeader=3, newOwnerPKH=4, ownerSig=5,
-    //   chgAmt=6, chgPkh=7, ownerPK=8, pp2=9, preImg=10
+    // Stack indices from the top (15):
+    //   pad=0, rawTx=1, lhs=2, bundles=3, vBody=4, yInput=5, nextSlot=6,
+    //   newHeader=7, newOwnerPKH=8, ownerSig=9, chgAmt=10, chgPkh=11,
+    //   ownerPK=12, pp2=13, preImg=14
 
     // --- Owner authorisation ---
     b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH, everything shifts by one
-    // ownerPKH=0, pad=1, rawTx=2, lhs=3, newHeader=4, newOwnerPKH=5,
-    // ownerSig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10, preImg=11
-    b.opCode(OpCodes.OP_9); b.opCode(OpCodes.OP_PICK);   // ownerPK
+    OpcodeHelpers.pushInt(b, 13);
+    b.opCode(OpCodes.OP_PICK);                            // ownerPK
     b.opCode(OpCodes.OP_HASH160);
     b.opCode(OpCodes.OP_OVER);                            // ownerPKH
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    b.opCode(OpCodes.OP_6); b.opCode(OpCodes.OP_PICK);   // ownerSig
     OpcodeHelpers.pushInt(b, 10);
+    b.opCode(OpCodes.OP_PICK);                            // ownerSig
+    OpcodeHelpers.pushInt(b, 14);
     b.opCode(OpCodes.OP_PICK);                            // ownerPK, +1 for the sig push
     b.opCode(OpCodes.OP_CHECKSIG); b.opCode(OpCodes.OP_VERIFY);
     b.opCode(OpCodes.OP_DROP);                            // drop ownerPKH
 
-    // --- Drain the rest of the header ---
+    // --- Drain the immutable fields, keeping verifierBodyHash ---
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // tokenId
+    b.opCode(OpCodes.OP_FROMALTSTACK);                            // verifierBodyHash
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // genesisHeader
-    // The parent header is what the next round's verifier binding will need; it
-    // is dropped for now, so nothing yet constrains newHeader beyond the
-    // owner's signature.
+    // The parent header is not read here. Nothing in PP1 relates it to
+    // newHeader: that is the proof's job, and the proof runs in the verifier
+    // slot this branch is busy certifying.
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // header
     // Alt: []
+    // Stack (16): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, yInput=6,
+    //   nextSlot=7, newHeader=8, newOwnerPKH=9, ownerSig=10, chgAmt=11,
+    //   chgPkh=12, ownerPK=13, pp2=14, preImg=15
 
-    // --- Park newHeader where the rebuild expects to find it ---
-    OpcodeHelpers.pushInt(b, 3);
+    // --- The round's ciphertext bundles hash to header.outHash ---
+    //
+    // The bundles are what lets a recipient find and open their note. They are
+    // pushed here rather than written to an output because of where TSL1 pays
+    // for bytes: an output's bytes are paid three times, a witness's once, and
+    // nothing in script needs to read inside them. Being in a mined witness is
+    // what publishes them; this check is what binds them to the round.
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_PICK);           // bundles
+    b.opCode(OpCodes.OP_SHA256);
+    b.opCode(OpCodes.OP_9);
+    b.opCode(OpCodes.OP_PICK);           // newHeader
+    OpcodeHelpers.pushInt(b, PoolHeader.outHashOffset);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_ROLL); b.opCode(OpCodes.OP_DROP);   // bundles consumed
+    // Stack (15): vbh=0, pad=1, rawTx=2, lhs=3, vBody=4, yInput=5, nextSlot=6,
+    //   newHeader=7, newOwnerPKH=8, ownerSig=9, chgAmt=10, chgPkh=11,
+    //   ownerPK=12, pp2=13, preImg=14
+
+    // --- The slot PP3 will pin holds this pool's verifier, for this header ---
+    // emitVerifySlotIsVerifier wants, bottom to top:
+    //   yInput, vBody, bodyHash, header, nextSlot
+    OpcodeHelpers.pushInt(b, 5);
+    b.opCode(OpCodes.OP_ROLL);           // yInput
+    OpcodeHelpers.pushInt(b, 5);
+    b.opCode(OpCodes.OP_ROLL);           // vBody
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_ROLL);           // verifierBodyHash
+    OpcodeHelpers.pushInt(b, 7);
+    b.opCode(OpCodes.OP_PICK);           // newHeader, kept for the rebuild
+    OpcodeHelpers.pushInt(b, 7);
+    b.opCode(OpCodes.OP_PICK);           // nextSlot, kept for PP3
+    emitVerifySlotIsVerifier(b);
+    // Stack (12): pad=0, rawTx=1, lhs=2, nextSlot=3, newHeader=4,
+    //   newOwnerPKH=5, ownerSig=6, chgAmt=7, chgPkh=8, ownerPK=9, pp2=10,
+    //   preImg=11
+
+    // --- Park what the inductive proof needs, in the order it wants them ---
+    // Pop order: newHeader (the PP1 rebuild), nextSlot (the PP3 rebuild),
+    // balance (the PP3 output's value).
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_PICK);           // newHeader
+    OpcodeHelpers.pushInt(b, PoolHeader.balanceOffset + 8);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    OpcodeHelpers.pushInt(b, PoolHeader.balanceOffset);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_TOALTSTACK);     // balance, 8 bytes LE
+    b.opCode(OpCodes.OP_3);
     b.opCode(OpCodes.OP_ROLL);
-    b.opCode(OpCodes.OP_TOALTSTACK);
+    b.opCode(OpCodes.OP_TOALTSTACK);     // nextSlot
+    b.opCode(OpCodes.OP_3);
+    b.opCode(OpCodes.OP_ROLL);
+    b.opCode(OpCodes.OP_TOALTSTACK);     // newHeader
     // Stack (10): pad=0, rawTx=1, lhs=2, newOwnerPKH=3, ownerSig=4,
     //   chgAmt=5, chgPkh=6, ownerPK=7, pp2=8, preImg=9
-    // Alt: [newHeader]
+    // Alt: [balance, nextSlot, newHeader]
 
     // --- newOwnerPKH on top, which is the inductive proof's precondition ---
-    OpcodeHelpers.pushInt(b, 3);
+    b.opCode(OpCodes.OP_3);
     b.opCode(OpCodes.OP_ROLL);
 
     _emitInductiveProofRound(b);
@@ -360,7 +449,7 @@ class PP1SpScriptGen {
   ///                   lhs, rawTx, pad, newOwnerPKH]
   ///      idx: newOwnerPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
   ///           chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
-  ///      Alt: [newHeader]
+  ///      Alt: [balance, nextSlot, newHeader]
   static void _emitInductiveProofRound(ScriptBuilder b) {
     // Phase 2: Validate padding and parentRawTx
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);  // padding
@@ -433,6 +522,13 @@ class PP1SpScriptGen {
     //   newOwnerPKH=6, pad=7, rawTx=8, lhs=9, mSig=10, chgAmt=11,
     //   chgPkh=12, mPK=13, pp2Out=14
 
+    // Phase 7b: the round spent the verifier slot its parent named
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_PICK);           // pp3S
+    OpcodeHelpers.pushInt(b, 10);
+    b.opCode(OpCodes.OP_PICK);           // scriptLHS, +1 for the push above
+    emitVerifySpentPinnedSlot(b);
+
     // Phase 8: rebuild PP1 with the new owner and the new header
     //
     // The SM hashed an event digest into a rolling commitment here. A pool
@@ -449,11 +545,20 @@ class PP1SpScriptGen {
     PP1FtScriptGen.emitBuildOutput(b);
 
     // Phase 10: Build PP3 output
+    //
+    // Two things differ from a plain TSL1 transfer. PP3 carries the slot the
+    // next round must spend, so the rebuild substitutes it as well as the owner
+    // key; and PP3 holds the pool balance rather than a dust satoshi, so its
+    // value comes from the header. Both are enforced by the same thing as
+    // everything else here: the rebuilt output goes into the transaction this
+    // script hashes against its own outpoint's txid, so a round whose PP3 names
+    // a different slot or holds a different amount cannot be spent afterwards.
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);  // pp3S
     b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);  // newOwnerPKH
-    PP1FtScriptGen.emitRebuildPP3(b);
-    b.opCode(OpCodes.OP_1);
-    PP1FtScriptGen.emitBuildOutput(b);
+    b.opCode(OpCodes.OP_FROMALTSTACK);                  // nextSlot
+    emitRebuildPP3WithNextSlot(b);
+    b.opCode(OpCodes.OP_FROMALTSTACK);                  // balance, 8 bytes LE
+    _emitBuildOutputWithRawValue(b);
 
     // Phase 11: Build metadata output (0 sats)
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);  // metaS
@@ -549,14 +654,15 @@ class PP1SpScriptGen {
   /// Rebuilds this script with a new owner and a new header.
   ///
   /// ```
-  /// rebuilt = parent[0:1] + newPKH + parent[21:294] + newHeader + parent[530:]
+  /// rebuilt = parent[0:1] + newPKH + parent[21:327] + newHeader + parent[563:]
   /// ```
   ///
   /// Two mutable fields separated by one immutable run, so the surgery is two
   /// substitutions in fixed windows. The state machine's version had to thread
   /// four windows through the same altstack, which is most of what the pool
-  /// header buys by being one push: `parent[21:294]` is the tokenId push, the
-  /// immutable genesis header, and the live header's OP_PUSHDATA1 prefix.
+  /// header buys by being one push: `parent[21:327]` is the tokenId push, the
+  /// verifier body hash, the immutable genesis header, and the live header's
+  /// OP_PUSHDATA1 prefix.
   ///
   /// Pre:  [..., pp1S, newPKH, newHeader]   (newHeader on top)
   /// Post: [..., rebuiltScript]
@@ -569,10 +675,10 @@ class PP1SpScriptGen {
     OpcodeHelpers.pushInt(b, pkhDataEnd - pkhDataStart);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);   // drop the old ownerPKH
     OpcodeHelpers.pushInt(b, immutableMidLength);
-    b.opCode(OpCodes.OP_SPLIT);            // seg1 = pp1S[21:294], rest = pp1S[294:]
+    b.opCode(OpCodes.OP_SPLIT);            // seg1 = pp1S[21:327], rest = pp1S[327:]
     OpcodeHelpers.pushInt(b, PoolHeader.byteSize);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);   // drop the old header
-    // Stack: [..., newPKH, newHeader, seg0, seg1, seg2]  (seg2 = pp1S[530:])
+    // Stack: [..., newPKH, newHeader, seg0, seg1, seg2]  (seg2 = pp1S[563:])
 
     b.opCode(OpCodes.OP_TOALTSTACK);       // seg2
     b.opCode(OpCodes.OP_TOALTSTACK);       // seg1
@@ -592,13 +698,14 @@ class PP1SpScriptGen {
   // Validate PP2
   // =========================================================================
 
-  /// Verifies that the slot outpoint PP3 pins actually holds the verifier.
+  /// Verifies that the slot outpoint PP3 pins holds the verifier for a given
+  /// header.
   ///
   /// PP3 only proves that *something* at that outpoint was spent by the round.
   /// Anything would do, including an OP_TRUE, which would let a coordinator
   /// satisfy the pin while skipping verification entirely. This closes that by
   /// rebuilding the slot transaction from its parts and matching its txid
-  /// against the pinned one, then hashing the script it carries.
+  /// against the pinned one, then checking the script it carries.
   ///
   /// The slot transaction Y is required to be canonical:
   ///
@@ -609,13 +716,16 @@ class PP1SpScriptGen {
   /// park the real verifier somewhere inert and put an OP_TRUE at output 0. The
   /// coordinator builds Y, so meeting this shape costs nothing.
   ///
-  /// Pre:  [yInput, vScript, nextSlot]   (nextSlot on top)
-  /// Post: []   (all three consumed; the script fails if anything mismatches)
-  static void emitVerifySlotIsVerifier(ScriptBuilder b, {required List<int> bodyHash}) {
-    if (bodyHash.length != 32) {
-      throw ArgumentError.value(bodyHash.length, 'bodyHash', 'must be a 32-byte SHA256');
-    }
-
+  /// V itself is required to be `OP_PUSHDATA1 0xec ‖ header ‖ body`. That is
+  /// what makes the check bind *state* and not just code: the body hash says
+  /// the slot runs the pool's verifier, and the header push says that verifier
+  /// was initialised with this header. Checking only the body would leave a
+  /// coordinator free to point the next round at a verifier holding some other
+  /// round's state, which would verify a proof against the wrong publics.
+  ///
+  /// Pre:  [yInput, vBody, bodyHash, header, nextSlot]   (nextSlot on top)
+  /// Post: []   (all five consumed; the script fails if anything mismatches)
+  static void emitVerifySlotIsVerifier(ScriptBuilder b) {
     // The pin must name output 0, which is where the canonical shape puts V.
     b.opCode(OpCodes.OP_DUP);
     OpcodeHelpers.pushInt(b, 32);
@@ -627,12 +737,25 @@ class PP1SpScriptGen {
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_TOALTSTACK);
+    // [yInput, vBody, bodyHash, header]
 
-    // The script at that output is the verifier, not something that merely runs.
+    // The script at that output runs the pool's verifier, not something that
+    // merely returns true.
+    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // vBody to the top
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_SHA256);
-    b.addData(Uint8List.fromList(bodyHash));
+    b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_ROLL);   // bodyHash to the top
     b.opCode(OpCodes.OP_EQUALVERIFY);
+    // [yInput, header, vBody]
+
+    // V = OP_PUSHDATA1 0xec ‖ header ‖ body
+    b.opCode(OpCodes.OP_SWAP);
+    b.addData(Uint8List.fromList([0x4c, PoolHeader.byteSize]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    // [yInput, V]
 
     // output = value(8 LE) ‖ varint(len) ‖ V, at the protocol dust value.
     b.opCode(OpCodes.OP_1);
@@ -654,6 +777,50 @@ class PP1SpScriptGen {
 
     b.opCode(OpCodes.OP_HASH256);
     b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+  }
+
+  /// Builds a transaction output from a script and an 8-byte little-endian
+  /// value, where [PP1FtScriptGen.emitBuildOutput] takes a script number.
+  ///
+  /// The pool needs this because PP3's value is the pool balance, which lives
+  /// in the header as raw LE64. Round-tripping it through OP_BIN2NUM and
+  /// OP_NUM2BIN would give the same bytes back, but only because the balance
+  /// cannot set the sign bit; splicing the bytes in avoids relying on that.
+  ///
+  /// Pre:  [script, value8]   Post: [outputBytes]
+  static void _emitBuildOutputWithRawValue(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_SWAP);           // [value8, script]
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
+    PP1FtScriptGen.emitWriteVarint(b);   // [value8, script, varint]
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);            // [value8, varint+script]
+    b.opCode(OpCodes.OP_CAT);
+  }
+
+  /// Checks that a round spent, at input 3, the verifier slot its parent's PP3
+  /// pinned.
+  ///
+  /// PP3 already enforces this when the round is mined, by folding `nextSlot`
+  /// into the `hashPrevouts` it demands. Checking it again here is a second,
+  /// independent binding in a different script: the covenant on the money and
+  /// the covenant on the token both have to agree that the round brought the
+  /// verifier it was told to, rather than one of its own.
+  ///
+  /// The outpoint is read out of the round's own left-hand side, which the
+  /// inductive proof has already tied to the round's txid, so it is not the
+  /// spender's word for what input 3 was.
+  ///
+  /// Pre:  [parentPP3Script, scriptLHS]   (scriptLHS on top)
+  /// Post: []
+  static void emitVerifySpentPinnedSlot(ScriptBuilder b) {
+    PP1FtScriptGen.emitReadOutpoint(b, 3);
+    b.opCode(OpCodes.OP_SWAP);
+    OpcodeHelpers.pushInt(b, pp3NextSlotEnd);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    OpcodeHelpers.pushInt(b, pp3NextSlotStart);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
     b.opCode(OpCodes.OP_EQUALVERIFY);
   }
 

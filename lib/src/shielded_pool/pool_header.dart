@@ -79,7 +79,13 @@ class PoolHeader {
   }
 
   /// The header a pool is issued with: an empty tree whose roots the caller
-  /// supplies, no leaves, no money, no bundles.
+  /// supplies, no leaves, no bundles, and nothing in it but the dust its PP3
+  /// output needs in order to exist.
+  ///
+  /// The balance is one satoshi rather than zero because `balance` is not a
+  /// bookkeeping figure, it is the value PP3 actually holds, and PP1 checks the
+  /// two are equal on every round. Opening at zero would either make the
+  /// invariant false from the start or leave an unspendable output.
   ///
   /// The empty-tree roots are Poseidon2 values that depend on the pool's tree
   /// depth, so they come from the pool's configuration rather than from here.
@@ -94,7 +100,7 @@ class PoolHeader {
       nfRoot: emptyNfRoot,
       ring: List.generate(ringEntries, (_) => List<int>.from(emptyCmRoot)),
       size: 0,
-      balance: BigInt.zero,
+      balance: BigInt.one,
       outHash: List.filled(32, 0),
     );
   }
