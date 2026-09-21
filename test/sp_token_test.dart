@@ -435,7 +435,7 @@ void main() {
       var base = nextHeader(g);
       h1 = PoolHeader(
           cmRoot: base.cmRoot, nfRoot: base.nfRoot, ring: base.ring,
-          size: base.size, balance: base.balance,
+          size: base.size, balance: BigInt.from(500000),
           outHash: crypto.sha256.convert(bundles).bytes);
 
       y0 = service.buildSlotTxn(
@@ -623,6 +623,50 @@ void main() {
               roundTx.outputs[1].script, witness, 1, verifyFlags,
               Coin.valueOf(BigInt.one)),
           throwsA(isA<ScriptException>()));
+    });
+
+    test('two consecutive rounds chain', () {
+      // One round from genesis is not enough to exercise the chain. PP3 holds
+      // the pool balance, so the sighash preimage for spending it carries that
+      // value, and the genesis balance of 1 hid a hardcoded satoshi in the tool
+      // until a second round was built against a funded PP3.
+      var round1 = round(h1, y1.outpoint);
+      var witness1 = honestWitness(round1);
+      spendPP1(round1, witness1);
+
+      var bundles2 = <int>[7, 7, 7, 7];
+      var base2 = h1.advance(
+          cmRoot: List<int>.generate(32, (i) => 0xE0 + i % 16),
+          nfRoot: List<int>.generate(32, (i) => 0xF0 + i % 16),
+          size: 9, balance: BigInt.from(900000), outHash: List<int>.filled(32, 0));
+      var h2 = PoolHeader(
+          cmRoot: base2.cmRoot, nfRoot: base2.nfRoot, ring: base2.ring,
+          size: base2.size, balance: base2.balance,
+          outHash: crypto.sha256.convert(bundles2).bytes);
+      var y2 = service.buildSlotTxn(
+          header: h2, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
+
+      var round2 = service.createRoundTxn(witness1, round1, y1.tx, operatorPub,
+          fundA, signer, operatorPub, fundB.hash, h2, y2.outpoint);
+
+      // Round 1's PP3 held 500000 satoshis, not dust, and round 2 has to spend it.
+      expect(round1.outputs[3].satoshis, h1.balance);
+      Interpreter().correctlySpends(round2.inputs[2].script!,
+          round1.outputs[3].script, round2, 2, verifyFlags,
+          Coin.valueOf(h1.balance));
+
+      var witness2 = service.createWitnessTxn(
+          signer, fundB, round2, hex.decode(round1.serialize()),
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.ROUND,
+          newOwnerPKH: hex.decode(operatorPubkeyHash), newHeader: h2.encode(),
+          nextSlot: y2.outpoint, yInput: y2.input, verifierBody: verifierBody,
+          bundles: bundles2);
+      Interpreter().correctlySpends(witness2.inputs[1].script!,
+          round2.outputs[1].script, witness2, 1, verifyFlags,
+          Coin.valueOf(BigInt.one));
+
+      expect(PP1SpLockBuilder.fromScript(round2.outputs[1].script).header!.encode(),
+          h2.encode());
     });
 
     test('the tool refuses a round that brings its own verifier slot', () {

@@ -322,9 +322,15 @@ class ShieldedPoolTool {
         .withFee(defaultFee)
         .build(false);
 
+    // The preimage has to carry the value of the output being spent, and PP3
+    // holds the pool balance, not a dust satoshi. Hardcoding 1 here worked only
+    // while the parent was the genesis round, whose balance is 1; from round 2
+    // onwards it produced a preimage the interpreter would not agree with, and
+    // PP3 refused to be spent.
     var pp3Subscript = prevTokenTx.outputs[3].script;
+    var pp3Value = prevTokenTx.outputs[3].satoshis;
     var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, BigInt.one);
+        childPreImageTxn, sigHashAll, 2, pp3Subscript, pp3Value);
 
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
