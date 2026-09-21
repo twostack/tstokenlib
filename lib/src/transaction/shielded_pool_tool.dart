@@ -27,6 +27,7 @@ import '../builder/pp1_sp_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
+import '../script_gen/pool_deposit_gen.dart';
 import '../script_gen/pool_verifier_gen.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/stark_verifier_gen.dart';
@@ -312,6 +313,13 @@ class ShieldedPoolTool {
   /// how many withdrawals the round will carry. The same lists have to be
   /// handed to [createWitnessTxn].
   ///
+  /// [deposits] are the deposit covenants this round takes in, spent at
+  /// inputs 5 and up in the order of [receipts]: covenant r is spent at
+  /// input 5 + r and requires receipt r at output 5 + r, which is where the
+  /// receipts already go. Each must target this round (name PP3_N) and match
+  /// its receipt's commitment and value; checked here, since the covenant
+  /// refuses the round otherwise.
+  ///
   /// [roundProof] is what V_N, the verifier on Y_N's output 0, needs to let
   /// this round spend it: the root proof's unlock and the transfers' bundle
   /// hashes. V also requires a SIGHASH_ALL signature from the key its slot
@@ -339,6 +347,7 @@ class ShieldedPoolTool {
        bool uncheckedNextSlot = false,
        UnlockingScriptBuilder? slotUnlocker,
        PoolRoundProof? roundProof,
+       List<(Transaction, int)>? deposits,
        TransactionSigner? slotSigner,
        TransactionSigner? anchorSigner,
        SVPublicKey? anchorPubKey,
@@ -434,6 +443,25 @@ class ShieldedPoolTool {
         (DefaultLockBuilder.fromScript(w.lockingScript), w.satoshis),
     ];
 
+    var depositList = deposits ?? const <(Transaction, int)>[];
+    if (depositList.isNotEmpty && !spendAnchor) {
+      throw ArgumentError('Deposits sit at inputs 5 and up, after the anchor.');
+    }
+    var pp3Outpoint = getOutpoint(prevTokenTx.hash, outputIndex: 3);
+    for (var k = 0; k < depositList.length; k++) {
+      var (dTx, dVout) = depositList[k];
+      var lock = dTx.outputs[dVout].script.buffer;
+      var cm = lock.sublist(1, 33), target = lock.sublist(34, 70);
+      if (lock.length < 80 || !_sameRange(target, pp3Outpoint, 0, 36)) {
+        throw ArgumentError('Deposit $k does not target this round: it names another PP3.');
+      }
+      var rc = (receipts ?? const <PoolReceipt>[]);
+      if (k >= rc.length || !_sameRange(rc[k].commitment, cm, 0, 32) ||
+          rc[k].satoshis != dTx.outputs[dVout].satoshis) {
+        throw ArgumentError('Deposit $k needs receipt $k to name its commitment and its whole value.');
+      }
+    }
+
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
@@ -460,6 +488,9 @@ class ShieldedPoolTool {
     if (spendAnchor) {
       childPreImageBuilder.spendFromTxnWithSigner(anchorTxSigner, nextSlotTx, 1,
           TransactionInput.MAX_SEQ_NUMBER, anchorUnlocker);
+    }
+    for (var (dTx, dVout) in depositList) {
+      childPreImageBuilder.spendFromTxn(dTx, dVout, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker);
     }
     childPreImageBuilder
         .spendToLockBuilder(pp1Locker, BigInt.one)
@@ -506,6 +537,19 @@ class ShieldedPoolTool {
               metadataScript: metadataScript.buffer))));
     }
 
+    // Each deposit covenant signs SIGHASH_SINGLE over the receipt at its own
+    // index, and is handed every prevout of the round to find PP3_N at input 3.
+    var roundPrevouts = <int>[
+      for (var i in childPreImageTxn.inputs) ...getOutpoint(hex.decode(i.prevTxnId).reversed.toList(), outputIndex: i.prevTxnOutputIndex)
+    ];
+    var depositUnlockers = <UnlockingScriptBuilder>[
+      for (var k = 0; k < depositList.length; k++)
+        DefaultUnlockBuilder.fromScript(PoolDepositGen.unlockRound(
+            roundPrevouts,
+            Sighash().createSighashPreImage(childPreImageTxn, PoolDepositGen.sighashRound, 5 + k,
+                PoolDepositGen.scriptCode, depositList[k].$1.outputs[depositList[k].$2].satoshis)!)),
+    ];
+
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
         hex.decode(prevWitnessTx.serialize()), 2);
@@ -524,7 +568,8 @@ class ShieldedPoolTool {
         witnessPartialPreImage,
         roundFundingOutpoint,
         nextSlot: nextSlot,
-        nextValue: nextValue);
+        nextValue: nextValue,
+        extraPrevouts: roundPrevouts.length > 36 * 5 ? roundPrevouts.sublist(36 * 5) : const <int>[]);
 
     var childBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
@@ -534,6 +579,9 @@ class ShieldedPoolTool {
     if (spendAnchor) {
       childBuilder.spendFromTxnWithSigner(anchorTxSigner, nextSlotTx, 1,
           TransactionInput.MAX_SEQ_NUMBER, anchorUnlocker);
+    }
+    for (var k = 0; k < depositList.length; k++) {
+      childBuilder.spendFromTxn(depositList[k].$1, depositList[k].$2, TransactionInput.MAX_SEQ_NUMBER, depositUnlockers[k]);
     }
     childBuilder
         .spendToLockBuilder(pp1Locker, BigInt.one)

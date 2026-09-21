@@ -10,6 +10,7 @@ import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
 import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
+import 'package:tstokenlib/src/script_gen/pool_deposit_gen.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
@@ -60,10 +61,16 @@ void main() {
   late List<int> bundles, bundles2;
   late PoolReceipt receipt;
   late PoolWithdrawal withdrawal;
+  late Transaction depositTx;
 
-  Transaction round({PoolRoundProof? withProof, TransactionSigner? slotSigner, List<PoolReceipt>? receipts}) =>
+  Transaction round(
+          {PoolRoundProof? withProof, TransactionSigner? slotSigner, List<PoolReceipt>? receipts, List<(Transaction, int)>? deposits}) =>
       svc.createRoundTxn(w0, r0, y0.tx, opPub, fundingA, signer, opPub, fundingB.hash, h1, y1.outpoint,
-          nextSlotTx: y1.tx, receipts: receipts ?? [receipt], roundProof: withProof ?? proof, slotSigner: slotSigner);
+          nextSlotTx: y1.tx,
+          receipts: receipts ?? [receipt],
+          deposits: deposits ?? [(depositTx, 0)],
+          roundProof: withProof ?? proof,
+          slotSigner: slotSigner);
 
   setUpAll(() async {
     final sw = Stopwatch()..start();
@@ -180,6 +187,18 @@ void main() {
     r0 = svc.createTokenIssuanceTxn(fundingA, signer, opPub, opAddr, bodyHash, g, y0.outpoint, fundingB.hash, slotTx: y0.tx);
     w0 = svc.createWitnessTxn(signer, fundingB, r0, hex.decode(fundingA.serialize()), opPub, opPKH, ShieldedPoolAction.CREATE,
         slotParts: y0.parts, verifierBody: body);
+    // the depositor's covenant, targeting round 1 by naming PP3_0
+    depositTx = Transaction()
+      ..addInputs([slotFunding(0x30)])
+      ..addOutputs([
+        TransactionOutput(
+            BigInt.from(500),
+            PoolDepositGen.lock(
+                commitment: receipt.commitment,
+                pp3Outpoint: svc.getOutpoint(r0.hash, outputIndex: 3),
+                refundPKH: hex.decode(strangerKey.publicKey.toAddress(NetworkType.TEST).pubkeyHash160),
+                refundAfter: 1000))
+      ]);
   });
 
   test('V accepts round 1 as createRoundTxn builds it, and the rest of the chain accepts it too', () {
@@ -192,6 +211,9 @@ void main() {
     print('  V ran in ${sw.elapsedMilliseconds} ms');
     spends(r1, 3, r0.outputs[3]);
     spends(r1, 4, y1.tx.outputs[1]);
+    spends(r1, 5, depositTx.outputs[0]);
+    expect(r1.inputs.length, 6, reason: 'the deposit covenant at input 5');
+    expect(r1.outputs[5].script.buffer, receipt.lockingScript.buffer, reason: 'its receipt at output 5');
     expect(r1.outputs[3].satoshis, BigInt.from(501));
     final w1 = svc.createWitnessTxn(signer, fundingB, r1, hex.decode(r0.serialize()), opPub, opPKH, ShieldedPoolAction.ROUND,
         newOwnerPKH: hex.decode(opPKH),
@@ -268,9 +290,25 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 20)));
 
   test('V refuses a round that leaves the deposit\'s receipt off', () {
-    final r1 = round(receipts: []);
+    final r1 = round(receipts: [], deposits: []);
     expect(() => spends(r1, 2, y0.tx.outputs[0]), throwsA(isA<ScriptException>()));
   }, timeout: const Timeout(Duration(minutes: 20)));
+
+  test('the tool refuses a deposit that does not match its receipt, or targets another round', () {
+    expect(() => round(receipts: [PoolReceipt(receipt.commitment, BigInt.from(499))]), throwsArgumentError);
+    final elsewhere = Transaction()
+      ..addInputs([slotFunding(0x31)])
+      ..addOutputs([
+        TransactionOutput(
+            BigInt.from(500),
+            PoolDepositGen.lock(
+                commitment: receipt.commitment,
+                pp3Outpoint: svc.getOutpoint(r0.hash, outputIndex: 2),
+                refundPKH: List.filled(20, 1),
+                refundAfter: 1000))
+      ]);
+    expect(() => round(deposits: [(elsewhere, 0)]), throwsArgumentError);
+  });
 
   test('the tool refuses a slot signer that does not sign SIGHASH_ALL', () {
     final single = DefaultTransactionSigner(SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_SINGLE.value, opKey);
