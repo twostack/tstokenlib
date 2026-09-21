@@ -550,58 +550,62 @@
   </section>
 
   <section>
-    <p class="lab">Modes</p>
-    <h2>Who produces the proof decides what Y looks like</h2>
+    <p class="lab">Proving</p>
+    <h2>One mode: users prove their spends, the coordinator folds them</h2>
     <hr class="rule">
-    <p>The pool has two operating modes. They differ in one question: does the coordinator run a
-      prover? Everything else in the map above is unchanged, including PP1, PP2, PP3 and the
-      round-witness alternation. What changes is how many verifier outputs a slot transaction
-      carries, and therefore what a round costs per transfer.</p>
+    <p>Every deployment runs a coordinator with a prover, and that is the only shape the pool has.
+      Proof work happens in two places, and the split is not a choice: it follows from who holds
+      which key. Everything in the map above assumes this mode, which is why Y_N always has one
+      output.</p>
     <div class="modes">
 
       <article class="mode">
-        <h3>Direct-slot</h3>
-        <p class="sub">The coordinator proves nothing</p>
-        <p>Each user proves their own spend. Y_N carries <strong>K spend-verifier outputs plus one
-          subtree-append slot</strong>, and the round spends all of them. The coordinator only
-          assembles transactions.</p>
+        <h3>At the edge</h3>
+        <p class="sub">The wallet proves its own spend</p>
+        <p>A spend needs a nullifier, <code>nf = H(nk, rho)</code>, and <code>nk = H(sk, tagNk)</code>
+          comes from the spending key. Only the key holder can produce one, so the coordinator
+          <strong>cannot prove on anyone's behalf</strong>. The wallet builds the proof and hands it
+          over.</p>
         <dl>
-          <dt>Y_N outputs</dt><dd>K + 1</dd>
-          <dt>Cost</dt><dd>dominated by Y: <span class="num">1.7 MB</span> at K = 2</dd>
-          <dt>Needs</dt><dd>no coordinator prover at all</dd>
-          <dt>Good for</dt><dd>an MVP, and any deployment where the coordinator's prover is not
-            yet built or not yet trusted to exist</dd>
+          <dt>Produces</dt><dd>one spend proof per transfer</dd>
+          <dt>Anchors to</dt><dd>any of the header's <span class="num">4</span> recent
+            <code>cmRoot</code>s, so a proof stays valid for about four rounds</dd>
+          <dt>Protocol</dt><dd>one read, one submission, no handshake: the ring is what lets it
+            miss a round close without being rejected</dd>
         </dl>
       </article>
 
       <article class="mode">
-        <h3>Aggregated</h3>
-        <p class="sub">The coordinator folds K proofs into one</p>
-        <p>A recursive prover reduces every spend in the round to a single proof. Y_N carries
-          <strong>one output</strong>, the aggregated root verifier. This is the mode the design
-          document describes and the one the map above draws.</p>
+        <h3>At the coordinator</h3>
+        <p class="sub">A recursive prover folds the round into one proof</p>
+        <p>The coordinator aggregates every spend in the round into a single root proof and the new
+          header. Y_N carries <strong>one output</strong>, V_N, which verifies that one proof when the
+          next round spends it at input 2.</p>
         <dl>
-          <dt>Y_N outputs</dt><dd>1</dd>
-          <dt>Cost</dt><dd><span class="num">~356 s</span> for a 256-transfer round on one machine</dd>
-          <dt>Needs</dt><dd>the recursion stack, a GPU-capable prover, and machine time</dd>
-          <dt>Good for</dt><dd>throughput; per-transfer cost is the only way the pool scales</dd>
+          <dt>Y_N outputs</dt><dd><span class="num">1</span>, which is what forces V to be output 0</dd>
+          <dt>Measured</dt><dd>about <span class="num">220 s</span> for a 256-transfer round on one
+            machine</dd>
+          <dt>Needs</dt><dd>the recursion stack and machine time, on the coordinator's own machines;
+            wallets never fold</dd>
         </dl>
       </article>
 
     </div>
-    <p style="margin-top:20px">Neither mode makes the coordinator trusted. In both, a round is only
-      mineable if the verifier accepted it, and the coordinator's failure mode is that the pool
-      stops, not that funds move. They are kept as separate solutions selected by coordinator
-      configuration rather than a migration path, because the aggregated prover is a large piece of
-      machinery and direct-slot has to keep working without it.</p>
 
-    <p class="note alert"><strong>Open conflict.</strong> The certificate PP1 writes requires Y to
-      have exactly one input and one output, which is what forces V to be output 0. Direct-slot's
-      K + 1 outputs cannot satisfy that check as written, so the two are currently incompatible.
-      Options, none chosen: give each verifier its own single-output Y, so a round spends K + 1 slot
-      transactions; relax the check to "output 0 is V" with a proven output count; or give direct
-      mode its own PP1 variant. The first keeps the covenant untouched and costs transaction
-      overhead; the second weakens a property that has a test defending it.</p>
+    <p style="margin-top:20px">The coordinator is not trusted in either role. A round can only be
+      mined if V accepted it, and the design's failure mode for a dishonest coordinator is that the
+      pool stops, not that funds move. That holds once V is real; see the status below for what the
+      stub still lets through.</p>
+
+    <p class="note"><strong>Why there is no second mode.</strong> Until 2026-09-21 the pool also had
+      a direct-slot mode, in which the coordinator proved nothing and Y_N carried K spend-verifier
+      outputs plus an append slot. It was dropped for four reasons, recorded in the design's 11.11:
+      its K + 1 outputs could not satisfy the one-output check that forces V to be output 0, so
+      keeping it meant weakening that property or maintaining a second PP1; the prover it existed to
+      do without is built and measured; its rounds were dominated by Y, about 1.7 MB at K = 2; and
+      K slots would have made PP1 know K when walking the round's inputs. If a coordinator that
+      genuinely cannot prove is ever needed, it comes back as a separate archetype with its own PP1,
+      never as a mode of this one.</p>
   </section>
 
   <section>
