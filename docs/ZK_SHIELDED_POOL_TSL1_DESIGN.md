@@ -122,7 +122,7 @@ The mutable state is 236 bytes:
 | Field | Offset | Bytes | Meaning |
 |---|---|---|---|
 | cmRoot | 0 | 32 | commitment tree root after this round |
-| nfRoot | 32 | 32 | sorted nullifier tree root after this round |
+| nfRoot | 32 | 32 | spent-nullifier tree root after this round (keyed sparse tree, 10.1) |
 | ring | 64 | 4 x 32 | recent cmRoots that spend proofs may anchor to, newest first |
 | size | 192 | 4 | leaves in the commitment tree, LE32 |
 | balance | 196 | 8 | satoshis held by PP3, LE64 |
@@ -284,6 +284,19 @@ One header push, then the existing verifier program, then a tail that:
 4. Checks PP3_{N+1}.value = header_N.balance + sum(receipt values) − sum(withdrawal values).
 5. Ends with OP_CODESEPARATOR before its checksig so the preimage's scriptCode is the tail, not the 1.5 MB program. `CheckPreimageOCS` already supports this (`useCodeSeparator`, default true).
 6. **Does not need to pin PP3_{N+1}'s program; PP3 does.** DECIDED 2026-09-21. The program of the output holding the pool balance must be fixed at mining time, and there were two candidates: V, through the output rebuild of step 2 at the cost of one hash comparison, or PP3_N itself as a forward covenant at about 148 KB a round. PP3 was chosen, because it does not depend on V: the property holds now, before V exists, and it keeps holding if V's own checks are ever wrong. The cost is 2.8% of a round; see 5.4. V still gates the value (step 4), which PP3 cannot know. Whether V should also pin PP1's and PP2's programs is open. Substituting either looks, on reading the scripts, like it ends in the pool dying at the next witness rather than funds moving, but that is the kind of argument that breaks quietly, and in V it costs a hash each.
+
+**What the proof states, and what V still has to derive.** Mapped 2026-09-21 against the root's wide statement (`AggregationTree.widePublics`):
+
+| Header field | Root proof | V's check |
+|---|---|---|
+| cmRoot | rootAfter | equal; and rootBefore equal to header_N's |
+| ring | the ring lanes | equal to header_N's ring, then the rotation `[cmRoot_{N+1}, ring_N[0..2]]` in script |
+| size | index | `index = size_N / 32`, `size_{N+1} = size_N + leavesAppended` |
+| nfRoot | nfBefore, nfAfter | equal to header_N's and header_{N+1}'s (10.1) |
+| balance | each transfer's signed amount | summed in script, BSV only, then step 4 |
+| outHash | nothing yet | open, see below |
+
+Two gaps remain before V can be written. A receipt's commitment cannot be tied to a deposit transfer, because the commitments are free chunks kept inside the proofs; one of them has to become public, or the circuit has to expose a deposit's. And each transfer's own outHash is still SHA-256 of its extra outputs, payees and the ciphertext OP_RETURN together, which this design moved into the witness; it has to be redefined, likely as the withdrawal record plus a hash of the bundle, which would also give header.outHash a source.
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
 
@@ -448,7 +461,21 @@ The nullifier move is not optional. With the insertions left in script the SM ou
 
 ### 10.1 Nullifier set: in-circuit Merkle or RSA accumulator
 
-The design assumes nfRoot is a sorted-leaf Poseidon2 Merkle tree updated in the aggregation circuit: 512 insertions with non-membership by adjacency, roughly 33,000 permutations, in the region of one more 2^20 node per round on the measured prover. This uses only the AIR that exists.
+**BUILT 2026-09-21, and not as first assumed.** The set is a sparse Poseidon2 Merkle tree 62 levels deep, `NullifierTree` in `lib/src/crypto/nullifier_tree.dart`, and level 2 of the aggregation inserts into it.
+
+**A keyed tree, not a sorted one.** A nullifier's slot is its first two lanes read as one 62-bit key. Absence is one path to an empty slot, and insertion is the same path to a filled one. The sorted tree assumed here before needs adjacency proofs, which means ordering comparisons of eight 31-bit lanes in circuit, range checks included. A keyed slot needs only the key's bits, and a Merkle walk already takes those. Two nullifiers sharing 62 bits would block the later spend. That takes around 2^31 nullifiers by chance, and nobody can aim a nullifier at another's slot, because it is a hash of a key only the spender holds. So the cost of dropping ordering is a DoS on a birthday bound, not a double spend.
+
+**The key's bits must be canonical.** 31 bits can spell p = 2^31 - 1 as well as every lane value, and p is 0 again, so a lane of 0 has two decompositions. Left open, a nullifier ground to have a zero lane (about 2^31 work) would have two slots and could be spent twice. The circuit forbids the all-ones pattern per lane.
+
+**Why level 2, measured.** Level 1 is full: 31,876 of 32,768 periods. Level 2 had 24,812 free periods in each of its four nodes, and 64 transfers need 128 walks of about 128 periods each. Its trace is 2^21 rows whatever it holds, so the walks cost almost no proving time and no extra node. The production plan compiled with them: level 2 goes from 40,724 to 57,046 of 65,536 periods and from 408K to 559K VM rows. So one walk costs about 128 periods and 1,180 VM rows. The earlier estimate of one more 2^20 node per round was pessimistic by that whole node.
+
+**How it reaches the statement.** Each level-2 node absorbs into its public digest, after its inner digests, the set's root before and after its insertions and three statement chunks per transfer: nf1, nf2, and the chunk holding the real flags. The root pins those chunks for every transfer already, so it rebuilds each level-2 digest from its own copies. That is what makes the lanes a node inserts the lanes the spend proofs were verified against. The four nodes' roots chain from nfRoot_N to nfRoot_{N+1}, which are pinned after the ring. The root grows from 11,644 to 12,422 periods and the wide statement by 16 lanes. A dummy input walks its slot and writes the empty leaf back, so it changes nothing, but the slot must be empty.
+
+**Tests.** `test/nullifier_tree_test.dart` covers the native tree. `test/nullifier_aggregation_test.dart` covers level 2 against a set that already holds spends: the honest round, a nullifier spent in an earlier round, the same nullifier twice in one round, a misstated root after, and a zero lane. It also covers the root end to end through a real proof and the generated script, including a transfer's nullifier lanes other than the ones level 2 inserted. `test/pool_aggregation_test.dart` covers `aggregate` with the set, including a replayed round.
+
+The paragraphs below are the original comparison, kept because the accumulator route is still the alternative if the tree ever has to leave the circuit.
+
+The design assumed nfRoot is a sorted-leaf Poseidon2 Merkle tree updated in the aggregation circuit: 512 insertions with non-membership by adjacency, roughly 33,000 permutations, in the region of one more 2^20 node per round on the measured prover. This uses only the AIR that exists.
 
 [ACCUMULATORS_AND_SIGMA_PROTOCOLS.md](ACCUMULATORS_AND_SIGMA_PROTOCOLS.md) section 4.12 proposes an RSA accumulator instead and leaves open where the check would run. In this design it would run inside V: batched non-membership with a proof of exponentiation (Boneh, Bünz and Fisch, 2019) is a handful of 128-bit modexps, about 30 KB of script, and the state field is 256 bytes instead of 32. The costs are hash-to-prime for every nullifier, which has to be proved in the spend circuit and is estimated to multiply that circuit by four, and the strong RSA assumption over a modulus nobody has factored. Neither is needed for identity; TSL1 supplies that. The Merkle route is preferred until the accumulator's circuit cost is measured.
 
@@ -576,6 +603,8 @@ By contrast every PP1 generator passes `useCodeSeparator: false` deliberately. P
 
 ### 11.7 The nullifier tree update fits the aggregation circuit at acceptable cost
 
+**RESOLVED 2026-09-21, measured: no extra node.** The insertions fit inside level 2's existing 2^21 traces, see 10.1.
+
 **Assumed:** about one extra 2^20-row node per round.
 **If wrong:** the round interval grows; at the measured 12 s per L1 node this is minor, but the sorted-insertion AIR does not exist yet and its real row count is a guess.
 **Find out:** build the AIR and measure, as was done for SHA-256.
@@ -617,6 +646,18 @@ Direct-slot mode put K user spend proofs in K verifier outputs on Y_N, plus an a
 **Options, none chosen:** give the round a fifth fixed input, which is honest but wastes an outpoint every round; move the metadata output to the end of the tail, which aligns the two at the cost of breaking the TSL1 five-output convention the parent parser reads by position; or have the covenant prove its receipt some other way than SIGHASH_SINGLE, which means pushing the whole output list and paying for it.
 
 **Find out:** this is the first thing the deposit work has to settle, before the covenant is written. Nothing in the output tail depends on the answer, because receipts being first is right under all three options.
+
+### 11.13 The root's commitment-tree update did not bind its two walks
+
+**FOUND AND FIXED 2026-09-21.** The root proves a subtree appended by two Merkle walks: one shows the slot empty under rootBefore, the other climbs from the new subtree to rootAfter. Both took their siblings as free witness and nothing tied the two sets together. So the second walk could climb over siblings of the coordinator's choosing and reach the root of any tree with the new subtree in place: one with earlier notes replaced by notes the coordinator could then spend and withdraw. `tool/scratch/cm_sibling_probe.dart` showed it with a real constraint check: one honest subtree already in the pool, the round's slot shown empty under the real root, then a climb over the siblings of a pool with one earlier note swapped, and the root's constraints accepted the forged rootAfter. It had been so since the aggregated root was built.
+
+**The fix** needed no AIR change. The AIR can already pin a period's low input half to its row-0 operands and its high half to row 1's, so every chained walk period now publishes both. The sibling is the high half when the level's bit is 0 and the low half when it is 1. The program requires the two walks' siblings to agree at every level, and the second walk's bits to be the first's. That is `_walkPair` in `verifier_program.dart`, which the nullifier insertions of 10.1 use as well. It adds VM rows but no periods, and every production level still fits. `test/recursion_tree_test.dart` carries the forged case.
+
+### 11.14 A one-lane wire read by a VM multiply on port A
+
+**Suspected 2026-09-21, not verified.** The bus binds a K1 wire consumed on port A only in limb 0 (`ak1 · a[0]`). The VM's `mul` reads all four limbs of A. So in a product with a K1 operand, three extension limbs of that operand are free to the prover, and the product can be shifted by any combination of i·B, u·B and iu·B. The query-point computation multiplies swap bits this way (`verifier_program.dart`, the `px`/`py` update in `_verifyInner`). Whether that can be turned into a false inner proof has not been tried. The new code of 10.1 and 11.13 avoids the pattern by lifting every bit through `limb(x, 0)` first.
+
+**Find out:** build the forged witness, or close it without trying: three AIR constraints `ak1 · a[k] = 0` for k = 1..3 cost nothing measurable, and the verifier scripts regenerate from the AIR.
 
 ## 12. What would settle it
 

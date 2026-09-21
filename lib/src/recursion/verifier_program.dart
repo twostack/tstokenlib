@@ -16,6 +16,7 @@
 
 import '../crypto/m31.dart';
 import '../crypto/note_commitment_tree.dart';
+import '../crypto/nullifier_tree.dart';
 import '../crypto/poseidon2_m31.dart';
 import '../crypto/proof_hash.dart';
 import '../crypto/stark_prover_ref.dart';
@@ -101,6 +102,8 @@ class _Period {
   List<int> Function()? loFree, hiFree; // free witness halves
   Wire? prodHiA, prodHiB; // lanes 8..11 / 12..15 produced as K4 wires (from hiFree)
   Wire? prodHi8; // lanes 8..15 produced as one K8 wire (from pinned K4 operands)
+  Wire? prodLoA, prodLoB; // row 0 lanes 0..3 / 4..7 produced as K4 wires (whatever fills them)
+  Wire? prodNextA, prodNextB; // lanes 8..11 / 12..15 produced as K4 wires at row 1
   bool pinWide = false; // row 0: lanes 8..15 pinned to the public columns
   // row 31
   int Function()? swapBitFn; // the next period's swap bit (witness)
@@ -111,7 +114,13 @@ class _Period {
   int? _swapBitValue;
   _Period(this.index);
   bool get row0Claimed =>
-      loWire8 != null || hiA != null || hiWire8 != null || hiWire8Next != null || prodHiA != null || prodHi8 != null;
+      loWire8 != null ||
+      hiA != null ||
+      hiWire8 != null ||
+      hiWire8Next != null ||
+      prodHiA != null ||
+      prodHi8 != null ||
+      prodLoA != null;
   bool get row31Claimed => digProd8 != null || digProd4 != null || digProd1 != null || digCons8 != null;
 }
 
@@ -187,8 +196,14 @@ class AggregationTree {
   /// ring. The spend's digest still covers them, so the root cannot use
   /// other values than the ones the spend proof was made for.
   final List<int> freeChunks;
+
+  /// The level whose nodes insert the round's nullifiers (null: the tree
+  /// proves none, and the nullifier set is someone else's job). The root
+  /// then pins the set's root before and after the round, and rebuilds that
+  /// level's digests from the chunks it already pins (see [NullifierSegment]).
+  final int? nullifierLevel;
   AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arities,
-      {this.leafChunks = const [3, 4], this.ring, List<int>? freeChunks})
+      {this.leafChunks = const [3, 4], this.ring, List<int>? freeChunks, this.nullifierLevel})
       : freeChunks = freeChunks ?? ([if (ring != null) ring.anchorChunk, ...leafChunks]..sort()) {
     if (levels.isEmpty) throw ArgumentError('at least one aggregation level');
     if (arities.length != levels.length || arities.any((a) => a < 1)) throw ArgumentError('one arity per level');
@@ -196,13 +211,24 @@ class AggregationTree {
       throw ArgumentError('free chunks');
     }
     if (leafChunks.any((c) => !this.freeChunks.contains(c))) throw ArgumentError('the leaf chunks are witness chunks');
+    final nl = nullifierLevel;
+    if (nl != null) {
+      if (nl < 0 || nl >= levels.length) throw ArgumentError('no level $nl');
+      if (NullifierSegment.chunks.any(this.freeChunks.contains)) throw ArgumentError('the nullifier chunks must be public');
+    }
   }
 
   /// The same [arity] at every level.
   AggregationTree.uniform(int spendPublics, List<int> spendPreRoot, List<(InnerShape, List<int>)> levels, int arity,
-      {List<int> leafChunks = const [3, 4], AnchorRing? ring, List<int>? freeChunks})
+      {List<int> leafChunks = const [3, 4], AnchorRing? ring, List<int>? freeChunks, int? nullifierLevel})
       : this(spendPublics, spendPreRoot, levels, List.filled(levels.length, arity),
-            leafChunks: leafChunks, ring: ring, freeChunks: freeChunks);
+            leafChunks: leafChunks, ring: ring, freeChunks: freeChunks, nullifierLevel: nullifierLevel);
+
+  /// Transfers under one node of level [l].
+  int transfersPerNode(int l) => arities.sublist(0, l + 1).fold(1, (n, a) => n * a);
+
+  /// Nodes at level [l].
+  int nodesAt(int l) => transfers ~/ transfersPerNode(l);
 
   int get depth => levels.length;
   int get transfers => arities.fold(1, (n, a) => n * a);
@@ -237,23 +263,35 @@ class AggregationTree {
 
   /// The round chunks after the transfers': rootBefore, rootAfter,
   /// [index, 0 x 7] with index the first subtree's position, then the
-  /// ring's roots when level 1 checks anchors.
-  int get roundChunks => 3 + (ring?.size ?? 0);
+  /// ring's roots when level 1 checks anchors, then the nullifier set's
+  /// root before and after the round when a level inserts them.
+  int get roundChunks => 3 + (ring?.size ?? 0) + (nullifierLevel == null ? 0 : 2);
   int get roundOffset => 8 * pinnedChunks * transfers;
 
   /// Where the ring's lanes start in the wide publics.
   int get ringOffset => roundOffset + 24;
 
+  /// Where nfBefore's lanes start (nfAfter's follow).
+  int get nullifierOffset => ringOffset + 8 * (ring?.size ?? 0);
+
   /// The root's wide public inputs: every transfer's reduced lanes
   /// ([reducedLanes]), then the round chunks.
   List<int> widePublics(List<List<int>> spends,
-      {required List<int> rootBefore, required List<int> rootAfter, required int index, List<List<int>>? ring}) {
+      {required List<int> rootBefore,
+      required List<int> rootAfter,
+      required int index,
+      List<List<int>>? ring,
+      List<int>? nfBefore,
+      List<int>? nfAfter}) {
     if (spends.length != transfers) throw ArgumentError('$transfers transfers expected');
     if (rootBefore.length != 8 || rootAfter.length != 8) throw ArgumentError('8-lane roots');
     if (index < 0 || index + subtrees > 1 << mainDepth) throw ArgumentError('subtree index');
     final r = this.ring;
     if (r == null ? ring != null : (ring == null || ring.length != r.size || ring.any((x) => x.length != 8))) {
       throw ArgumentError(r == null ? 'this tree has no ring' : 'a ring of ${r.size} 8-lane roots');
+    }
+    if ((nullifierLevel != null) != (nfBefore != null && nfAfter != null) || nfBefore?.length != nfAfter?.length) {
+      throw ArgumentError(nullifierLevel == null ? 'this tree inserts no nullifiers' : 'the nullifier roots before and after');
     }
     return [
       for (final p in spends) ...reducedLanes(p),
@@ -263,6 +301,8 @@ class AggregationTree {
       ...List.filled(7, 0),
       if (ring != null)
         for (final x in ring) ...x,
+      ...?nfBefore,
+      ...?nfAfter,
     ];
   }
 
@@ -276,6 +316,63 @@ class AggregationTree {
             return spends[n].sublist(8 * c, 8 * c + 8);
           }()
       ];
+}
+
+/// The nullifiers a digest-mode node inserts into the pool's
+/// [NullifierTree]: every real input of the transfers under it, in order.
+///
+/// The node absorbs, after its inner digests, the tree's root before and
+/// after its insertions and three statement chunks per transfer ([chunks]:
+/// nf1, nf2, and the chunk holding the real flags). That makes them part
+/// of its public digest, and the root, which pins those same chunks for
+/// every transfer, rebuilds the digest from its own copies. So the lanes a
+/// node inserts are the lanes the spend proofs were verified against, and
+/// the roots chain from node to node up to the two the round states.
+class NullifierSegment {
+  /// Statement chunks absorbed per transfer, and where in the last one the
+  /// real flags sit.
+  static const chunks = [PoolPublicInputs.idxNf1 ~/ 8, PoolPublicInputs.idxNf2 ~/ 8, PoolPublicInputs.idxReal1 ~/ 8];
+  static const real1Limb = PoolPublicInputs.idxReal1 % 8, real2Limb = PoolPublicInputs.idxReal2 % 8;
+
+  final List<int> before, after;
+
+  /// Per transfer, its three chunks (8 lanes each).
+  final List<List<List<int>>> transferChunks;
+
+  /// Per nullifier (two per transfer), the siblings its slot has.
+  final List<List<List<int>>> paths;
+
+  NullifierSegment(this.before, this.after, this.transferChunks, this.paths) {
+    if (before.length != 8 || after.length != 8) throw ArgumentError('8-lane roots');
+    if (paths.length != 2 * transferChunks.length) throw ArgumentError('two paths per transfer');
+  }
+
+  /// The chunks of a transfer's full statement lanes that a node absorbs.
+  static List<List<int>> chunksOf(List<int> spendLanes) => [for (final c in chunks) spendLanes.sublist(8 * c, 8 * c + 8)];
+
+  /// Insert the real nullifiers of transfers with statement lanes [spends]
+  /// into [tree], returning the segment a node proves. A dummy input's
+  /// nullifier is not inserted, but its slot must be empty all the same:
+  /// the node walks it and writes the empty leaf back.
+  static NullifierSegment insert(NullifierTree tree, List<List<int>> spends) {
+    final before = tree.root;
+    final paths = <List<List<int>>>[];
+    for (final l in spends) {
+      for (final (nfAt, realAt) in [(PoolPublicInputs.idxNf1, PoolPublicInputs.idxReal1), (PoolPublicInputs.idxNf2, PoolPublicInputs.idxReal2)]) {
+        final nf = l.sublist(nfAt, nfAt + 8);
+        if (l[realAt] == 1) {
+          paths.add(tree.insert(nf));
+        } else {
+          if (tree.occupied(nf)) throw StateError('a dummy nullifier lands on a spent slot');
+          paths.add(tree.path(nf));
+        }
+      }
+    }
+    return NullifierSegment(before, tree.root, [for (final l in spends) chunksOf(l)], paths);
+  }
+
+  /// What the node absorbs after its inner digests (see [VerifierProgram.nodeDigest]).
+  List<List<int>> get tail => [before, after, for (final t in transferChunks) ...t];
 }
 
 /// The compiled program for a list of inner shapes: the preprocessed
@@ -294,7 +391,12 @@ class VerifierProgram {
   /// Digest mode only: the anchor check this program makes, whose ring it
   /// absorbs after its inner digests (see [nodeDigest]).
   final AnchorRing? ring;
-  VerifierProgram(this.shapes, this.tree, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows, {this.ring});
+
+  /// Digest mode only: the transfers whose nullifiers this node inserts (0:
+  /// none), see [NullifierSegment].
+  final int nullifierTransfers;
+  VerifierProgram(this.shapes, this.tree, this.logTrace, this.columns, this.periodsUsed, this.vmRows, this.hintRows,
+      {this.ring, this.nullifierTransfers = 0});
 
   InnerShape get shape => shapes.single;
   bool get wide => tree != null;
@@ -304,11 +406,13 @@ class VerifierProgram {
 
   /// Compile a digest-mode program verifying one proof of each shape; with
   /// [ring] it also checks each inner statement's anchor against a ring it
-  /// takes as public input (a level-1 node).
-  static VerifierProgram compileAll(List<InnerShape> shapes, int logTrace, {AnchorRing? ring}) {
-    final b = VerifierProgramBuilder(shapes, null, logTrace, null, null, null, ring: ring);
+  /// takes as public input (a level-1 node); with [nullifierTransfers] it
+  /// also inserts the nullifiers of that many transfers ([NullifierSegment]).
+  static VerifierProgram compileAll(List<InnerShape> shapes, int logTrace, {AnchorRing? ring, int nullifierTransfers = 0}) {
+    final b = VerifierProgramBuilder(shapes, null, logTrace, null, null, null, ring: ring, nullifierTransfers: nullifierTransfers);
     b.build();
-    return VerifierProgram(shapes, null, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length, ring: ring);
+    return VerifierProgram(shapes, null, logTrace, b.columns, b.periods.length, b.vmItems.length, b.hintItems.length,
+        ring: ring, nullifierTransfers: nullifierTransfers);
   }
 
   /// Compile the wide root program of [tree].
@@ -332,12 +436,19 @@ class VerifierProgram {
   /// inner AIR instances ([shapes], defaulting to the compiled ones) supply
   /// the proofs' public inputs. The program columns are recomputed and must
   /// match [columns].
+  ///
+  /// [forgedAfterPaths] is for tests only: the siblings a dishonest prover
+  /// would climb with the subtree in place, instead of the ones that showed
+  /// the slot empty. The AIR must refuse any trace built with them.
   List<List<int>> witnessAll(List<StarkProof> proofs,
       {List<InnerShape>? shapes,
       List<List<int>>? ring,
       List<int>? widePublics,
       List<List<int>>? spendLanes,
-      List<List<List<int>>>? subtreePaths}) {
+      List<List<List<int>>>? subtreePaths,
+      NullifierSegment? nullifiers,
+      List<List<int>>? nullifierRoots,
+      List<List<List<int>>>? forgedAfterPaths}) {
     shapes ??= this.shapes;
     if (proofs.length != shapes.length) throw ArgumentError('${shapes.length} inner proofs expected');
     if (wide && (widePublics == null || subtreePaths == null || spendLanes == null)) {
@@ -346,8 +457,17 @@ class VerifierProgram {
     if (this.ring != null && (ring == null || ring.length != this.ring!.size || ring.any((r) => r.length != 8))) {
       throw ArgumentError('this program checks anchors against a ring of ${this.ring!.size} roots');
     }
+    if (nullifierTransfers > 0 && nullifiers?.transferChunks.length != nullifierTransfers) {
+      throw ArgumentError('this program inserts the nullifiers of $nullifierTransfers transfers');
+    }
     final b = VerifierProgramBuilder(shapes, tree, logTrace, proofs, widePublics, subtreePaths,
-        ring: this.ring, ringLanes: ring, spendLanes: spendLanes);
+        ring: this.ring,
+        ringLanes: ring,
+        spendLanes: spendLanes,
+        nullifierTransfers: nullifierTransfers,
+        nullifiers: nullifiers,
+        nullifierRoots: nullifierRoots,
+        forgedAfterPaths: forgedAfterPaths);
     b.build();
     for (int c = 0; c < VerifierProgramColumns.count; c++) {
       for (int r = 0; r < columns.rows; r++) {
@@ -373,13 +493,16 @@ class VerifierProgram {
   /// A digest-mode program's public input: the chain digest of its inner
   /// proofs' statement digests, then of the [ring]'s roots when the program
   /// checks anchors against one.
-  static List<int> nodeDigest(List<List<int>> digests, {List<List<int>>? ring}) {
+  static List<int> nodeDigest(List<List<int>> digests, {List<List<int>>? ring, NullifierSegment? nullifiers}) {
     final ts = Poseidon2Transcript();
     for (final d in digests) {
       ts.absorb(d);
     }
     for (final r in ring ?? const <List<int>>[]) {
       ts.absorb(r);
+    }
+    for (final c in nullifiers?.tail ?? const <List<int>>[]) {
+      ts.absorb(c);
     }
     return ts.state;
   }
@@ -403,6 +526,17 @@ class VerifierProgramBuilder {
 
   /// Wide mode, witness: every transfer's full lanes, for the witness chunks.
   final List<List<int>>? spendLanes;
+
+  /// Digest mode: the nullifier insertions, and in witness mode their data.
+  final int nullifierTransfers;
+  final NullifierSegment? nullifiers;
+
+  /// Wide mode, witness: the nullifier set's root at each boundary between
+  /// the inserting level's nodes (nodes + 1 roots, first and last public).
+  final List<List<int>>? nullifierRoots;
+
+  /// Tests only, see [VerifierProgram.witnessAll].
+  final List<List<List<int>>>? forgedAfterPaths;
   final VerifierProgramColumns columns;
   final periods = <_Period>[];
   final vmItems = <_VmItem>[];
@@ -411,7 +545,13 @@ class VerifierProgramBuilder {
   _Period? _cur; // the transcript's current period (its digest is the state)
 
   VerifierProgramBuilder(this.shapes, this.tree, this.logTrace, this.proofs, this.widePublics, this.subtreePaths,
-      {this.ring, this.ringLanes, this.spendLanes})
+      {this.ring,
+      this.ringLanes,
+      this.spendLanes,
+      this.nullifierTransfers = 0,
+      this.nullifiers,
+      this.nullifierRoots,
+      this.forgedAfterPaths})
       : columns = VerifierProgramColumns(1 << logTrace);
 
   bool get witnessMode => proofs != null;
@@ -567,7 +707,7 @@ class VerifierProgramBuilder {
 
   /// [_walk] without the root check: returns the final period (whose digest
   /// is the root reached) and the bit wires.
-  (_Period, List<Wire>) _walkTo(_Period leaf, Wire idx, int depth, List<List<int>> Function() siblings) {
+  (_Period, List<Wire>) _walkTo(_Period leaf, Wire idx, int depth, List<List<int>> Function() siblings, {List<_Period>? trail}) {
     var p = leaf;
     final bits = <Wire>[];
     for (int k = 0; k < depth; k++) {
@@ -579,12 +719,164 @@ class VerifierProgramBuilder {
       final n = _period();
       n.loFree = () => siblings()[sib];
       n.hiFree = () => siblings()[sib];
+      trail?.add(n);
       p = n;
     }
     // idx = Σ 2^k b_k + 2^depth rem, rem < 2^(31 - depth) by bit decomposition
     final remBits = [for (int j = 0; j < 31 - depth; j++) bitHint('rem$j', () => (idx.lanes[0] >> (depth + j)) & 1)];
     assertEq(idx, f.add(_fromBits(bits), _fromBits(remBits, shift: depth)));
     return (p, bits);
+  }
+
+  /// Two Merkle walks over the same siblings and the same direction bits:
+  /// the first from [leafA] must reach [rootA]; the second starts at the
+  /// period [leafB] allocates (called once the first walk is laid out, so
+  /// the second chains from it) and its end is returned. This is an
+  /// insertion: the first walk shows what the slot held under the old root,
+  /// the second computes the new root with the slot replaced.
+  ///
+  /// Both walks take their siblings as free witness, so without the binding
+  /// the second could climb over siblings of its own choosing and reach any
+  /// root at all, a tree with every other leaf replaced. Each chained period
+  /// therefore publishes both halves of its input (low half at row 0, high
+  /// half at row 1); the sibling is the high half when the level's bit is
+  /// 0 and the low half when it is 1, and the VM requires the two walks'
+  /// siblings to agree at every level. The second walk's bits are the
+  /// first's, asserted equal rather than decomposed again.
+  ///
+  /// The slot is either the index lane [idx] ([depth] bits, as [_walkTo]) or
+  /// the key lanes [keyLanes] (31 bits each, lane 0 lowest), which must be
+  /// their canonical decomposition: see [NullifierTree].
+  _Period _walkPair(_Period leafA, Wire rootA, _Period Function() leafB, int depth, List<List<int>> Function() siblings,
+      {Wire? idx, List<Wire>? keyLanes, List<List<int>> Function()? siblingsB}) {
+    final sibsB = siblingsB ?? siblings;
+    final trailA = <_Period>[];
+    final (endA, bits) =
+        idx != null ? _walkTo(leafA, idx, depth, siblings, trail: trailA) : _walkToKey(leafA, keyLanes!, depth, siblings, trailA);
+    endA.digCons8 = rootA;
+    rootA.uses++;
+    // a K1 operand is only bound in limb 0, so the bits are lifted before use
+    final lifted = [for (final a in bits) f.limb(a, 0)];
+    if (keyLanes != null) {
+      const lb = NullifierTree.laneBits;
+      for (int j = 0; j < keyLanes.length; j++) {
+        final mine = lifted.sublist(lb * j, lb * (j + 1));
+        assertEq(keyLanes[j], _fromBits(mine));
+        // not all ones: 2^31 - 1 is p, a second spelling of 0
+        var all = mine[0];
+        for (int k = 1; k < lb; k++) {
+          all = f.mul(all, mine[k]);
+        }
+        assertZero(all);
+      }
+    }
+    var p = leafB();
+    for (int k = 0; k < depth; k++) {
+      final sib = k, a = bits[k], bit = lifted[k];
+      p.swapBitFn = () => a.lanes[0];
+      final w = Wire(1, 'bitB$k', () => [a.lanes[0]]);
+      p.swapWire = w;
+      assertZero(f.sub(f.limb(w, 0), bit));
+      final n = _period();
+      n.loFree = () => sibsB()[sib];
+      n.hiFree = () => sibsB()[sib];
+      _bindSibling(trailA[k], n, bit);
+      p = n;
+    }
+    return p;
+  }
+
+  /// [_walkTo] keyed by [keyLanes], 31 bits a lane, with no decomposition
+  /// check of its own ([_walkPair] makes it on the lifted bits).
+  (_Period, List<Wire>) _walkToKey(_Period leaf, List<Wire> keyLanes, int depth, List<List<int>> Function() siblings, List<_Period> trail) {
+    const lb = NullifierTree.laneBits;
+    if (depth != lb * keyLanes.length) throw ArgumentError('$lb bits per key lane');
+    var p = leaf;
+    final bits = <Wire>[];
+    for (int k = 0; k < depth; k++) {
+      final sib = k, lane = keyLanes[k ~/ lb], sh = k % lb;
+      p.swapBitFn = () => (lane.lanes[0] >> sh) & 1;
+      final w = Wire(1, 'kbit$k', () => [(lane.lanes[0] >> sh) & 1]);
+      p.swapWire = w;
+      bits.add(w);
+      final n = _period();
+      n.loFree = () => siblings()[sib];
+      n.hiFree = () => siblings()[sib];
+      trail.add(n);
+      p = n;
+    }
+    return (p, bits);
+  }
+
+  /// The nullifier insertions of a digest-mode node (see [NullifierSegment]):
+  /// absorbs the roots and each transfer's chunks, continuing the chain,
+  /// then walks every nullifier from the empty leaf to `H(0 ‖ real · nf)`
+  /// over one path, so a dummy writes the empty leaf back and leaves the
+  /// root as it was. Returns the chain's last period.
+  _Period _nullifierSegment(int transfers) {
+    NullifierSegment seg() => nullifiers!;
+    var p = _cur = _absorb(free: () => seg().before);
+    final before8 = _hi8(p, 'nfBefore');
+    p = _cur = _absorb(free: () => seg().after);
+    final after8 = _hi8(p, 'nfAfter');
+    final ins = <(Wire, Wire, Wire)>[];
+    for (int t = 0; t < transfers; t++) {
+      final hw = <(Wire, Wire)>[];
+      for (int c = 0; c < NullifierSegment.chunks.length; c++) {
+        final tt = t, cc = c;
+        p = _cur = _absorb(free: () => seg().transferChunks[tt][cc]);
+        hw.add(_hiWires(p, 'nfc${t}_$c'));
+      }
+      final flags = hw[2].$1;
+      ins.add((hw[0].$1, hw[0].$2, f.limb(flags, NullifierSegment.real1Limb)));
+      ins.add((hw[1].$1, hw[1].$2, f.limb(flags, NullifierSegment.real2Limb)));
+    }
+    final last = p;
+    var root = before8;
+    for (int i = 0; i < ins.length; i++) {
+      final (a, b, real) = ins[i];
+      final ii = i;
+      final end = _walkPair(_emptyPeriod(1), root, () => _leaf([f.mul(a, real), f.mul(b, real)]), NullifierTree.depth,
+          () => seg().paths[ii],
+          keyLanes: [f.limb(a, 0), f.limb(a, 1)]);
+      if (i == ins.length - 1) {
+        end.digCons8 = after8;
+        after8.uses++;
+      } else {
+        root = _digestWire(end);
+      }
+    }
+    return last;
+  }
+
+  /// Both halves of chained period [p]'s input as K4 wires: (lo 0..3, lo
+  /// 4..7, hi 8..11, hi 12..15).
+  (Wire, Wire, Wire, Wire) _inputHalves(_Period p, String label) {
+    List<int> lanes(int from) {
+      _simulate(p);
+      return p._input!.sublist(from, from + 4);
+    }
+
+    final la = Wire(4, '${label}la', () => lanes(0)), lb = Wire(4, '${label}lb', () => lanes(4));
+    final ha = Wire(4, '${label}ha', () => lanes(8)), hb = Wire(4, '${label}hb', () => lanes(12));
+    lb.tagOffset = VerifierAir.tagP2Offset;
+    hb.tagOffset = VerifierAir.tagP2Offset;
+    p.prodLoA = la;
+    p.prodLoB = lb;
+    p.prodNextA = ha;
+    p.prodNextB = hb;
+    return (la, lb, ha, hb);
+  }
+
+  /// The sibling of chained periods [pa] and [pb] is the same: with d the
+  /// difference of their halves, d_hi + bit (d_lo - d_hi) = 0 per K4 half.
+  void _bindSibling(_Period pa, _Period pb, Wire bit) {
+    final (aLa, aLb, aHa, aHb) = _inputHalves(pa, 'pwA${pa.index}');
+    final (bLa, bLb, bHa, bHb) = _inputHalves(pb, 'pwB${pb.index}');
+    for (final (lo1, lo2, hi1, hi2) in [(aLa, bLa, aHa, bHa), (aLb, bLb, aHb, bHb)]) {
+      final dHi = f.sub(hi1, hi2), dLo = f.sub(lo1, lo2);
+      assertZero(f.add(dHi, f.mul(f.sub(dLo, dHi), bit)));
+    }
   }
 
   // ---------------------------------------------------------------- the statements
@@ -778,10 +1070,12 @@ class VerifierProgramBuilder {
       ];
       final idx = s == 0 ? index : f.addConst(index, s);
       List<List<int>> siblings() => subtreePaths![s];
-      // the slot is empty under the root so far
-      _walk(_emptyPeriod(NoteCommitmentTree.subtreeDepth), idx, AggregationTree.mainDepth, before, siblings);
-      // the subtree in place
-      final (end, _) = _walkTo(_subtree(subLeaves), idx, AggregationTree.mainDepth, siblings);
+      // the slot is empty under the root so far, then the subtree in place
+      // over the same siblings
+      final end = _walkPair(_emptyPeriod(NoteCommitmentTree.subtreeDepth), before, () => _subtree(subLeaves),
+          AggregationTree.mainDepth, siblings,
+          idx: idx,
+          siblingsB: forgedAfterPaths == null ? null : () => forgedAfterPaths![s]);
       if (s == t.subtrees - 1) {
         end.digCons8 = rootAfter;
         rootAfter.uses++;
@@ -833,6 +1127,7 @@ class VerifierProgramBuilder {
           _anchorInRing(i, a0, b0, real1, real2, ringA, ringB);
         }
       }
+      if (nullifierTransfers > 0) last = _nullifierSegment(nullifierTransfers);
       last.pinPub = true;
     } else {
       _buildWide();
@@ -877,8 +1172,10 @@ class VerifierProgramBuilder {
   void _buildWide() {
     final t = tree!;
     final digests0 = <Wire>[], leaves = <Wire>[];
+    final stChunks = <List<_Period>>[];
     for (int n = 0; n < t.transfers; n++) {
       final (chunks, last) = _statementPinned(n);
+      stChunks.add(chunks);
       digests0.add(_digestWire(last));
       for (final c in t.leafChunks) {
         leaves.add(_hi8(chunks[c], 'leaf${n}_$c'));
@@ -891,6 +1188,31 @@ class VerifierProgramBuilder {
     final ringWires = <Wire>[
       for (int k = 0; k < (t.ring?.size ?? 0); k++) _hi8(_pinnedChunk(t.roundOffset ~/ 8 + 3 + k), 'ring$k'),
     ];
+    // the nullifier set's roots at the boundaries of the inserting level's
+    // nodes: the round's two public ones at the ends, witness between, each
+    // shared by the node that ends there and the node that starts there
+    final nl = t.nullifierLevel;
+    final nfWires = <Wire>[];
+    if (nl != null) {
+      final c0 = t.nullifierOffset ~/ 8; // pinned after the ring, so the public order holds
+      final nodes = t.nodesAt(nl);
+      nfWires.add(_hi8(_pinnedChunk(c0), 'nfBefore'));
+      for (int k = 1; k < nodes; k++) {
+        final kk = k;
+        nfWires.add(hint8('nfMid$k', () => nullifierRoots![kk]));
+      }
+      nfWires.add(_hi8(_pinnedChunk(c0 + 1), 'nfAfter'));
+    }
+    List<Wire> nullifierTail(int m) {
+      final per = t.transfersPerNode(nl!);
+      return [
+        nfWires[m],
+        nfWires[m + 1],
+        for (int n = per * m; n < per * (m + 1); n++)
+          for (final c in NullifierSegment.chunks) _hi8(stChunks[n][c], 'nfc${n}_$c'),
+      ];
+    }
+
     _treeUpdate(leaves, _hi8(r0, 'rootBefore'), _hi8(r1, 'rootAfter'), f.limb(ia, 0));
     var digests = digests0;
     for (int l = 0; l < t.depth; l++) {
@@ -898,7 +1220,8 @@ class VerifierProgramBuilder {
       final next = <Wire>[];
       final arity = t.arities[l];
       for (int m = 0; m < digests.length ~/ arity; m++) {
-        final d = _digestWire(_chain([...digests.sublist(arity * m, arity * (m + 1)), if (l == 0) ...ringWires]));
+        final d = _digestWire(_chain(
+            [...digests.sublist(arity * m, arity * (m + 1)), if (l == 0) ...ringWires, if (l == nl) ...nullifierTail(m)]));
         final (st, pubLane, root8) = _statementBound(shape.air, d, preRoot);
         if (l == t.depth - 1) {
           _verifyInner(0, pubLane, root8);
@@ -1188,7 +1511,7 @@ class VerifierProgramBuilder {
     for (final p in periods) {
       final r0 = p.index << 5;
       if (p.row0Claimed) _claimed[r0] = true;
-      if (p.hiWire8Next != null) _claimed[r0 + 1] = true;
+      if (p.hiWire8Next != null || p.prodNextA != null) _claimed[r0 + 1] = true;
       if (p.row31Claimed || p.swapWire != null) _claimed[r0 + 31] = true;
     }
     for (final p in periods) {
@@ -1230,6 +1553,22 @@ class VerifierProgramBuilder {
         if (p.prodHiA != null && p.prodHiA!.uses > 0) throw StateError('two P1 producers at row $r0');
         columns.set(VerifierProgramColumns.inHiAB, r0, 1);
         _produceAt(r0, p.prodHi8!, VerifierProgramColumns.p1ab8);
+      }
+      if (p.prodLoA != null) {
+        if (p.fresh || p.hiA != null || p.hiWire8 != null || p.prodHiA != null || p.prodHi8 != null) {
+          throw StateError('period ${p.index}: row 0 operands already taken');
+        }
+        columns.set(VerifierProgramColumns.inLoAB, r0, 1);
+        if (p.prodLoA!.uses > 0) _produceAt(r0, p.prodLoA!, VerifierProgramColumns.p1a4);
+        if (p.prodLoB!.uses > 0) _produceAt(r0, p.prodLoB!, VerifierProgramColumns.p2en);
+        _pinned.add((r0, p.prodLoA!, p.prodLoB!));
+      }
+      if (p.prodNextA != null) {
+        if (p.hiWire8Next != null) throw StateError('period ${p.index}: row 1 operands already taken');
+        columns.set(VerifierProgramColumns.inHiNext, r0, 1);
+        if (p.prodNextA!.uses > 0) _produceAt(r0 + 1, p.prodNextA!, VerifierProgramColumns.p1a4);
+        if (p.prodNextB!.uses > 0) _produceAt(r0 + 1, p.prodNextB!, VerifierProgramColumns.p2en);
+        _pinned.add((r0 + 1, p.prodNextA!, p.prodNextB!));
       }
       if (p.pinWide) columns.set(VerifierProgramColumns.pinPub, r0, 1);
       if (p.swapWire != null && p.swapWire!.uses > 0) _produceAt(r31, p.swapWire!, VerifierProgramColumns.p1swap);

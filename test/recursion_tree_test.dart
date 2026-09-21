@@ -135,6 +135,34 @@ void main() {
     final swapped = [for (final p in spendPubs) [...p]]..[1][PoolPublicInputs.idxCm2 + 3] ^= 1;
     expect(checkTrace(airR, rootRows(swapped, widePublics), [QM31.one, QM31.one + QM31.i, QM31.u]), isNotNull);
     expect(checkTrace(airR, rowsR, [QM31.one, QM31.one + QM31.i, QM31.u]), isNull);
+    // nor a tree the coordinator made up: with one honest subtree already in
+    // the pool, the round shows its slot empty under the real root, then
+    // climbs with siblings of a pool whose earlier notes were replaced. Both
+    // walks take free siblings, so only the binding between them stops this
+    // (it did not exist before 2026-09-21, and the forged root was accepted).
+    {
+      final honestLeaves = [for (int i = 0; i < NoteCommitmentTree.subtreeLeaves; i++) lanes(8)];
+      final honest = NoteCommitmentTree()..appendSubtree(honestLeaves);
+      final forged = NoteCommitmentTree()..appendSubtree([...honestLeaves]..[5] = lanes(8));
+      final before = honest.root, jj = honest.nextSubtree;
+      final hp = <List<List<int>>>[], fp = <List<List<int>>>[];
+      for (int s = 0; s < tree.subtrees; s++) {
+        final lv = [for (final l in tree.subtreeLeavesOf(spendPubs, s)) l ?? MerkleFrontier.emptyLeaf];
+        hp.add(honest.subtreePath(jj + s));
+        fp.add(forged.subtreePath(jj + s));
+        honest.appendSubtree(lv);
+        forged.appendSubtree(lv);
+      }
+      List<List<int>> rows(List<int> wide, {List<List<List<int>>>? after}) => progR.witnessAll([proof2],
+          shapes: [InnerShape(p2p, air2)], widePublics: wide, spendLanes: spendPubs, subtreePaths: hp, forgedAfterPaths: after);
+      final chk = [QM31.one, QM31.one + QM31.i, QM31.u];
+      final okWide = tree.widePublics(spendPubs, rootBefore: before, rootAfter: honest.root, index: jj, ring: ring);
+      expect(checkTrace(progR.air(okWide), rows(okWide), chk), isNull, reason: 'the honest second round');
+      final badWide = tree.widePublics(spendPubs, rootBefore: before, rootAfter: forged.root, index: jj, ring: ring);
+      expect(checkTrace(progR.air(badWide), rows(badWide), chk), isNotNull, reason: 'forged root, honest siblings');
+      expect(checkTrace(progR.air(badWide), rows(badWide, after: fp), chk), isNotNull,
+          reason: 'forged root over forged siblings: the walks must share siblings');
+    }
     print('  root witness: ${lap('')}');
     final proofR = StarkProver.prove(rootP, airR, rowsR, rng: Random(6), hash: sha);
     print('  root proof (SHA256): ${lap('')} ${ProofSize.bytes(rootP, airR, sha)} B');

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
+import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
 import 'package:tstokenlib/src/crypto/proof_hash.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
 import 'package:tstokenlib/src/crypto/stark_prover_ref.dart';
@@ -69,6 +70,60 @@ void main() {
     // the statements are bound: another transfer's publics do not verify
     final bad = [...wide]..[PoolPublicInputs.reducedCount + PoolPublicInputs.rIdxNf1] ^= 1;
     expect(() => StarkVerifierRef(rootP, agg.rootAir(bad), hash: sha).verify(proof), throwsA(isA<VerificationFailure>()));
+  }, timeout: const Timeout(Duration(minutes: 20)));
+
+  test('with nullifiers at level 2 the round states the spent set before and after, and a replay is refused', () async {
+    final agg = PoolAggregation(
+        spendP: spendP,
+        levelSpec: const [
+          AggregationLevel(params: l1, logTrace: 16, arity: 3),
+          AggregationLevel(params: l2, logTrace: 17, arity: 2),
+        ],
+        rootP: rootP,
+        rootLog: 16,
+        nullifierLevel: 1);
+    // six transfers, each spending one real note and one dummy
+    final notes = NoteCommitmentTree();
+    final keys = <(List<int>, List<int>, List<int>, List<int>, int)>[];
+    for (int n = 0; n < agg.transfers; n++) {
+      final sk = lanes(5), d = lanes(3), rho = lanes(3), rcm = lanes(4);
+      keys.add((sk, d, rho, rcm, notes.append(PoolHash.commit(PoolHash.pkd(sk, d), 700 + n, rho, rcm).$2)));
+    }
+    final anchor = notes.root;
+    final publics = <PoolPublicInputs>[], proofs = <StarkProof>[];
+    for (int n = 0; n < agg.transfers; n++) {
+      final (sk, d, rho, rcm, pos) = keys[n];
+      final path = notes.path(pos);
+      final a = SpendNote(sk: sk, d: d, value: 700 + n, rho: rho, rcm: rcm, siblings: path.siblings, position: path.position);
+      final oa = OutputNote(pkd: lanes(8), value: 700 + n, rho: lanes(3), rcm: lanes(4));
+      final w = PoolSpendAir.witness(a, SpendNote.dummy(sk: lanes(5), rho: lanes(3)), oa, OutputNote(pkd: lanes(8), value: 0, rho: lanes(3), rcm: lanes(4)), 0);
+      publics.add(w.publics);
+      proofs.add(StarkProver.prove(spendP, PoolSpendAir.air(w.publics), w.rows, rng: rng, hash: p2));
+    }
+    final spendPubs = [for (final p in publics) p.toLanes()];
+    final cmTree = NoteCommitmentTree()..appendSubtree([for (int i = 0; i < NoteCommitmentTree.subtreeLeaves; i++) lanes(8)]);
+    final rootBefore = cmTree.root, j = cmTree.nextSubtree;
+    final paths = <List<List<int>>>[];
+    for (int s = 0; s < agg.tree.subtrees; s++) {
+      paths.add(cmTree.subtreePath(j + s));
+      cmTree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendPubs, s)) l ?? MerkleFrontier.emptyLeaf]);
+    }
+    final ring = [anchor, lanes(8), lanes(8), lanes(8)];
+    final spent = NullifierTree()..insert(lanes(8));
+    final working = spent.copy();
+    final (proof, wide) = await agg.aggregate(publics, proofs,
+        rootBefore: rootBefore, rootAfter: cmTree.root, index: j, paths: paths, ring: ring, nullifiers: working, rng: rng);
+    expect(wide.length, agg.widePublicsCount);
+    final at = agg.tree.nullifierOffset;
+    expect(wide.sublist(at, at + 8), spent.root, reason: 'nfRoot before is the set the round started from');
+    expect(wide.sublist(at + 8, at + 16), working.root, reason: 'nfRoot after is the set with the round\'s spends in it');
+    expect(working.size, spent.size + agg.transfers, reason: 'one real input per transfer, dummies not inserted');
+    expect(StarkVerifierRef(rootP, agg.rootAir(wide), hash: sha).verify(proof), isTrue);
+    // the same round again, against the set that now holds its nullifiers
+    expect(
+        () => agg.aggregate(publics, proofs,
+            rootBefore: rootBefore, rootAfter: cmTree.root, index: j, paths: paths, ring: ring, nullifiers: working.copy(), rng: rng),
+        throwsStateError);
   }, timeout: const Timeout(Duration(minutes: 20)));
 
   test('level 1 through a node prover gives the same round as proving it inline', () async {

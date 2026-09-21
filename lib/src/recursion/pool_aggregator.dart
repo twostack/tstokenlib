@@ -15,6 +15,7 @@
 */
 
 import 'dart:math';
+import '../crypto/nullifier_tree.dart';
 import '../crypto/proof_hash.dart';
 import '../crypto/stark_prover.dart';
 import '../crypto/stark_prover_ref.dart';
@@ -71,6 +72,13 @@ class PoolAggregation {
   /// check, see the design record).
   final bool anchorCheck;
 
+  /// The level whose nodes insert the round's nullifiers into the pool's
+  /// [NullifierTree] (null: none; the legacy state script inserts them in
+  /// script instead). The production choice is level 2 (index 1): its
+  /// trace is sized for the proofs it verifies and has room for the walks,
+  /// so they cost no extra node (see [throughput]).
+  final int? nullifierLevel;
+
   /// Compiles every level's program and the root's. With [dryRun] the
   /// levels' preprocessed roots are zeros instead of real commitments
   /// (gigabytes at production size), which is enough to size the programs
@@ -81,7 +89,8 @@ class PoolAggregation {
       required this.rootP,
       required this.rootLog,
       bool dryRun = false,
-      this.anchorCheck = true}) {
+      this.anchorCheck = true,
+      this.nullifierLevel}) {
     if (levelSpec.isEmpty || levelSpec.any((l) => l.arity < 1)) throw ArgumentError('at least one level, arities >= 1');
     assert(anchorRing.size == PP1SpLegacyHeader.ringSize, 'the in-circuit ring is the header\'s');
     var shape = InnerShape(spendP, PoolSpendAir.air(PoolPublicInputs.zero()));
@@ -90,7 +99,8 @@ class PoolAggregation {
     preRoots = [];
     for (int l = 0; l < levelSpec.length; l++) {
       final level = levelSpec[l];
-      final prog = VerifierProgram.compileAll(List.filled(level.arity, shape), level.logTrace, ring: l == 0 ? ring : null);
+      final prog = VerifierProgram.compileAll(List.filled(level.arity, shape), level.logTrace,
+          ring: l == 0 ? ring : null, nullifierTransfers: l == nullifierLevel ? _transfersPerNode(l) : 0);
       final air = prog.air(List.filled(VerifierAir.numPublicLanes, 0));
       levels.add(prog);
       shape = InnerShape(level.params, air);
@@ -99,7 +109,8 @@ class PoolAggregation {
     }
     tree = AggregationTree(PoolPublicInputs.count, const [], [for (int l = 0; l < levelSpec.length; l++) (levelShapes[l], preRoots[l])],
         [for (final l in levelSpec) l.arity],
-        ring: ring);
+        ring: ring,
+        nullifierLevel: nullifierLevel);
     root = VerifierProgram.compileWide(tree, rootLog);
   }
 
@@ -117,6 +128,8 @@ class PoolAggregation {
     int arity = 2,
     bool dryRun = false,
   }) : this(spendP: spendP, levelSpec: _uniformSpec(levelP, levelLog, arity), rootP: rootP, rootLog: rootLog, dryRun: dryRun);
+
+  int _transfersPerNode(int l) => levelSpec.sublist(0, l + 1).fold(1, (n, s) => n * s.arity);
 
   static List<AggregationLevel> _uniformSpec(List<StarkParams> levelP, List<int> levelLog, int arity) {
     if (levelP.length != levelLog.length) throw ArgumentError('one trace size per level');
@@ -170,8 +183,17 @@ class PoolAggregation {
     AggregationLevel(params: narrowParams19, logTrace: 19, arity: 2),
   ];
 
-  static PoolAggregation throughput({bool dryRun = false}) => PoolAggregation(
-      spendP: spendThroughputParams, levelSpec: throughputLevels, rootP: rootParams19, rootLog: 19, dryRun: dryRun);
+  ///
+  /// With [nullifiers] level 2 also inserts the round's nullifiers (the
+  /// TSL1 pool's arrangement): 128 walks per node, 57,046 of its 65,536
+  /// periods, measured 2026-09-21.
+  static PoolAggregation throughput({bool dryRun = false, bool nullifiers = false}) => PoolAggregation(
+      spendP: spendThroughputParams,
+      levelSpec: throughputLevels,
+      rootP: rootParams19,
+      rootLog: 19,
+      dryRun: dryRun,
+      nullifierLevel: nullifiers ? 1 : null);
 
   int get transfers => tree.transfers;
   int get depth => levelSpec.length;
@@ -194,6 +216,10 @@ class PoolAggregation {
   /// ring of roots every real spend's anchor must be in. Returns the root
   /// proof and the wide publics it is bound to.
   ///
+  /// With a [nullifierLevel], [nullifiers] is the pool's spent set, which
+  /// this ADVANCES by the round's real inputs; pass a copy
+  /// ([NullifierTree.copy]) and keep it only once the round is mined.
+  ///
   /// Level 1 is the bulk of the round and each of its nodes is independent,
   /// so it can be spread over the coordinator's machines: with [level1] every
   /// level-1 node becomes a [NodeJob] handed to that prover (a [ProverPool],
@@ -208,12 +234,26 @@ class PoolAggregation {
       required int index,
       required List<List<List<int>>> paths,
       required List<List<int>> ring,
+      NullifierTree? nullifiers,
       Random? rng,
       NodeProver? level1,
       bool verbose = false}) async {
     if (publics.length != transfers || proofs.length != transfers) throw ArgumentError('$transfers transfers');
     if (ring.length != anchorRing.size || ring.any((r) => r.length != 8)) throw ArgumentError('a ring of ${anchorRing.size} roots');
     final ringOrNull = anchorCheck ? ring : null;
+    if ((nullifierLevel != null) != (nullifiers != null)) {
+      throw ArgumentError(nullifierLevel == null ? 'this plan inserts no nullifiers' : 'the pool\'s nullifier tree, to insert into');
+    }
+    // the insertions, node by node, in transfer order: each node's segment
+    // starts where the previous one ended
+    final spendLanes = [for (final p in publics) p.toLanes()];
+    final segments = <NullifierSegment>[];
+    if (nullifierLevel != null) {
+      final per = _transfersPerNode(nullifierLevel!);
+      for (int m = 0; m < transfers ~/ per; m++) {
+        segments.add(NullifierSegment.insert(nullifiers!, spendLanes.sublist(per * m, per * (m + 1))));
+      }
+    }
     rng ??= Random();
     final sw = Stopwatch()..start();
     void lap(String what) {
@@ -229,7 +269,8 @@ class PoolAggregation {
       final nextShapes = <InnerShape>[], nextProofs = <StarkProof>[], nextDigests = <List<int>>[];
       for (int m = 0; m < curProofs.length ~/ level.arity; m++) {
         final lo = level.arity * m, hi = lo + level.arity;
-        final nodeDigest = VerifierProgram.nodeDigest(digests.sublist(lo, hi), ring: l == 0 ? ringOrNull : null);
+        final seg = l == nullifierLevel ? segments[m] : null;
+        final nodeDigest = VerifierProgram.nodeDigest(digests.sublist(lo, hi), ring: l == 0 ? ringOrNull : null, nullifiers: seg);
         final air = prog.air(nodeDigest);
         StarkProof? pf;
         if (l == 0 && level1 != null) {
@@ -248,7 +289,9 @@ class PoolAggregation {
           }
         }
         pf ??= StarkProver.prove(
-            level.params, air, prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi), ring: l == 0 ? ringOrNull : null),
+            level.params,
+            air,
+            prog.witnessAll(curProofs.sublist(lo, hi), shapes: shapes.sublist(lo, hi), ring: l == 0 ? ringOrNull : null, nullifiers: seg),
             rng: rng, hash: p2);
         nextProofs.add(pf);
         nextShapes.add(InnerShape(level.params, air));
@@ -259,9 +302,11 @@ class PoolAggregation {
       digests = nextDigests;
       lap('level ${l + 1}: ${curProofs.length} proofs');
     }
-    final spendLanes = [for (final p in publics) p.toLanes()];
-    final wide = tree.widePublics(spendLanes, rootBefore: rootBefore, rootAfter: rootAfter, index: index, ring: ringOrNull);
-    final rows = root.witnessAll(curProofs, shapes: shapes, widePublics: wide, spendLanes: spendLanes, subtreePaths: paths);
+    final nfRoots = segments.isEmpty ? null : [segments.first.before, for (final g in segments) g.after];
+    final wide = tree.widePublics(spendLanes,
+        rootBefore: rootBefore, rootAfter: rootAfter, index: index, ring: ringOrNull, nfBefore: nfRoots?.first, nfAfter: nfRoots?.last);
+    final rows = root.witnessAll(curProofs,
+        shapes: shapes, widePublics: wide, spendLanes: spendLanes, subtreePaths: paths, nullifierRoots: nfRoots);
     final proof = StarkProver.prove(rootP, root.air(wide), rows, rng: rng, hash: sha);
     lap('root');
     return (proof, wide);
