@@ -16,6 +16,7 @@
 
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
@@ -243,6 +244,20 @@ class ShieldedPoolTool {
   /// coordinator's key.
   /// [nextSlot] pins the verifier slot that round N+2 must spend.
   ///
+  /// [nextSlotTx] is Y_{N+1}, the slot transaction [nextSlot] names. It is
+  /// checked here against everything PP1 will check in this round's witness,
+  /// because that check happens too late to help: PP1 runs after the round is
+  /// mined, so a round that pins a slot PP1 will refuse can never produce a
+  /// witness, and a PP3 whose witness cannot exist can never be spent. The
+  /// pool's balance is frozen permanently. Pass [uncheckedNextSlot] to build
+  /// such a round deliberately, which is what the negative tests do.
+  ///
+  /// This does not, and cannot, check that Y is or ever will be on chain. That
+  /// is the other way to freeze a pool: pin a slot whose content is right but
+  /// whose funding outpoint has been spent elsewhere, so the transaction can
+  /// never be mined and round N+2 has nothing to spend at input 3. Broadcast Y
+  /// before the round, not after.
+  ///
   /// [receipts] and [withdrawals] are the round's variable output tail, written
   /// after the five TSL1 outputs with the receipts first. That order is not
   /// cosmetic: a deposit covenant proves its receipt with SIGHASH_SINGLE, which
@@ -265,6 +280,8 @@ class ShieldedPoolTool {
        List<int>? newOwnerPKH,
        List<PoolWithdrawal>? withdrawals,
        List<PoolReceipt>? receipts,
+       Transaction? nextSlotTx,
+       bool uncheckedNextSlot = false,
        UnlockingScriptBuilder? slotUnlocker}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -285,6 +302,21 @@ class ShieldedPoolTool {
       throw ArgumentError(
           'prevSlotTx is not the slot PP3 named. PP3 pins output 0 of '
           '${hex.encode(parentSlot.sublist(0, 32).reversed.toList())}.');
+    }
+
+    if (nextSlotTx != null) {
+      checkSlotIsCertifiable(
+          slotTx: nextSlotTx,
+          outpoint: nextSlot,
+          header: newHeader,
+          verifierBodyHash: prevPP1.verifierBodyHash!);
+    } else if (!uncheckedNextSlot) {
+      throw ArgumentError(
+          'Pass nextSlotTx so the slot can be checked before the round is '
+          'mined. A round pinning a slot PP1 will not certify can never '
+          'produce a witness, and its PP3 can then never be spent: the pool '
+          'balance is frozen permanently. Pass uncheckedNextSlot: true to '
+          'build such a round on purpose.');
     }
 
     var nextOwnerPKH = newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160);
@@ -408,6 +440,71 @@ class ShieldedPoolTool {
         .build(false);
 
     return childTxn;
+  }
+
+  /// Runs, in Dart, the checks `PP1SpScriptGen.emitVerifySlotIsVerifier` will
+  /// run in script, and throws with the reason if any of them would fail.
+  ///
+  /// Kept as a separate entry point because the interesting caller is not only
+  /// [createRoundTxn]. A coordinator that assembles rounds by hand, or a
+  /// monitor watching someone else's pool, wants to ask this question of a
+  /// slot without building anything.
+  ///
+  /// The four checks are PP1's, in PP1's order: the outpoint names output 0 of
+  /// [slotTx]; Y has exactly one input and one output, which is what forces V
+  /// to be output 0; V is `OP_PUSHDATA1 0xec ‖ header ‖ body`; and the body
+  /// hashes to the pool's immutable [verifierBodyHash]. PP1 rebuilds Y from
+  /// its parts and compares HASH256 against the pin, so a slot that fails any
+  /// of these has no passing preimage short of breaking SHA-256.
+  static void checkSlotIsCertifiable({
+    required Transaction slotTx,
+    required List<int> outpoint,
+    required PoolHeader header,
+    required List<int> verifierBodyHash,
+  }) {
+    if (outpoint.length != 36) {
+      throw ArgumentError('A slot outpoint is 36 bytes, not ${outpoint.length}');
+    }
+    var vout = Uint8List.fromList(outpoint.sublist(32)).buffer
+        .asByteData()
+        .getUint32(0, Endian.little);
+    if (vout != 0) {
+      throw ArgumentError('The slot must name output 0 of Y, not output $vout. '
+          'PP1 rebuilds a one-output Y, so no other index can ever certify.');
+    }
+    if (!_sameRange(outpoint, slotTx.hash, 0, 32)) {
+      throw ArgumentError('nextSlot names '
+          '${hex.encode(outpoint.sublist(0, 32).reversed.toList())}, which is '
+          'not the slot transaction supplied.');
+    }
+    if (slotTx.inputs.length != 1 || slotTx.outputs.length != 1) {
+      throw ArgumentError('Y must have exactly one input and one output, not '
+          '${slotTx.inputs.length} and ${slotTx.outputs.length}. That shape is '
+          'what forces V to be output 0: a Y with more outputs could park the '
+          'real verifier somewhere inert and put an OP_TRUE where the round '
+          'looks.');
+    }
+
+    var v = slotTx.outputs[0].script.buffer;
+    var bodyStart = 2 + PoolHeader.byteSize;
+    if (v.length <= bodyStart || v[0] != 0x4c || v[1] != PoolHeader.byteSize) {
+      throw ArgumentError('Y output 0 does not open with a '
+          '${PoolHeader.byteSize}-byte header push, so it is not a verifier '
+          'slot for this pool.');
+    }
+    var encoded = header.encode();
+    if (!_sameRange(v.sublist(2, bodyStart), encoded, 0, PoolHeader.byteSize)) {
+      throw ArgumentError('The verifier in Y carries a different header than '
+          'the round does. A slot built for another state is a genuine, '
+          'spendable verifier that was never told what to check, which is the '
+          'case a body hash alone would let through.');
+    }
+    var bodyHash = crypto.sha256.convert(v.sublist(bodyStart)).bytes;
+    if (!_sameRange(bodyHash, verifierBodyHash, 0, 32)) {
+      throw ArgumentError('The verifier body in Y is not this pool\'s. Its '
+          'hash is ${hex.encode(bodyHash)}, and PP1 carries '
+          '${hex.encode(verifierBodyHash)}.');
+    }
   }
 
   /// Builds the slot transaction Y whose single output carries the verifier V

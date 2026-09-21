@@ -261,7 +261,9 @@ The shape is now fixed by 5.2, which rebuilds V as `OP_PUSHDATA1 0xec ‖ header
 
 TSL1's burn spends PP1, PP2 and PP3 with the owner's signature. For the pool the owner is the coordinator and PP3 holds everyone's money. The burn branch is removed from all three pool variants. If a shutdown path is wanted it must be a proved transition to an empty pool, not a signature.
 
-**DONE for PP1 2026-09-20**, along with the state machine's enroll, confirm, convert, settle and timeout, which are escrow lifecycle with no pool meaning. The dispatch now recognises only `OP_0` create and `OP_1` round and fails on anything else, rather than falling through to a branch the spender did not name; there is a test for that. Removing burn from PP2 and PP3 is still open.
+**DONE for PP1 2026-09-20**, along with the state machine's enroll, confirm, convert, settle and timeout, which are escrow lifecycle with no pool meaning. The dispatch now recognises only `OP_0` create and `OP_1` round and fails on anything else, rather than falling through to a branch the spender did not name; there is a test for that.
+
+**Still open for PP2 and PP3, and measured 2026-09-21 to be worse than it reads.** `WitnessCheckScriptGen._emitBurnPath` verifies `hash160(pubkey) == ownerPKH` and a signature, nothing else. `tool/scratch/pp3_freeze_probe.dart` spends a round's PP3 holding 500,000 satoshis of pool balance through that branch, with the coordinator's key alone, and the interpreter accepts it. So the coordinator can sweep every depositor's money at any round, with no proof, no witness and no verifier. That makes 8.3 false as the code stands. BACKLOG item 3 carries the fix and what it breaks.
 
 ### 5.7 Variable inputs and outputs inside PP1's rebuild
 
@@ -282,6 +284,10 @@ Every other TSL1 archetype writes a literal output count of 5. That literal is a
 **Measured.** `emitBuildOutputTail` is 6,981 bytes, which takes the PP1_SP lock from 3,329 to 10,310 bytes. A round witness is 74,675 bytes with an empty tail and 81,843 bytes at 256 withdrawals, against the stub verifier. The tail does not touch PP3's hashed geometry: `getInOutSize` is still 111 and the hashed tail still 115 of 119, with 4 bytes of headroom, at every tail size (11.3).
 
 With that, the only outputs a round can carry are the five TSL1 outputs, P2PKH payouts and data receipts. Nothing in the tail can be spent as a token, so the induction is exactly as strong as it was with five outputs. `tool/scratch/output_tail_probe.dart` builds the round the whole exercise is about, one carrying a second copy of its own PP1_SP output, and the witness refuses it whether it calls the extra output a payout or does not mention it at all.
+
+**A pinned slot cannot be taken back.** PP1 certifies the next round's slot in this round's witness, which is built after this round is mined. A round that pins a slot PP1 will refuse therefore mines fine and then cannot produce a witness, and PP3's unlock path needs that witness, so the pool balance is frozen. Permanently: PP1 rebuilds Y from its parts and compares HASH256 against the pin, so a passing preimage means breaking SHA-256. There is a second way in with the same ending, worth naming because it needs a different guard: PP1 never checks that Y is on chain, only that it hashes right, so a slot whose content is correct but whose funding outpoint was spent elsewhere lets the witness be built and leaves round N+2 with nothing to spend at input 3. Broadcast Y before the round.
+
+Because none of that is recoverable on chain, the checks run in Dart first. `ShieldedPoolTool.checkSlotIsCertifiable` runs PP1's four checks, in PP1's order, and `createRoundTxn` refuses to build a round without them unless the caller passes `uncheckedNextSlot`, which is how the negative tests build a round that kills its own witness. It cannot check that Y will be mined; nothing offline can.
 
 **What this rules out.** Outputs of arbitrary script in a round, including a second vault, a covenant, or any future output type, unless PP1 is regenerated to know its shape. The design accepts this. A round is a token transfer; anything else belongs in another transaction.
 
@@ -358,6 +364,8 @@ V_N is an input of round N+1. PP3_N refuses to be spent without it. PP1_N establ
 This is why V cannot run in the witness. If it did, a round could pay out and then simply never be witnessed. Verification must gate the transaction that moves money.
 
 ### 8.3 The failure mode of a dishonest coordinator is death, not theft
+
+**Not true of the code as of 2026-09-21.** PP3 still has the burn branch it inherited from the NFT archetype, so the coordinator can spend the pool balance on a signature. The argument below is the design's, and it holds once 5.6 is finished for PP2 and PP3. BACKLOG item 3.
 
 Every check PP1 performs in the witness is on a round already mined. A round that fails any of them (wrong Y content, balance not matching the header, bundles not matching outHash, malformed outputs) can never be witnessed, so the pool cannot advance and every note in it is frozen. That is the same failure mode as any TSL1 owner who builds a bad transfer. It is a griefing vector against the pool's users, and it exists today in the PP1_SP design too, where only the coordinator can advance a round. It does not move money, because money only moves in a round, and every round is gated by V and by the deposit covenants.
 

@@ -114,3 +114,46 @@ Delete `CoordinatorMode`, the `direct` constructor and its round-building path; 
 
 Note that this file belongs to the legacy pool's coordinator service, not to TSL1_SP. It was deliberately left in place when the aggregated-only decision was recorded, because deleting a working tested path immediately before a checkpoint tag is the wrong order of operations.
 
+
+---
+
+## 3. Remove the burn branch from PP2 and PP3
+
+**Severity:** critical for the pool, cosmetic for everything else. **Status:** not started. **Measured:** 2026-09-21.
+
+### What is wrong
+
+`WitnessCheckScriptGen` dispatches on a selector: `OP_0` runs the witness check, `OP_1` runs `_emitBurnPath`, which verifies `hash160(pubkey) == ownerPKH` and a signature, and nothing else. PP2 has the same shape. That is correct for an NFT, where the owner destroying their own token is a feature.
+
+For a pool it is not the owner's token. PP3 holds every depositor's balance, and its owner is the coordinator. So the coordinator can sweep the entire pool at any round, with a signature, no proof, no witness, no verifier.
+
+Measured with `tool/scratch/pp3_freeze_probe.dart`: a round holding 500,000 satoshis of pool balance, spent through the burn path with the coordinator's key, accepted by the interpreter.
+
+```
+PP3_1 with no witness behind it:
+  owner burn path: ACCEPTED
+  sweep pays the coordinator 1000499800 sat
+```
+
+PP1_SP already had burn removed for exactly this reason ([ZK_SHIELDED_POOL_TSL1_DESIGN.md](ZK_SHIELDED_POOL_TSL1_DESIGN.md) 5.6, done 2026-09-20). PP2 and PP3 were left, and 5.6 records that as open. What the measurement adds is how much it matters: the design's section 8.3 claims a dishonest coordinator's failure mode is the pool dying rather than funds moving. With this branch live, that claim is false. It is the single largest gap between the design and the code.
+
+### The fix
+
+PP3 and PP2 need pool variants with no burn branch, the way PP1 got one. `PartialWitnessLockBuilder` already takes an optional `nextSlot` that only pools pass, so the seam exists: a `poolVariant` flag that drops the selector dispatch entirely and emits only the unlock path. Dropping the dispatch is better than leaving a selector that always fails, because it removes the `OP_SWAP`/`OP_NOTIF` pair and the `ownerPKH` push that only burn used.
+
+Whether to do it as a flag on the existing generator or a separate `PoolWitnessCheckScriptGen` is a judgement call. The flag keeps one copy of the witness check, which is the part with the delicate partial-SHA256 geometry, and that argues for the flag.
+
+### What this breaks
+
+- **The script bytes change**, so PP3's offsets move. `PP1SpScriptGen.pp3NextSlotStart` and `pp3NextSlotEnd` are 22 and 58 today and are what `emitRebuildPP3WithNextSlot` substitutes as a fixed window. Removing the `ownerPKH` push shifts them, and `emitRebuildPP3WithNextSlot`, its tests and `createRoundTxn`'s parent-slot read all have to move with it.
+- **PP3's hashed tail geometry must be re-measured.** It currently sits at 115 of 119 bytes with 4 bytes of headroom (11.3). Removing bytes from the *locking* script does not obviously change the witness tail, but the margin is 4 bytes and the assumption should be checked rather than assumed. `tool/scratch/witness_tail_probe.dart` prints it.
+- **Non-pool archetypes must be untouched.** NFT, FT, RFT, RNFT, AT and SM all use `WitnessCheckScriptGen` and all legitimately burn. The pool path has to be opt-in, and `test/template_sync_test.dart` will catch it if the default output moves.
+- **The legacy pool** (`shielded_pool_legacy_tool.dart`) does not use these scripts, so it is unaffected.
+
+### Effort
+
+Half a day, most of it in moving the PP3 offsets and re-running the geometry probe. The script change itself is deleting a branch.
+
+### Related
+
+Item 2 above, and the freeze note in 5.7. The two interact in one specific way worth stating: **removing burn makes the freeze unrecoverable for real.** Today a coordinator who bricks the pool by pinning an uncertifiable slot can still sweep the balance back out, which is theft-shaped but recovers depositors' money if the coordinator is honest. After this change, a bricked pool is bricked, and the build-time guard in `ShieldedPoolTool.checkSlotIsCertifiable` becomes the only thing standing between a typo and a permanent loss. Do not remove burn without that guard in place. It is, as of 2026-09-21.

@@ -451,9 +451,16 @@ void main() {
           operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
     });
 
-    Transaction round(PoolHeader header, List<int> slot) => service.createRoundTxn(
-        createWitness, issuanceTx, y0.tx, operatorPub, fundA, signer,
-        operatorPub, fundB.hash, header, slot);
+    // [unchecked] waives the build-time slot check, which the negative cases
+    // below need: they pin a slot PP1 will refuse on purpose, and the whole
+    // point is to watch the witness refuse it.
+    Transaction round(PoolHeader header, List<int> slot,
+            {bool unchecked = false}) =>
+        service.createRoundTxn(
+            createWitness, issuanceTx, y0.tx, operatorPub, fundA, signer,
+            operatorPub, fundB.hash, header, slot,
+            nextSlotTx: unchecked ? null : y1.tx,
+            uncheckedNextSlot: unchecked);
 
     Transaction roundWitness(Transaction roundTx, {
       required PoolHeader claimedHeader,
@@ -560,7 +567,7 @@ void main() {
       // be verified against a state that is not the one it follows.
       var stale = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
-      var roundTx = round(h1, stale.outpoint);
+      var roundTx = round(h1, stale.outpoint, unchecked: true);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: stale.outpoint,
               yInput: stale.input, vBody: verifierBody, claimedBundles: bundles)),
@@ -570,7 +577,7 @@ void main() {
     test('rejects a slot holding something that is not the verifier', () {
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
-      var roundTx = round(h1, decoy.outpoint);
+      var roundTx = round(h1, decoy.outpoint, unchecked: true);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: decoy.outpoint,
               yInput: decoy.input, vBody: decoyBody, claimedBundles: bundles)),
@@ -580,7 +587,7 @@ void main() {
     test('rejects claiming the verifier is in a slot that holds a decoy', () {
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
-      var roundTx = round(h1, decoy.outpoint);
+      var roundTx = round(h1, decoy.outpoint, unchecked: true);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: decoy.outpoint,
               yInput: decoy.input, vBody: verifierBody, claimedBundles: bundles)),
@@ -592,7 +599,7 @@ void main() {
       // spend an uncertified one.
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
-      var roundTx = round(h1, decoy.outpoint);
+      var roundTx = round(h1, decoy.outpoint, unchecked: true);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: y1.outpoint, yInput: y1.input,
               vBody: verifierBody, claimedBundles: bundles)),
@@ -648,7 +655,8 @@ void main() {
           header: h2, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
 
       var round2 = service.createRoundTxn(witness1, round1, y1.tx, operatorPub,
-          fundA, signer, operatorPub, fundB.hash, h2, y2.outpoint);
+          fundA, signer, operatorPub, fundB.hash, h2, y2.outpoint,
+          nextSlotTx: y2.tx);
 
       // Round 1's PP3 held 500000 satoshis, not dust, and round 2 has to spend it.
       expect(round1.outputs[3].satoshis, h1.balance);
@@ -674,7 +682,8 @@ void main() {
       var stray = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x14));
       expect(() => service.createRoundTxn(createWitness, issuanceTx, stray.tx,
-              operatorPub, fundA, signer, operatorPub, fundB.hash, h1, y1.outpoint),
+              operatorPub, fundA, signer, operatorPub, fundB.hash, h1,
+              y1.outpoint, nextSlotTx: y1.tx),
           throwsA(isA<ArgumentError>()));
     });
   });
@@ -972,7 +981,7 @@ void main() {
             {List<PoolWithdrawal>? withdrawals, List<PoolReceipt>? receipts}) =>
         service.createRoundTxn(createWitness, issuanceTx, y0.tx, operatorPub,
             fundA, signer, operatorPub, fundB.hash, h1, y1.outpoint,
-            withdrawals: withdrawals, receipts: receipts);
+            nextSlotTx: y1.tx, withdrawals: withdrawals, receipts: receipts);
 
     Transaction witnessFor(Transaction roundTx,
             {List<PoolWithdrawal>? withdrawals, List<PoolReceipt>? receipts}) =>
@@ -1115,6 +1124,102 @@ void main() {
           () => round(receipts: [
                 for (var i = 0; i <= PoolReceipt.maxPerRound; i++) deposit(i, 100)
               ]),
+          throwsA(isA<ArgumentError>()));
+    });
+  });
+
+  // =========================================================================
+  // Refusing a slot before the round is mined
+  // =========================================================================
+  //
+  // PP1's certification of the next slot happens in the witness, which is
+  // built after the round is already mined. That is too late to help: a round
+  // pinning a slot PP1 will refuse can never produce a witness, its PP3 can
+  // then never be spent, and the pool balance is frozen permanently. So the
+  // same checks run in Dart before anything is broadcast, and the only way
+  // past them is to say so.
+  group('SP the tool refuses a slot that would freeze the pool', () {
+    late ShieldedPoolTool service;
+    late Transaction fundA, fundB, issuanceTx, createWitness;
+    late DefaultTransactionSigner signer;
+    late PoolHeader g, h1;
+    late ({Transaction tx, List<int> outpoint, List<int> input}) y0, y1;
+
+    setUp(() {
+      service = ShieldedPoolTool();
+      fundA = getOperatorFundingTx();
+      fundB = getOperatorFundingTx2();
+      signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      g = genesisHeader();
+      h1 = nextHeader(g);
+      y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
+      y1 = service.buildSlotTxn(
+          header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11));
+      issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+      createWitness = service.createWitnessTxn(
+          signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+    });
+
+    Transaction round(List<int> slot, {Transaction? slotTx, bool unchecked = false}) =>
+        service.createRoundTxn(createWitness, issuanceTx, y0.tx, operatorPub,
+            fundA, signer, operatorPub, fundB.hash, h1, slot,
+            nextSlotTx: slotTx, uncheckedNextSlot: unchecked);
+
+    test('accepts the slot built for this round', () {
+      expect(round(y1.outpoint, slotTx: y1.tx).outputs.length, 5);
+    });
+
+    test('refuses a round that names no slot transaction', () {
+      // The default has to be the safe one. A guard you have to remember to
+      // ask for is not a guard.
+      expect(() => round(y1.outpoint), throwsA(isA<ArgumentError>()));
+      expect(round(y1.outpoint, unchecked: true).outputs.length, 5,
+          reason: 'but saying so out loud still works, for the tests above');
+    });
+
+    test('refuses a verifier built for another header', () {
+      // The decisive case. This is a genuine, spendable copy of the pool's
+      // verifier that was never told the state it is supposed to check, so a
+      // body hash alone would pass it.
+      var wrong = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x12));
+      expect(() => round(wrong.outpoint, slotTx: wrong.tx),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('refuses a verifier that is not this pool\'s', () {
+      var decoy = service.buildSlotTxn(
+          header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13));
+      expect(() => round(decoy.outpoint, slotTx: decoy.tx),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('refuses a Y with more than one output', () {
+      // One input and one output is what forces V to be output 0. A Y with a
+      // second output could park the real verifier somewhere inert.
+      var extra = Transaction()
+        ..version = 1
+        ..nLockTime = 0
+        ..addInput(slotFunding(0x14))
+        ..addOutput(y1.tx.outputs[0])
+        ..addOutput(TransactionOutput(BigInt.one,
+            P2PKHLockBuilder.fromAddress(operatorAddress).getScriptPubkey()));
+      expect(() => round(outpoint(extra.hash, 0), slotTx: extra),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('refuses an outpoint naming any output but 0', () {
+      expect(() => round(outpoint(y1.tx.hash, 1), slotTx: y1.tx),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('refuses an outpoint that is not the slot transaction supplied', () {
+      var other = service.buildSlotTxn(
+          header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x15));
+      expect(() => round(other.outpoint, slotTx: y1.tx),
           throwsA(isA<ArgumentError>()));
     });
   });
