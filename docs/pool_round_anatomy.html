@@ -148,13 +148,13 @@
     <h1>Pool Round Anatomy</h1>
     <p class="standfirst">Every transaction in two consecutive rounds, which script locks which
       output, and which later input makes it run. Round 1 takes in a deposit and round 2 pays it
-      out. Sizes are measured from a chain this repository builds and the interpreter accepts,
-      with the real verifier and real root proofs.</p>
+      out. Sizes are measured from two chains mined on a regtest node, one at test parameters and
+      one at production parameters, with the real verifier and real root proofs.</p>
     <div class="meta">
-      <span class="chip mono">22 inputs verified end to end</span>
-      <span class="chip mono">measured 2026-09-21, after 70dabce</span>
+      <span class="chip mono">mined on regtest at both scales</span>
+      <span class="chip mono">measured 2026-09-21, d1977ef</span>
       <span class="chip mono">branch feature/shielded-pool</span>
-      <span class="chip alert">V at test parameters: 413 KB here, 1.78 MB in production</span>
+      <span class="chip alert">V: 413 KB at test parameters, 1.78 MB in production</span>
     </div>
   </header>
 
@@ -385,7 +385,7 @@
         <h3><span class="swatch" style="background:var(--pp1)"></span>PP1_SP</h3>
         <p>Locks round out1. Runs when the witness spends it. Rebuilds its own round byte for
           byte and certifies the next verifier slot, rebuilding that slot transaction whole. The
-          create branch certifies the genesis slot Y_0 the same way. <span class="mono">16,921 B</span></p>
+          create branch certifies the genesis slot Y_0 the same way. <span class="mono">16,924 B</span></p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--pp2)"></span>PP2</h3>
@@ -406,8 +406,8 @@
           A header push, then the signer's key hash, then the body: the signer check, the
           round's publics against both headers, the balance step, every output rebuilt against
           hashOutputs, and the root proof's verifier.
-          <span class="mono">413,198 B</span> at test parameters,
-          <span class="mono">1,782,534 B</span> and 823,536 opcodes in production.</p>
+          <span class="mono">413,201 B</span> at test parameters,
+          <span class="mono">1,782,796 B</span> and 823,536 opcodes in production.</p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--dep)"></span>Deposit covenant</h3>
@@ -435,11 +435,11 @@
       each withdrawal. Round 1 has one deposit, round 2 one withdrawal.</p>
     <p>Where a transaction has two sizes, they are the same transaction at two scales.</p>
     <div class="key">
-      <span><span class="k" style="color:var(--muted)">test</span>measured on the chain this page
-        runs: 4 transfers a round, 2 receipt slots, the tests' proof parameters</span>
-      <span style="color:var(--vfy)"><span class="k">prod</span>a production round, 256 transfers
-        and 8 receipt slots: plain if measured or computed from measured parts, ~ if it is the
-        estimate in section 10 of the design</span>
+      <span><span class="k" style="color:var(--muted)">test</span>measured on the test chain as
+        mined: 4 transfers a round, 2 receipt slots, the tests' proof parameters</span>
+      <span style="color:var(--vfy)"><span class="k">prod</span>measured on the production chain
+        as mined: 256 transfers a round, 8 receipt slots, the production proof parameters. Only
+        its ciphertext bundles are stand-ins, noted where they count</span>
     </div>
     <p>A row with one size is the same at both scales.</p>
     <div class="txgrid">
@@ -448,7 +448,7 @@
         <header>
           <span class="name">Round 1</span>
           <span class="chip mono">token transaction</span>
-          <span class="size"><span class="k">test</span>141,646 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span>
+          <span class="size"><span class="k">test</span>141,651 B<span class="prod"><span class="k">prod</span>395,685 B</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
@@ -467,7 +467,7 @@
                 signer's signature and the preimage. V's 1.78 MB body is not in this transaction;
                 it sits in Y_0 and in the witness that certified it, which is why a round stays
                 small</small></span>
-            <span class="sz"><span class="k">test</span>unlock 23,393 B<span class="prod"><span class="k">prod</span>~250 KB</span></span></div>
+            <span class="sz"><span class="k">test</span>unlock 23,394 B<span class="prod"><span class="k">prod</span>277,428 B</span></span></div>
           <div class="row"><span class="ix">3</span>
             <span class="what"><span class="tag t-pp3">PP3</span>round 0 out3
               <small>carries the induction and the balance forward; its SIGHASH_SINGLE preimage
@@ -481,16 +481,17 @@
           <div class="row"><span class="ix">5</span>
             <span class="what"><span class="tag t-dep">deposit</span>D out1
               <small>every prevout of the round and a SIGHASH_SINGLE preimage: input 3 is the PP3
-                it names, and output 5 is its receipt</small></span>
-            <span class="sz"><span class="k">test</span>unlock 418 B<span class="prod"><span class="k">prod</span>670 B at 13 inputs</span></span></div>
+                it names, and output 5 is its receipt. 670 B in a round of 8 deposits, which has
+                13 inputs</small></span>
+            <span class="sz">unlock 418 B</span></div>
           <p class="hd">Outputs · what each creates</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>change</span>
-            <span class="sz">25 B · 999,999,866 sat</span></div>
+            <span class="sz">25 B · <span class="k">test</span>999,859 sat<span class="prod"><span class="k">prod</span>999,605 sat</span></span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1_SP</span>header 1
               <small>ownerPKH, tokenId, verifierBodyHash, genesisHeader, header</small></span>
-            <span class="sz">16,921 B · 1 sat</span></div>
+            <span class="sz">16,924 B · 1 sat</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>witness bridge</span>
             <span class="sz">1,366 B · 1 sat</span></div>
@@ -514,7 +515,7 @@
         <header>
           <span class="name">Witness 1</span>
           <span class="chip mono">inductive proof</span>
-          <span class="size"><span class="k">test</span>574,387 B<span class="prod"><span class="k">prod</span>~3.6 MB</span></span>
+          <span class="size"><span class="k">test</span>574,451 B<span class="prod"><span class="k">prod</span>2,216,755 B</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs · what each spends</p>
@@ -524,7 +525,7 @@
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1</span>round 1 out1
               <small>where PP1 executes; 18 pushes, the large ones listed below</small></span>
-            <span class="sz"><span class="k">test</span>unlock 574,074 B<span class="prod"><span class="k">prod</span>~3.6 MB</span></span></div>
+            <span class="sz"><span class="k">test</span>unlock 574,139 B<span class="prod"><span class="k">prod</span>2,216,443 B</span></span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>round 1 out2</span>
             <span class="sz">unlock 34 B</span></div>
@@ -536,31 +537,34 @@
           <p class="hd">Inside input 1's unlocking script</p>
           <div class="row"><span class="ix">—</span>
             <span class="what">verifier body, with newHeader, nextSlot and Y_1's parts
-              <small>72% of this witness, on purpose: PP1 certifies Y_1 by rebuilding it and
-                matching the txid PP3 pins, which takes every byte, so V's body rides here in full: 412,939 B of body, then header 236, outpoint 36, Y_1's input and
-                anchor key hash 61. At production parameters the body is 1.78 MB</small></span>
-            <span class="sz"><span class="k">test</span>413,272 B<span class="prod"><span class="k">prod</span>1,782,867 B</span></span></div>
+              <small>72% of this witness, 80% in production, on purpose: PP1 certifies Y_1 by
+                rebuilding it and matching the txid PP3 pins, which takes every byte, so V's body
+                rides here in full: 412,942 B of body (1,782,537 B in production), then header 236,
+                outpoint 36, and Y_1's signed input with the anchor key hash, 168</small></span>
+            <span class="sz"><span class="k">test</span>413,382 B<span class="prod"><span class="k">prod</span>1,782,976 B</span></span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">lhs of round 1
-              <small>all six inputs with their unlocking scripts, V's 23,393 B and PP3's 49,640 B
-                among them</small></span>
-            <span class="sz"><span class="k">test</span>74,028 B<span class="prod"><span class="k">prod</span>~0.35 MB</span></span></div>
+              <small>all six inputs with their unlocking scripts, V's 23,394 B (277,428 B in
+                production) and PP3's 49,640 B among them</small></span>
+            <span class="sz"><span class="k">test</span>74,030 B<span class="prod"><span class="k">prod</span>328,064 B</span></span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">parent round, pushed whole
               <small>PP1 reads input 3's outpoint from bytes the chain fixed. Round 0 has no V or
-                PP3 unlock in it, so from witness 2 on the parent is a full round of 141,646 B
-                and the witness is 647,603 B</small></span>
-            <span class="sz"><span class="k">test</span>67,866 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span></div>
+                PP3 unlock in it, so it is the same at both scales. From witness 2 on the parent is
+                a full round: 141,651 B and a witness of 647,667 B, or 395,685 B and 2,544,051 B in
+                production</small></span>
+            <span class="sz">67,867 B</span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">sighash preimage, PP2 output
               <small>the preimage carries PP1's own script, so it grows with PP1</small></span>
-            <span class="sz">18,457 B</span></div>
+            <span class="sz">18,460 B</span></div>
           <div class="row"><span class="ix">—</span>
             <span class="what">ciphertext bundles, receipts
               <small>bundles bound by header 1's outHash; one 40-byte receipt record, rebuilt as
-                output 5. In production, 512 hybrid-KEM bundles of 1,827 B and up to 8
-                receipts</small></span>
-            <span class="sz"><span class="k">test</span>214 B<span class="prod"><span class="k">prod</span>~0.94 MB</span></span></div>
+                output 5. The production chain's 256 bundles are stand-ins of 40 to 103 B. Real
+                ones are 512 hybrid-KEM bundles of 1,827 B, about 0.94 MB, which would make this
+                witness about 3.1 MB</small></span>
+            <span class="sz"><span class="k">test</span>214 B<span class="prod"><span class="k">prod</span>18,856 B</span></span></div>
         </div>
       </article>
 
@@ -568,22 +572,23 @@
         <header>
           <span class="name">Y_1</span>
           <span class="chip mono">slot transaction</span>
-          <span class="size"><span class="k">test</span>413,296 B<span class="prod"><span class="k">prod</span>1,782,891 B</span></span>
+          <span class="size"><span class="k">test</span>413,406 B<span class="prod"><span class="k">prod</span>1,783,000 B</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
           <div class="row"><span class="ix">0</span>
             <span class="what">any funding, from anyone
               <small>exactly one input, its scriptSig under 253 B; PP1 checks the input's length
-                against its own length byte, so a scriptSig cannot swallow V or end early</small></span>
-            <span class="sz">41 B serialized</span></div>
+                against its own length byte, so a scriptSig cannot swallow V or end early. A
+                P2PKH signature is 107 B</small></span>
+            <span class="sz">148 B serialized</span></div>
           <p class="hd">Outputs</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-vfy">V_1</span>
               <code>4c ec</code> + header 1 + <code>14</code> + signer + body
               <small>the signer is round 1's new owner; V will demand its SIGHASH_ALL signature,
                 so a copied proof cannot spend V anywhere but in round 2</small></span>
-            <span class="sz"><span class="k">test</span>413,198 B · 1 sat<span class="prod"><span class="k">prod</span>1,782,793 B</span></span></div>
+            <span class="sz"><span class="k">test</span>413,201 B · 1 sat<span class="prod"><span class="k">prod</span>1,782,796 B</span></span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>anchor
               <small>spent by round 1 at input 4. PP1 rebuilds the whole transaction, so these
@@ -596,7 +601,7 @@
         <header>
           <span class="name">Round 0</span>
           <span class="chip mono">issuance · genesis</span>
-          <span class="size">67,866 B</span>
+          <span class="size">67,867 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
@@ -623,7 +628,7 @@
         <header>
           <span class="name">D</span>
           <span class="chip mono">deposit</span>
-          <span class="size">1,512 B</span>
+          <span class="size">1,513 B</span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
@@ -635,7 +640,7 @@
           <p class="hd">Outputs</p>
           <div class="row"><span class="ix">0</span>
             <span class="what"><span class="tag t-plain">P2PKH</span>change</span>
-            <span class="sz">25 B · 9,365 sat</span></div>
+            <span class="sz">25 B · 99,365 sat</span></div>
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-dep">deposit</span>
               <code>cm</code> + PP3_0's outpoint + refund key hash + refund height + body
@@ -649,13 +654,13 @@
         <header>
           <span class="name">Round 2</span>
           <span class="chip mono">token transaction</span>
-          <span class="size"><span class="k">test</span>141,069 B<span class="prod"><span class="k">prod</span>~0.43 MB</span></span>
+          <span class="size"><span class="k">test</span>141,072 B<span class="prod"><span class="k">prod</span>395,130 B</span></span>
         </header>
         <div class="io">
           <p class="hd">Inputs</p>
           <div class="row"><span class="ix">0-4</span>
             <span class="what">the same five as round 1, one round on
-              <small>V_1's unlock 23,332 B (~250 KB in production), PP3_1's 49,604 B; no
+              <small>V_1's unlock 23,333 B (277,389 B in production), PP3_1's 49,604 B; no
                 deposits</small></span>
             <span class="sz"></span></div>
           <p class="hd">Outputs</p>
@@ -852,26 +857,39 @@
 
   <section>
     <p class="lab">Status</p>
-    <h2>What is real, and what the test chain simplifies</h2>
+    <h2>What is real, and what the chains simplify</h2>
     <hr class="rule">
     <ul>
-      <li><strong>V is real, at test parameters.</strong> Its body is 412,939 bytes here. At
-        production parameters it is 1,782,534 bytes and 823,536 opcodes, under the 1M opcode
-        limit. Removing any one of its checks lets that check's attack through.</li>
+      <li><strong>V is real, at both scales.</strong> Its body is 412,942 bytes at test
+        parameters and 1,782,537 bytes and 823,536 opcodes in production, under the 1M opcode
+        limit. Removing any one of its checks lets that check's attack through. The node accepted
+        the production round 1, which runs V, in 963 ms, and its limit for a non-standard
+        transaction is 1,000 ms. That margin is the thinnest number on this page.</li>
       <li><strong>The verifier body rides in every witness, by design.</strong> PP1 has to
         certify what sits at the outpoint PP3 pins, and the only link to that outpoint is its
         txid, which is a hash over every byte of Y. The body comes after Y's own input and the
         header, so no reusable midstate can skip it. The witness is where TSL1 pays for bytes
-        once, so this is V's second and last copy. That is 72% of witness 1 here, and 1.78 MB per
-        witness in production, against the 1.5 MB the design budgeted.</li>
+        once, so this is V's second and last copy. That is 72% of witness 1 at test parameters and 80% in production,
+        1.78 MB per witness against the 1.5 MB the design budgeted.</li>
       <li><strong>Deposits and withdrawals are gated.</strong> The deposit covenant, the depositor's
         payment and refund, and the coordinator's search are built. V gates every withdrawal in the
         round that pays it. A deposit is valid for one round.</li>
-      <li><strong>The funding inputs are placeholders.</strong> Every round here spends the same
-        coordinator funding output, so this is a measured chain, not one you could broadcast. The
-        scripts, sizes and spends between pool transactions are real.</li>
-      <li><strong>Everything verifies.</strong> All 22 inputs of the issuance, both rounds and
-        three witnesses whose previous outputs are in the chain are accepted by the interpreter:
+      <li><strong>Both chains are mined.</strong> <code>test/pool_localnet_test.dart</code> funds
+        every transaction from real outputs, prices each fee from its size, and mines it before
+        building the next, on the regtest node of <code>../localnet</code>. The node needed
+        <code>maxscriptsizepolicy</code> raised from its 500,000-byte default: every witness's PP1
+        unlock is larger, at both scales. The test chain goes in through ARC. The production chain
+        goes in through the node's RPC, because ARC v1.5.10 cannot parse a scriptSig over
+        1,636,802 bytes and every production witness's is larger.</li>
+      <li><strong>The node found what the interpreter could not.</strong> PP1's round branch left
+        five items under its result. Consensus accepts that, but nodes relay only transactions
+        whose scripts leave one item, and dartsv checks that only for version-1 transactions.
+        Fixed in 8fde99c, and the tests now count the stack.</li>
+      <li><strong>The production chain's bundles are stand-ins.</strong> They are 40 to 103 bytes
+        each, not hybrid-KEM ciphertexts. Rounds carry no bundles, so only the witnesses are
+        affected: about 0.92 MB more each, witness 1 about 3.1 MB.</li>
+      <li><strong>Everything is accepted by the node.</strong> The issuance, both rounds, all three
+        witnesses, three Ys, the deposit and the payee spending the withdrawal, at both scales:
         V twice, the deposit covenant, every PP1, PP2, PP3 and anchor spend.</li>
     </ul>
   </section>
