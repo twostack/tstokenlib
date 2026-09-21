@@ -1,28 +1,18 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
-import 'package:tstokenlib/src/crypto/m31.dart';
-import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
-import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
-import 'package:tstokenlib/src/crypto/stark_prover.dart';
-import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/script_gen/pool_deposit_gen.dart';
-import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/pp1_ft_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/pool_verifier_gen.dart';
-import 'package:tstokenlib/src/script_gen/slot_script_common.dart';
-import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
-import 'package:tstokenlib/src/shielded_pool/pool_out_hash.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
-import 'pool_verifier_proof_test.dart' show spendP, p1, p2, rootP;
+import 'pool_chain_fixture.dart';
 
 final opKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
 final strangerKey = SVPrivateKey.fromWIF('cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5');
@@ -37,8 +27,22 @@ final fundingB = Transaction.fromHex(
 
 TransactionInput slotFunding(int n) => TransactionInput(hex.encode(List.filled(32, n)), 0, 0xffffffff);
 
-void spends(Transaction tx, int input, TransactionOutput spent) => Interpreter().correctlySpends(
-    tx.inputs[input].script!, spent.script, tx, input, flags, Coin.valueOf(spent.satoshis));
+/// [tx]'s [input] spends [spent], and leaves the stack clean. Nodes relay
+/// only transactions whose scripts leave exactly one item (the CLEANSTACK
+/// policy), and dartsv enforces that only on version-1 transactions, so it
+/// is counted here.
+void spends(Transaction tx, int input, TransactionOutput spent) {
+  Interpreter().correctlySpends(
+      tx.inputs[input].script!, spent.script, tx, input, flags, Coin.valueOf(spent.satoshis));
+  final stack = InterpreterStack<List<int>>();
+  final copy = Transaction.fromHex(tx.serialize());
+  Interpreter()
+    ..executeScript(copy, input, tx.inputs[input].script!, stack, spent.satoshis, flags, lockingScript: spent.script)
+    ..executeScript(copy, input, spent.script, stack, spent.satoshis, flags, lockingScript: spent.script);
+  if (stack.size() != 1) {
+    throw ScriptException(ScriptError.SCRIPT_ERR_CLEANSTACK, 'input $input leaves ${stack.size()} items');
+  }
+}
 
 /// A pool issued with the real V, and its first two rounds built by
 /// [ShieldedPoolTool.createRoundTxn] from real root proofs. From genesis
@@ -46,15 +50,11 @@ void spends(Transaction tx, int input, TransactionOutput spent) => Interpreter()
 /// through receipt slot 0, and three padding transfers. Round 2 spends that
 /// deposit's note, keeping 200 in the pool and withdrawing 300.
 void main() {
-  final rng = Random(71);
-  List<int> lanes(int n) => List.generate(n, (_) => rng.nextInt(M31.p));
   final svc = ShieldedPoolTool();
   final signer = DefaultTransactionSigner(sigHashAll, opKey);
   final opPub = opKey.publicKey;
   final opAddr = Address.fromPublicKey(opPub, NetworkType.TEST);
 
-  late PoolAggregation agg;
-  late PoolVerifierGen v;
   late List<int> body;
   late PoolHeader g, h1, h2;
   late ({Transaction tx, List<int> outpoint, List<int> parts}) y0, y1, y2;
@@ -77,107 +77,14 @@ void main() {
 
   setUpAll(() async {
     final sw = Stopwatch()..start();
-    agg = PoolAggregation(
-        spendP: spendP,
-        levelSpec: const [
-          AggregationLevel(params: p1, logTrace: 15, arity: 2),
-          AggregationLevel(params: p2, logTrace: 17, arity: 2),
-        ],
-        rootP: rootP,
-        rootLog: 15,
-        nullifierLevel: 1,
-        receiptSlots: 2);
-    final stmt = PoolStatement.of(agg.tree);
-    v = ShieldedPoolTool.poolVerifier(stmt,
-        verifier: StarkVerifierGen(rootP, agg.rootAir(List.filled(stmt.numPublics, 0))));
-    body = v.body();
-
-    final cmTree = NoteCommitmentTree();
-    final nullifiers = NullifierTree();
-    g = PoolHeader.genesis(
-        emptyCmRoot: SlotScript.lanesBytes(cmTree.root), emptyNfRoot: SlotScript.lanesBytes(nullifiers.root));
-    final ring = List.filled(4, cmTree.root);
-
-    SpendNote dummy() => SpendNote.dummy(sk: lanes(5), rho: lanes(3));
-    OutputNote out(int v) => OutputNote(pkd: lanes(8), value: v, rho: lanes(3), rcm: lanes(4));
-    List<List<int>> bundlesOf(int round) =>
-        [for (int t = 0; t < 4; t++) List<int>.generate(40 + t, (i) => (i * 7 + t + 31 * round) & 0xff)];
-
-    /// Proves one round of [witnesses] against the pool's trees as they
-    /// stand, and advances them.
-    Future<(PoolRoundProof, List<PoolPublicInputs>)> prove(
-        List<PoolSpendWitness> witnesses, List<List<int>> c, List<List<int>> ring, List<int> receiptTransfers) async {
-      final publics = [for (final w in witnesses) w.publics];
-      final spendProofs = [
-        for (int t = 0; t < 4; t++)
-          StarkProver.prove(spendP, PoolSpendAir.air(publics[t]), witnesses[t].rows, rng: Random(1), hash: const Poseidon2ProofHash())
-      ];
-      final rootBefore = cmTree.root;
-      final j = cmTree.nextSubtree, paths = <List<List<int>>>[];
-      final spendLanes = [for (final p in publics) p.toLanes()];
-      for (int s = 0; s < agg.tree.subtrees; s++) {
-        paths.add(cmTree.subtreePath(j + s));
-        cmTree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendLanes, s)) l ?? MerkleFrontier.emptyLeaf]);
-      }
-      final (rootProof, wide) = await agg.aggregate(publics, spendProofs,
-          rootBefore: rootBefore,
-          rootAfter: cmTree.root,
-          index: j,
-          paths: paths,
-          ring: ring,
-          nullifiers: nullifiers,
-          receiptTransfers: receiptTransfers,
-          rng: Random(3));
-      return (PoolRoundProof.root(rootP, agg.rootAir(wide), rootProof, c), publics);
-    }
-
-    // ---- round 1: a deposit of 500, whose note has a real owner, and three
-    // padding transfers
-    final sk = lanes(5), d = lanes(3), rho = lanes(3), rcm = lanes(4);
-    final depositNote = OutputNote(pkd: PoolHash.pkd(sk, d), value: 500, rho: rho, rcm: rcm);
-    final perTransfer = bundlesOf(1);
-    final c = [for (final b in perTransfer) PoolOutHash.bundleHash(b)];
-    bundles = PoolOutHash.encodeBundles(perTransfer);
-    final (p1Proof, publics1) = await prove([
-      PoolSpendAir.witness(dummy(), dummy(), depositNote, out(0), -500,
-          outHash: PoolOutHash.transferLanes(c[0]), anchor: lanes(8)),
-      for (int t = 1; t < 4; t++)
-        PoolSpendAir.witness(dummy(), dummy(), out(0), out(0), 0,
-            outHash: PoolOutHash.transferLanes(c[t]), anchor: lanes(8)),
-    ], c, ring, const [0]);
-    proof = p1Proof;
-    receipt = PoolReceipt(SlotScript.lanesBytes(publics1[0].cmOut1), BigInt.from(500));
-    h1 = g.advance(
-        cmRoot: SlotScript.lanesBytes(cmTree.root),
-        nfRoot: SlotScript.lanesBytes(nullifiers.root),
-        size: stmt.leavesAppended,
-        balance: g.balance + BigInt.from(500),
-        outHash: PoolOutHash.roundOutHash(c));
-
-    // ---- round 2: the deposit's note, the tree's first leaf, spent into a
-    // 200 note and a withdrawal of 300, anchored to header 1's root
-    expect(publics1[0].cmOut1, PoolHash.commit(PoolHash.pkd(sk, d), 500, rho, rcm).$2);
-    final path = cmTree.path(0);
-    final spent = SpendNote(sk: sk, d: d, value: 500, rho: rho, rcm: rcm, siblings: path.siblings, position: path.position);
-    withdrawal = PoolWithdrawal(hex.decode(strangerKey.publicKey.toAddress(NetworkType.TEST).pubkeyHash160), BigInt.from(300));
-    final perTransfer2 = bundlesOf(2);
-    final c2 = [for (final b in perTransfer2) PoolOutHash.bundleHash(b)];
-    bundles2 = PoolOutHash.encodeBundles(perTransfer2);
-    final (p2Proof, _) = await prove([
-      PoolSpendAir.witness(spent, dummy(), out(200), out(0), 300,
-          outHash: PoolOutHash.transferLanes(c2[0], withdrawal: withdrawal)),
-      for (int t = 1; t < 4; t++)
-        PoolSpendAir.witness(dummy(), dummy(), out(0), out(0), 0,
-            outHash: PoolOutHash.transferLanes(c2[t]), anchor: lanes(8)),
-    ], c2, [for (final r in h1.ring) _lanesOf(r)], const []);
-    proof2 = p2Proof;
-    h2 = h1.advance(
-        cmRoot: SlotScript.lanesBytes(cmTree.root),
-        nfRoot: SlotScript.lanesBytes(nullifiers.root),
-        size: 2 * stmt.leavesAppended,
-        balance: h1.balance - BigInt.from(300),
-        outHash: PoolOutHash.roundOutHash(c2));
-    expect(h2.nfRoot, isNot(h1.nfRoot), reason: 'round 2 spends a real note, so its nullifier goes in');
+    final f = await PoolChainFixture.prove(
+        withdrawalPKH: hex.decode(strangerKey.publicKey.toAddress(NetworkType.TEST).pubkeyHash160));
+    body = f.body;
+    (g, h1, h2) = (f.g, f.h1, f.h2);
+    (proof, proof2) = (f.proof, f.proof2);
+    (bundles, bundles2) = (f.bundles, f.bundles2);
+    receipt = f.receipt;
+    withdrawal = f.withdrawal;
     print('  proved rounds 1 and 2 and built V (${body.length} B) in ${sw.elapsedMilliseconds} ms');
 
     final bodyHash = crypto.sha256.convert(body).bytes;
@@ -395,8 +302,3 @@ void main() {
     });
   });
 }
-
-List<int> _lanesOf(List<int> bytes) => [
-      for (int i = 0; i < bytes.length; i += 4)
-        bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)
-    ];

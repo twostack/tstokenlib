@@ -784,6 +784,15 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);
     b.opCode(OpCodes.OP_EQUALVERIFY);
 
+    // What is left was only ever read with PICK: pp2Out, mPK, chgPkh, chgAmt
+    // and mSig. Consensus would take OP_1 on top of them, but every node's
+    // standard policy is CLEANSTACK (one item left), so a round witness
+    // leaving them would never be relayed. Measured on localnet: witness 1
+    // was refused "Script did not clean its stack". dartsv checks CLEANSTACK
+    // only for version-1 transactions, which is why no test here saw it.
+    b.opCode(OpCodes.OP_2DROP);
+    b.opCode(OpCodes.OP_2DROP);
+    b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_1);
   }
 

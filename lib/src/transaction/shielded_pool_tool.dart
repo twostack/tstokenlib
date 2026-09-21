@@ -327,6 +327,11 @@ class ShieldedPoolTool {
   /// defaults to [fundingTxSigner], which already signs input 1 for
   /// [ownerPubkey]. Without [roundProof], input 2 is spent with
   /// [slotUnlocker] or an empty unlock, which only a stand-in V accepts.
+  ///
+  /// [fee] is the round's whole fee, [defaultFee] if not given. It is a
+  /// number rather than a rate because V's signature covers the change. A
+  /// round's size does not depend on its fee (change is always 8 bytes), so
+  /// build once, price the size with [feeFor], and build again.
   Transaction createRoundTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
@@ -351,9 +356,11 @@ class ShieldedPoolTool {
        TransactionSigner? slotSigner,
        TransactionSigner? anchorSigner,
        SVPublicKey? anchorPubKey,
-       bool spendAnchor = true}) {
+       bool spendAnchor = true,
+       BigInt? fee}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
+    var roundFee = fee ?? defaultFee;
     var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
 
     // PP3_N pins the slot this round must spend at input 2. Without a slot in
@@ -505,7 +512,7 @@ class ShieldedPoolTool {
     }
     var childPreImageTxn = childPreImageBuilder
         .sendChangeToPKH(ownerAddress)
-        .withFee(defaultFee)
+        .withFee(roundFee)
         .build(false);
 
     // The preimage has to carry the value of the output being spent, and PP3
@@ -527,7 +534,8 @@ class ShieldedPoolTool {
     // V's unlock: its preimage covers every output, so it is taken from the
     // round as first built. The second build below changes only unlocking
     // scripts, which no BIP143 preimage covers, and the fee is fixed, so the
-    // change it carries is the same.
+    // change it carries is the same. That is why the fee is a number and not
+    // a rate: a rate would move the change between the two builds.
     if (roundProof != null) {
       slotUnlock = DefaultUnlockBuilder.fromScript(SVScript.fromByteArray(Uint8List.fromList(
           _slotUnlock(childPreImageTxn, prevSlotTx, roundProof, vSigner, ownerPubkey,
@@ -596,7 +604,7 @@ class ShieldedPoolTool {
     }
     var childTxn = childBuilder
         .sendChangeToPKH(ownerAddress)
-        .withFee(defaultFee)
+        .withFee(roundFee)
         .build(false);
 
     return childTxn;
@@ -779,13 +787,31 @@ class ShieldedPoolTool {
   /// Its input must have a scriptSig shorter than 253 bytes, because PP1
   /// accepts only a one-byte length there (see
   /// `PP1SpScriptGen.emitVerifySlotIsVerifier` for why the length matters).
+  ///
+  /// Y is funded one of two ways. [fundingInput] is spent as given, already
+  /// unlocked or not, which is what tests that never mine Y use. Otherwise
+  /// [fundingTx] output [fundingVout], a P2PKH, is spent and signed
+  /// SIGHASH_ALL by [fundingSigner] for [fundingPubKey]; its scriptSig is
+  /// about 107 bytes, inside PP1's limit. Y has no change output, because
+  /// its shape is fixed, so everything the funding output holds beyond V's
+  /// and the anchor's satoshi is fee: fund Y with an output sized to it.
   ({Transaction tx, List<int> outpoint, List<int> parts}) buildSlotTxn({
     required PoolHeader header,
     required List<int> verifierBody,
-    required TransactionInput fundingInput,
+    TransactionInput? fundingInput,
+    Transaction? fundingTx,
+    int fundingVout = 0,
+    TransactionSigner? fundingSigner,
+    SVPublicKey? fundingPubKey,
     required List<int> anchorPKH,
     required List<int> signerPKH,
   }) {
+    if ((fundingInput == null) == (fundingTx == null)) {
+      throw ArgumentError('Fund Y with fundingInput or fundingTx, not both or neither.');
+    }
+    if (fundingTx != null && (fundingSigner == null || fundingPubKey == null)) {
+      throw ArgumentError('Spending fundingTx needs fundingSigner and fundingPubKey.');
+    }
     if (anchorPKH.length != 20) {
       throw ArgumentError('anchorPKH is a 20-byte key hash, not ${anchorPKH.length} bytes');
     }
@@ -798,9 +824,18 @@ class ShieldedPoolTool {
     var y = Transaction()
       ..version = 1
       ..nLockTime = 0
-      ..addInput(fundingInput)
+      ..addInput(fundingInput ?? TransactionInput(fundingTx!.id, fundingVout, TransactionInput.MAX_SEQ_NUMBER))
       ..addOutput(TransactionOutput(BigInt.one, SVScript.fromByteArray(v)))
       ..addOutput(TransactionOutput(BigInt.one, anchorScript(anchorPKH)));
+    if (fundingTx != null) {
+      var spent = fundingTx.outputs[fundingVout];
+      var pre = Sighash().createSighashPreImage(y, fundingSigner!.sigHashType, 0, spent.script, spent.satoshis)!;
+      var sig = fundingSigner.signPreimage(pre);
+      y.inputs[0].script = (ScriptBuilder()
+            ..addData(Uint8List.fromList(hex.decode(sig.toTxFormat())))
+            ..addData(Uint8List.fromList(hex.decode(fundingPubKey!.toHex()))))
+          .build();
+    }
 
     var input = y.inputs[0].serialize();
     if (input[36] >= 0xfd) {
@@ -812,6 +847,13 @@ class ShieldedPoolTool {
       outpoint: getOutpoint(y.hash, outputIndex: 0),
       parts: [...input, ...anchorPKH],
     );
+  }
+
+  /// The fee for [tx] at [satsPerKb], rounded up, and never below one
+  /// satoshi a started kilobyte would cost.
+  static BigInt feeFor(Transaction tx, {required int satsPerKb}) {
+    var size = hex.decode(tx.serialize()).length;
+    return BigInt.from((size * satsPerKb + 999) ~/ 1000);
   }
 
   /// The output of [createDepositTxn] holding the covenant; change is 0.

@@ -448,6 +448,25 @@ void main() {
           throwsA(isA<ScriptException>()));
     });
 
+    test('a Y funded from a real output is signed, and witness 0 still certifies it', () {
+      // A mined Y has to unlock its funding. The signature changes Y's input,
+      // which PP1 rebuilds from `parts`, so this checks the signed input is
+      // what PP1 hashes, and that the scriptSig stays under PP1's 253 bytes.
+      var coins = Transaction()
+        ..addInput(slotFunding(0x12))
+        ..addOutput(TransactionOutput(BigInt.from(5000), P2PKHLockBuilder.fromAddress(operatorAddress).getScriptPubkey()));
+      var y = service.buildSlotTxn(header: g, verifierBody: verifierBody,
+          fundingTx: coins, fundingVout: 0, fundingSigner: signer, fundingPubKey: operatorPub,
+          anchorPKH: owner, signerPKH: owner);
+      Interpreter().correctlySpends(y.tx.inputs[0].script!, coins.outputs[0].script, y.tx, 0,
+          verifyFlags, Coin.valueOf(coins.outputs[0].satoshis));
+      expect(y.tx.inputs[0].script!.buffer.length, lessThan(253));
+      create(y);
+      expect(() => service.buildSlotTxn(header: g, verifierBody: verifierBody,
+              fundingTx: coins, fundingInput: slotFunding(0x12), anchorPKH: owner, signerPKH: owner),
+          throwsArgumentError);
+    });
+
     test('the tool refuses a genesis slot witness 0 would refuse', () {
       var decoy = slot(body: decoyBody);
       expect(() => service.createTokenIssuanceTxn(fundA, signer, operatorPub,

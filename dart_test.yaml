@@ -1,0 +1,3 @@
+tags:
+  localnet:
+    # Needs ../localnet running; see test/pool_localnet_test.dart.
