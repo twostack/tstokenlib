@@ -161,11 +161,16 @@ Tests: `test/sp_token_test.dart`, 45 of them, covering the codec roundtrip inclu
 
 **BUILT 2026-09-21.** The round branch does the ordinary TSL1 inductive transfer, rebuilding round N+1 byte for byte from the witness's pushes and checking the result hashes to its own outpoint's txid, plus four pool checks. `_emitRebuildPP1Pool` is two fixed-window substitutions where the state machine's was four, because the header is one push.
 
-**The shape of the problem.** PP1 cannot run the verifier. It lives in the witness, which is built after the round is mined and its withdrawals are paid; by the time PP1 has anything to say, the money has moved. So the round branch's job is not to check this round. It is to make the *next* round's verification impossible to skip, and that is why every check below is forward-looking.
+**The idea the branch turns on.** PP1 is the locking script on round N+1's output 1. It does not execute when that round is mined; it executes later, when witness N+1 spends it. By then the round is confirmed and its withdrawal outputs are already spendable. PP1 can therefore never gate its own round's money, and that is why the round branch aims every check one round ahead.
 
-The mechanism is a pair. PP3_{N+1} pins the outpoint round N+2 must spend, and PP3 is enforced at mining time. PP1 in witness N+1 certifies that the script at that outpoint is this pool's verifier carrying header_{N+1}. Neither half is sufficient: PP3's pin says nothing about what sits at the outpoint, and PP1's certificate arrives too late to protect its own round. Together they mean round N+2 can only be mined beside a verifier that already knows the true state it must check against.
+That leaves two scripts, each holding exactly what the other lacks:
 
-The ordering works because round N+2 spends witness N+1's output 0, so witness N+1 always exists first. There is no window in which a round can outrun the certificate for the slot it needs.
+- **PP3_{N+1}** is an output of round N+1 and holds the pool balance. It names the outpoint round N+2 must spend at input 3, and that demand is enforced when round N+2 is mined, before any of its money moves. What PP3 cannot do is look at the outpoint it named. It knows the address, not the tenant.
+- **PP1**, running in witness N+1, can look. It is handed Y_{N+1}'s parts, rebuilds the transaction and the script at its output 0, and certifies that the slot holds this pool's verifier carrying header_{N+1}. What it cannot do is arrive in time for its own round.
+
+Put together, PP3 supplies the timing and PP1 supplies the sight: round N+2 can only be mined beside a verifier that already knows the state it must check against.
+
+The ordering is what makes the pairing safe. Round N+2 spends witness N+1's output 0, so witness N+1 is always confirmed first and the certificate is in place before the pin it describes is ever tested.
 
 The checks, in the order the script does them:
 
