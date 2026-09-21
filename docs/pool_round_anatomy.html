@@ -516,8 +516,8 @@
           <p class="hd">Inside input 1's unlocking script</p>
           <div class="row"><span class="ix">—</span>
             <span class="what">verifier body, with newHeader, nextSlot and Y_1's parts
-              <small>72% of this witness. PP1 rebuilds Y_1 whole to certify it, so V's body rides
-                here in full: 412,939 B of body, then header 236, outpoint 36, Y_1's input and
+              <small>72% of this witness, on purpose: PP1 certifies Y_1 by rebuilding it and
+                matching the txid PP3 pins, which takes every byte, so V's body rides here in full: 412,939 B of body, then header 236, outpoint 36, Y_1's input and
                 anchor key hash 61. At production parameters the body is 1.78 MB</small></span>
             <span class="sz">413,272 B</span></div>
           <div class="row"><span class="ix">—</span>
@@ -836,10 +836,12 @@
       <li><strong>V is real, at test parameters.</strong> Its body is 412,939 bytes here. At
         production parameters it is 1,782,534 bytes and 823,536 opcodes, under the 1M opcode
         limit. Removing any one of its checks lets that check's attack through.</li>
-      <li><strong>The verifier body rides in every witness.</strong> PP1 rebuilds the next slot
-        transaction whole to certify it, so each witness carries V's body in full. That is 72% of
-        witness 1 here, and it would be 1.78 MB per witness in production. That is the largest
-        size item left.</li>
+      <li><strong>The verifier body rides in every witness, by design.</strong> PP1 has to
+        certify what sits at the outpoint PP3 pins, and the only link to that outpoint is its
+        txid, which is a hash over every byte of Y. The body comes after Y's own input and the
+        header, so no reusable midstate can skip it. The witness is where TSL1 pays for bytes
+        once, so this is V's second and last copy. That is 72% of witness 1 here, and 1.78 MB per
+        witness in production, against the 1.5 MB the design budgeted.</li>
       <li><strong>Deposits and withdrawals are gated.</strong> The deposit covenant, the depositor's
         payment and refund, and the coordinator's search are built. V gates every withdrawal in the
         round that pays it. A deposit is valid for one round.</li>

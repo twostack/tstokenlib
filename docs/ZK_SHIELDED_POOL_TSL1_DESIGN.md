@@ -46,7 +46,7 @@ The things that are large, for 256 transfers, from the measurements on the branc
 
 | Item | Size | Where it lives today |
 |---|---|---|
-| Root verifier slot script | 1.57 MB (before lane reduction, lower now) | round output, re-pushed in the next round's unlock |
+| Root verifier slot script | 1.57 MB (before lane reduction; V with its round binding is 1.78 MB, section 10) | round output, re-pushed in the next round's unlock |
 | State script body (nullifier insertions in script) | 1.41 MB | round output, and again as the preimage's scriptCode |
 | Nullifier insertion witnesses | 1.13 MB (512 x 2,306 B) | round unlock |
 | Per-note ciphertext bundles | 917 KB (512 x 1,827 B hybrid KEM) | round outputs (extras) |
@@ -505,20 +505,20 @@ For 256 aggregated transfers. Measured numbers are from `tool/scratch/agg_round_
 
 | Item | Size | Basis |
 |---|---|---|
-| V body | 1.5 MB | measured 1.57 MB before lane reduction |
-| Y_N | 1.5 MB | V plus one input |
-| Round outputs | ~80 KB | PP1 ~25 KB (est., SM is 11 to 15 KB), PP2 a few KB, PP3 ~38 KB, withdrawals 34 B each |
+| V body | 1.78 MB | measured 2026-09-21: 1,782,534 B, 823,536 opcodes. The verifier proper is about 1.6 MB; the rest is the round binding and output rebuild of 5.5 (113 KB) and PP1's and PP3's programs as constants (66 KB) |
+| Y_N | 1.78 MB | V plus one input and the anchor |
+| Round outputs | ~76 KB | PP1 16.9 KB, PP2 1.4 KB, PP3 49.2 KB measured; withdrawals 34 B each |
 | PP3_N unlock | 49.6 KB | measured 2026-09-21: the forward covenant needs PP3's whole script as scriptCode, so the separator is gone (5.4) |
 | V_N unlock | ~250 KB | proof 230 KB measured; the rest of the rebuild ~10 KB since PP1's and PP3's programs moved into V's body (5.5) |
 | Round total | ~0.43 MB | est. |
-| Witness PP1 unlock | ~3.3 MB | lhs ~0.35 MB, parent 0.43 MB, rebuild 0.08 MB, Y 1.5 MB, bundles 0.92 MB measured, preimage ~25 KB |
-| Witness total | ~3.3 MB | est. |
-| **Per round** | **~5.2 MB** | Y + round + witness |
+| Witness PP1 unlock | ~3.6 MB | lhs ~0.35 MB, parent 0.43 MB, rebuild 0.08 MB, V's body 1.78 MB (PP1 rebuilds Y to certify it, 5.2), bundles 0.92 MB measured, preimage ~25 KB |
+| Witness total | ~3.6 MB | est. |
+| **Per round** | **~5.8 MB** | Y + round + witness |
 | Today | 8.24 MB | measured, one transaction, no witness, cloneable |
 
-Per transfer: about 20 KB against 33 KB today. Largest single transaction: the witness at 3.3 MB against a 10 MB policy limit.
+Per transfer: about 23 KB against 33 KB today. Largest single transaction: the witness at 3.6 MB against a 10 MB policy limit. The table was first drawn with a 1.5 MB V (5.2 MB a round, 3.3 MB witness); V measured 1.78 MB once it was built, and since V is paid twice, that 0.28 MB became 0.56 MB a round.
 
-Where the saving comes from, in order: the nullifier tree leaving the state script (1.41 MB body, 1.41 MB preimage copy, 1.13 MB witnesses, all gone); the ciphertext bundles being paid once instead of once as output and twice as re-push; the state script being 25 KB rather than 1.41 MB. The verifier bytes cost the same as today, twice. The witness itself is the price of the guarantee: roughly the parent plus Y, about 2 MB per round.
+Where the saving comes from, in order: the nullifier tree leaving the state script (1.41 MB body, 1.41 MB preimage copy, 1.13 MB witnesses, all gone); the ciphertext bundles being paid once instead of once as output and twice as re-push; the state script being 25 KB rather than 1.41 MB. The verifier bytes cost the same as today, twice. The witness itself is the price of the guarantee: roughly the parent plus Y, about 2.2 MB per round.
 
 The nullifier move is not optional. With the insertions left in script the SM output is 1.5 MB, the witness pushes it as the parent and again in the rebuild, and the round goes back over 3 MB with the witness near 7 MB.
 
