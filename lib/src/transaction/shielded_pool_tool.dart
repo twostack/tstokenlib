@@ -27,7 +27,9 @@ import '../builder/pp1_sp_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
+import '../script_gen/pool_verifier_gen.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
+import '../script_gen/stark_verifier_gen.dart';
 import '../shielded_pool/pool_header.dart';
 import '../shielded_pool/pool_outputs.dart';
 import 'utils.dart';
@@ -309,6 +311,14 @@ class ShieldedPoolTool {
   /// ties output index to input index, and a depositor cannot know in advance
   /// how many withdrawals the round will carry. The same lists have to be
   /// handed to [createWitnessTxn].
+  ///
+  /// [roundProof] is what V_N, the verifier on Y_N's output 0, needs to let
+  /// this round spend it: the root proof's unlock and the transfers' bundle
+  /// hashes. V also requires a SIGHASH_ALL signature from the key its slot
+  /// names, which is this pool's owner; [slotSigner] signs with it and
+  /// defaults to [fundingTxSigner], which already signs input 1 for
+  /// [ownerPubkey]. Without [roundProof], input 2 is spent with
+  /// [slotUnlocker] or an empty unlock, which only a stand-in V accepts.
   Transaction createRoundTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
@@ -328,6 +338,8 @@ class ShieldedPoolTool {
        Transaction? nextSlotTx,
        bool uncheckedNextSlot = false,
        UnlockingScriptBuilder? slotUnlocker,
+       PoolRoundProof? roundProof,
+       TransactionSigner? slotSigner,
        TransactionSigner? anchorSigner,
        SVPublicKey? anchorPubKey,
        bool spendAnchor = true}) {
@@ -426,6 +438,15 @@ class ShieldedPoolTool {
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
 
+    if (roundProof != null && slotUnlocker != null) {
+      throw ArgumentError('Pass roundProof or slotUnlocker, not both.');
+    }
+    var vSigner = slotSigner ?? fundingTxSigner;
+    if (roundProof != null && vSigner.sigHashType != PoolVerifierGen.sighashType) {
+      throw ArgumentError('V takes a SIGHASH_ALL | FORKID signature from its signer, '
+          'which is what lets it read hashOutputs; the slot signer signs '
+          '0x${vSigner.sigHashType.toRadixString(16)}.');
+    }
     var slotUnlock = slotUnlocker ??
         DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var anchorUnlocker = P2PKHUnlockBuilder(anchorPubKey ?? ownerPubkey);
@@ -468,6 +489,22 @@ class ShieldedPoolTool {
     var sigPreImageChildTx = Sighash().createSighashPreImage(
         childPreImageTxn, pp3SighashType, PP1SpScriptGen.poolPP3Input,
         pp3Subscript, pp3Value);
+
+    // V's unlock: its preimage covers every output, so it is taken from the
+    // round as first built. The second build below changes only unlocking
+    // scripts, which no BIP143 preimage covers, and the fee is fixed, so the
+    // change it carries is the same.
+    if (roundProof != null) {
+      slotUnlock = DefaultUnlockBuilder.fromScript(SVScript.fromByteArray(Uint8List.fromList(
+          _slotUnlock(childPreImageTxn, prevSlotTx, roundProof, vSigner, ownerPubkey,
+              withdrawals: withdrawals ?? const [],
+              receipts: receipts ?? const [],
+              pp1Script: pp1Locker.getScriptPubkey().buffer,
+              header: newHeader,
+              pp2Script: pp2Locker.getScriptPubkey().buffer,
+              nextSlot: nextSlot,
+              metadataScript: metadataScript.buffer))));
+    }
 
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
@@ -512,6 +549,62 @@ class ShieldedPoolTool {
         .build(false);
 
     return childTxn;
+  }
+
+  /// V's unlock for spending [prevSlotTx]'s output 0 in [round]: the root
+  /// proof, then the tail `PoolVerifierGen.unlockAbove` lists, with the
+  /// owner's signature over the round.
+  List<int> _slotUnlock(Transaction round, Transaction prevSlotTx, PoolRoundProof proof,
+      TransactionSigner signer, SVPublicKey signerPub,
+      {required List<PoolWithdrawal> withdrawals,
+      required List<PoolReceipt> receipts,
+      required List<int> pp1Script,
+      required PoolHeader header,
+      required List<int> pp2Script,
+      required List<int> nextSlot,
+      required List<int> metadataScript}) {
+    var change = round.outputs[0];
+    var changeScript = change.script.buffer;
+    if (changeScript.length != 25 || changeScript[0] != 0x76 || changeScript[1] != 0xa9) {
+      throw StateError('V rebuilds output 0 as P2PKH change, and the round\'s is not.');
+    }
+    var preimage = Sighash().createSighashPreImage(round, PoolVerifierGen.sighashType,
+        PP1SpScriptGen.poolSlotInput, PoolVerifierGen.scriptCode, prevSlotTx.outputs[0].satoshis)!;
+    var sig = signer.signPreimage(preimage);
+    return [
+      ...proof.belowTail,
+      ...PoolVerifierGen.unlockTail(
+          bundleHashes: proof.bundleHashes,
+          withdrawals: withdrawals,
+          receipts: receipts,
+          changePKH: changeScript.sublist(3, 23),
+          changeSatoshis: change.satoshis,
+          pp1Prefix: pp1Script.sublist(0, PoolVerifierGen.pp1PrefixSize),
+          header1: header.encode(),
+          pp2Script: pp2Script,
+          nextSlot: nextSlot,
+          metadataScript: metadataScript,
+          signerSig: hex.decode(sig.toTxFormat()),
+          signerPubKey: hex.decode(signerPub.toHex()),
+          preimage: preimage),
+    ];
+  }
+
+  /// V for this pool's scripts: the tail over [stmt], with PP1's and PP3's
+  /// programs as the body's constants, around the root [verifier] (null
+  /// builds the tail alone, which checks a statement's shape and not its
+  /// truth; tests only). PP1 pins the result by `SHA256(body)`.
+  static PoolVerifierGen poolVerifier(PoolStatement stmt, {StarkVerifierGen? verifier}) {
+    var anyHeader = PoolHeader.genesis(emptyCmRoot: List.filled(32, 0), emptyNfRoot: List.filled(32, 0));
+    var pp1 = PP1SpLockBuilder(Address.fromPubkeyHash('00' * 20, NetworkType.TEST), List.filled(32, 0),
+            List.filled(32, 0), anyHeader, anyHeader.encode())
+        .getScriptPubkey()
+        .buffer;
+    var pp3 = PartialWitnessLockBuilder.forPool(List.filled(36, 0)).getScriptPubkey().buffer;
+    return PoolVerifierGen(stmt,
+        pp1Program: PoolVerifierGen.pp1ProgramOf(pp1),
+        pp3Program: PoolVerifierGen.pp3ProgramOf(pp3),
+        verifier: verifier);
   }
 
   /// Runs, in Dart, the checks `PP1SpScriptGen.emitVerifySlotIsVerifier` will

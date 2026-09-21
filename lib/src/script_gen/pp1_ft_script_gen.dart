@@ -1832,19 +1832,32 @@ class PP1FtScriptGen {
   /// Skip past version (4 bytes) and all inputs in a raw tx.
   /// Pre: [rawTxData]. Post: [txFromOutputCount].
   /// Uses altstack temporarily for the input counter.
-  static void emitSkipInputs(ScriptBuilder b) {
+  ///
+  /// [wide] is the shielded pool's variant (see [emitReadVarint]): it reads
+  /// 4-byte varints, unrolls [maxInputs] steps, and refuses a transaction
+  /// with more inputs than that, where the narrow form would stop skipping
+  /// and read the outputs from inside an input.
+  static void emitSkipInputs(ScriptBuilder b, {bool wide = false, int maxInputs = 6}) {
     // Skip version (4 bytes)
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
 
     // Read input count varint
-    emitReadVarint(b);
+    emitReadVarint(b, wide: wide);
     // [inputCount, txAfterVarint]
     b.opCode(OpCodes.OP_SWAP);
     // [txAfterVarint, inputCount]
+    if (wide) {
+      b.opCode(OpCodes.OP_DUP);
+      OpcodeHelpers.pushInt(b, maxInputs + 1);
+      b.opCode(OpCodes.OP_LESSTHAN);
+      b.opCode(OpCodes.OP_VERIFY);
+    } else if (maxInputs != 6) {
+      throw ArgumentError('maxInputs is the wide variant\'s');
+    }
 
     // Unrolled loop: skip up to 6 inputs
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < maxInputs; i++) {
       b.opCode(OpCodes.OP_DUP);
       OpcodeHelpers.pushInt(b, i + 1);
       b.opCode(OpCodes.OP_LESSTHAN);     // inputCount < i+1 means i >= inputCount → skip
@@ -1855,7 +1868,7 @@ class PP1FtScriptGen {
       OpcodeHelpers.pushInt(b, 36);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
       // Read scriptSig length varint
-      emitReadVarint(b);
+      emitReadVarint(b, wide: wide);
       // [count, scriptLen, rest] (rest on top)
       b.opCode(OpCodes.OP_SWAP);  // [count, rest, scriptLen]
       b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ADD);  // scriptLen + 4 (sequence)
@@ -1871,7 +1884,7 @@ class PP1FtScriptGen {
 
   /// Skip N outputs (N is on top of stack).
   /// Pre: [txData, n]. Post: [txData'].
-  static void emitSkipNOutputs(ScriptBuilder b) {
+  static void emitSkipNOutputs(ScriptBuilder b, {bool wide = false}) {
     // Unrolled loop: skip up to 7 outputs (max for split tx = 8 outputs, skip up to 7)
     // [txData, n]
     for (int i = 0; i < 7; i++) {
@@ -1885,7 +1898,7 @@ class PP1FtScriptGen {
       b.opCode(OpCodes.OP_8);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
       // Read script length varint and skip script
-      emitReadVarint(b);
+      emitReadVarint(b, wide: wide);
       // [n, scriptLen, rest] (rest on top)
       b.opCode(OpCodes.OP_SWAP);  // [n, rest, scriptLen]
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
@@ -1898,12 +1911,12 @@ class PP1FtScriptGen {
 
   /// Read one output's script (skipping satoshis).
   /// Pre: [txData]. Post: [remainingData, script].
-  static void emitReadOneOutputScript(ScriptBuilder b) {
+  static void emitReadOneOutputScript(ScriptBuilder b, {bool wide = false}) {
     // Skip 8-byte satoshis
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
     // Read script length varint
-    emitReadVarint(b);
+    emitReadVarint(b, wide: wide);
     // [scriptLen, rest] (rest on top)
     b.opCode(OpCodes.OP_SWAP);   // [rest, scriptLen]
     b.opCode(OpCodes.OP_SPLIT);  // [script, remaining]
@@ -1913,13 +1926,13 @@ class PP1FtScriptGen {
   /// Read outpoint (36 bytes) at a given input index from scriptLHS (tx bytes).
   /// Pre: [scriptLHS]. Post: [outpoint36].
   /// The inputIndex is a compile-time constant.
-  static void emitReadOutpoint(ScriptBuilder b, int inputIndex) {
+  static void emitReadOutpoint(ScriptBuilder b, int inputIndex, {bool wide = false}) {
     // Skip version (4 bytes)
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
 
     // Read input count varint (skip it)
-    emitReadVarint(b);
+    emitReadVarint(b, wide: wide);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
     // [txFromFirstInput]
 
@@ -1929,7 +1942,7 @@ class PP1FtScriptGen {
       OpcodeHelpers.pushInt(b, 36);
       b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
       // Read scriptSig len and skip script + sequence(4)
-      emitReadVarint(b);
+      emitReadVarint(b, wide: wide);
       // [scriptLen, rest] (rest on top)
       b.opCode(OpCodes.OP_SWAP);  // [rest, scriptLen]
       b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ADD);  // [rest, scriptLen+4]
@@ -1947,7 +1960,7 @@ class PP1FtScriptGen {
 
   /// Build a serialized tx output from script and satoshi amount.
   /// Pre: [script, satoshiAmount] (amount on top). Post: [outputBytes].
-  static void emitBuildOutput(ScriptBuilder b) {
+  static void emitBuildOutput(ScriptBuilder b, {bool wide = false}) {
     // Convert amount to 8-byte LE
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_NUM2BIN);
@@ -1958,7 +1971,7 @@ class PP1FtScriptGen {
     // Write varint(len(script))
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
-    emitWriteVarint(b);
+    emitWriteVarint(b, wide: wide);
     // [amountBytes8, script, varintBytes]
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
@@ -2220,7 +2233,15 @@ class PP1FtScriptGen {
   /// Pre: [data]. Post: [varintValue, rest].
   /// Handles unsigned byte values correctly (bytes >= 0x80 have sign bit set
   /// in BIN2NUM, so we zero-extend to 2 bytes before conversion).
-  static void emitReadVarint(ScriptBuilder b) {
+  ///
+  /// [wide] also reads the 4-byte form (0xfe) and refuses 0xff, which the
+  /// narrow form reads as if it were 0xfd: the right bytes for every TSL1
+  /// transaction under 64 KB a script, and the wrong ones above it. The
+  /// shielded pool passes it, because its rounds carry V's unlock and its
+  /// witnesses V's body, both far larger, and a length read short would
+  /// resume parsing inside bytes the coordinator wrote.
+  static void emitReadVarint(ScriptBuilder b, {bool wide = false}) {
+    if (wide) return _emitReadVarintWide(b);
     // Read first byte
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT);
@@ -2258,7 +2279,11 @@ class PP1FtScriptGen {
   /// Write varint from number on stack.
   /// Pre: [n]. Post: [varintBytes].
   /// Handles values 128-252 correctly (need 2-byte NUM2BIN then take low byte).
-  static void emitWriteVarint(ScriptBuilder b) {
+  ///
+  /// [wide] also writes the 4-byte form for 64 KB and over, which the
+  /// narrow form truncates to its low two bytes.
+  static void emitWriteVarint(ScriptBuilder b, {bool wide = false}) {
+    if (wide) return _emitWriteVarintWide(b);
     b.opCode(OpCodes.OP_DUP);
     OpcodeHelpers.pushInt(b, 253);
     b.opCode(OpCodes.OP_LESSTHAN);
@@ -2278,6 +2303,77 @@ class PP1FtScriptGen {
     b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.addData(Uint8List.fromList([0xFD]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_ENDIF);
+  }
+
+  /// Pre: [data]. Post: [value, rest]. 1, 3 or 5 bytes; 0xff fails.
+  static void _emitReadVarintWide(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);
+    // [rest, first]
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 253);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_IF);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_ELSE);
+    OpcodeHelpers.pushInt(b, 253);
+    b.opCode(OpCodes.OP_SUB);
+    // [rest, 0 (fd) | 1 (fe) | 2 (ff)]
+    b.opCode(OpCodes.OP_DUP);
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_VERIFY);
+    b.opCode(OpCodes.OP_IF);
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_ELSE);
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_ENDIF);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.addData(Uint8List.fromList([0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_ENDIF);
+  }
+
+  /// Pre: [n]. Post: [varintBytes], 1, 3 or 5 bytes.
+  static void _emitWriteVarintWide(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 253);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_IF);
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_NUM2BIN);
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_DROP);
+    b.opCode(OpCodes.OP_ELSE);
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 0x10000);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_IF);
+    b.opCode(OpCodes.OP_3);
+    b.opCode(OpCodes.OP_NUM2BIN);
+    b.opCode(OpCodes.OP_2);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_DROP);
+    b.addData(Uint8List.fromList([0xfd]));
+    b.opCode(OpCodes.OP_ELSE);
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_NUM2BIN);
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_DROP);
+    b.addData(Uint8List.fromList([0xfe]));
+    b.opCode(OpCodes.OP_ENDIF);
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_ENDIF);

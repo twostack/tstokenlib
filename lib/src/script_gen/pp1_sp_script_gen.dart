@@ -115,6 +115,11 @@ class PP1SpScriptGen {
   static const int poolSlotInput = 2;
   static const int poolPP3Input = 3;
 
+  /// The most inputs a pool transaction PP1 parses may have: the round's
+  /// five, then one deposit per receipt. PP1 refuses more rather than stop
+  /// skipping and read outputs out of an input.
+  static const int poolMaxInputs = 5 + PoolReceipt.maxPerRound;
+
   static const int pp2FundingOutpointStart = 117;
   static const int pp2WitnessChangePKHStart = 154;
   static const int pp2ChangeAmountStart = 175;
@@ -355,16 +360,16 @@ class PP1SpScriptGen {
     // The issuance's input 1 outpoint, which must be the anchor.
     OpcodeHelpers.pushInt(b, 3);
     b.opCode(OpCodes.OP_PICK);           // tokenRawTx
-    PP1FtScriptGen.emitReadOutpoint(b, 1);
+    PP1FtScriptGen.emitReadOutpoint(b, 1, wide: true);
     // The slot PP3_0 pins: output 3's script, bytes [1:37].
     OpcodeHelpers.pushInt(b, 4);
     b.opCode(OpCodes.OP_PICK);           // tokenRawTx
-    PP1FtScriptGen.emitSkipInputs(b);
-    PP1FtScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitSkipInputs(b, wide: true, maxInputs: poolMaxInputs);
+    PP1FtScriptGen.emitReadVarint(b, wide: true);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);   // output count
     b.opCode(OpCodes.OP_3);
-    PP1FtScriptGen.emitSkipNOutputs(b);
-    PP1FtScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitSkipNOutputs(b, wide: true);
+    PP1FtScriptGen.emitReadOneOutputScript(b, wide: true);
     b.opCode(OpCodes.OP_NIP);            // PP3_0's script
     b.opCode(OpCodes.OP_1);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
@@ -609,18 +614,18 @@ class PP1SpScriptGen {
 
     // Phase 5: Parse parentRawTx outputs
     b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_PICK);  // rawTx
-    PP1FtScriptGen.emitSkipInputs(b);
-    PP1FtScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitSkipInputs(b, wide: true, maxInputs: poolMaxInputs);
+    PP1FtScriptGen.emitReadVarint(b, wide: true);
     b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_1);
-    PP1FtScriptGen.emitSkipNOutputs(b);
-    PP1FtScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitSkipNOutputs(b, wide: true);
+    PP1FtScriptGen.emitReadOneOutputScript(b, wide: true);
     b.opCode(OpCodes.OP_TOALTSTACK);     // pp1S → alt
-    PP1FtScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b, wide: true);
     b.opCode(OpCodes.OP_TOALTSTACK);     // pp2S → alt
-    PP1FtScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b, wide: true);
     b.opCode(OpCodes.OP_TOALTSTACK);     // pp3S → alt
-    PP1FtScriptGen.emitReadOneOutputScript(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b, wide: true);
     b.opCode(OpCodes.OP_TOALTSTACK);     // metaS → alt
     b.opCode(OpCodes.OP_DROP);           // drop remaining
 
@@ -662,7 +667,7 @@ class PP1SpScriptGen {
 
     // Phase 9: Build PP1 output (1 sat)
     b.opCode(OpCodes.OP_1);
-    PP1FtScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b, wide: true);
 
     // Phase 10: Build PP3 output
     //
@@ -683,7 +688,7 @@ class PP1SpScriptGen {
     // Phase 11: Build metadata output (0 sats)
     b.opCode(OpCodes.OP_7); b.opCode(OpCodes.OP_PICK);  // metaS
     b.opCode(OpCodes.OP_0);
-    PP1FtScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b, wide: true);
 
     // Phase 12: Build change output
     // idx: metaOut=0, pp3Out=1, pp1Out=2, currentTxId=3, nLocktime=4,
@@ -695,7 +700,7 @@ class PP1SpScriptGen {
     PP1FtScriptGen.emitBuildP2PKHScript(b);
     OpcodeHelpers.pushInt(b, 15);
     b.opCode(OpCodes.OP_PICK);  // changeAmt (+1)
-    PP1FtScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b, wide: true);
 
     // Phase 12b: Build the variable output tail
     //
@@ -753,7 +758,7 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_PICK);  // pp2Out
     b.opCode(OpCodes.OP_8);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
-    PP1FtScriptGen.emitReadVarint(b);
+    PP1FtScriptGen.emitReadVarint(b, wide: true);
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_SWAP);
@@ -773,7 +778,7 @@ class PP1SpScriptGen {
     // A pool round spends its parent's PP3 at input 3, not the TSL1 input 2:
     // PP3 signs SIGHASH_SINGLE so that its forward covenant sees output 3,
     // and SINGLE ties output index to input index.
-    PP1FtScriptGen.emitReadOutpoint(b, poolPP3Input);
+    PP1FtScriptGen.emitReadOutpoint(b, poolPP3Input, wide: true);
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);
@@ -942,7 +947,7 @@ class PP1SpScriptGen {
 
     // output = value(8 LE) ‖ varint(len) ‖ V, at the protocol dust value.
     b.opCode(OpCodes.OP_1);
-    PP1FtScriptGen.emitBuildOutput(b);
+    PP1FtScriptGen.emitBuildOutput(b, wide: true);
     // [slotParts, vOut]
 
     // slotParts = yInput ‖ anchorPKH. A slotParts shorter than 20 bytes
@@ -1017,7 +1022,7 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_SWAP);           // [value8, script]
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
-    PP1FtScriptGen.emitWriteVarint(b);   // [value8, script, varint]
+    PP1FtScriptGen.emitWriteVarint(b, wide: true);   // [value8, script, varint]
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);            // [value8, varint+script]
     b.opCode(OpCodes.OP_CAT);
@@ -1132,7 +1137,7 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_ADD);            // 5 + r + w
     // Five plus the tail can pass 252, so the count needs a real varint and
     // not the single byte every fixed-count archetype gets away with.
-    PP1FtScriptGen.emitWriteVarint(b);
+    PP1FtScriptGen.emitWriteVarint(b, wide: true);
     b.opCode(OpCodes.OP_ROT); b.opCode(OpCodes.OP_ROT);
     // Stack: [countVarint, withdrawals, receipts]
 
@@ -1240,7 +1245,7 @@ class PP1SpScriptGen {
   /// Pre:  [parentPP3Script, scriptLHS]   (scriptLHS on top)
   /// Post: []
   static void emitVerifySpentPinnedSlot(ScriptBuilder b) {
-    PP1FtScriptGen.emitReadOutpoint(b, poolSlotInput);
+    PP1FtScriptGen.emitReadOutpoint(b, poolSlotInput, wide: true);
     b.opCode(OpCodes.OP_SWAP);
     OpcodeHelpers.pushInt(b, pp3NextSlotEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);

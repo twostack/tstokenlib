@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import '../crypto/m31.dart' show M31;
+import '../crypto/stark_prover_ref.dart' show StarkParams, StarkProof;
 import '../recursion/verifier_program.dart' show AggregationTree;
 import '../shielded_pool/pool_header.dart';
 import '../shielded_pool/pool_outputs.dart';
@@ -706,4 +707,27 @@ class PoolVerifierGen {
   /// V's whole lock for [header] and [signerPKH].
   Uint8List lock(List<int> header, List<int> signerPKH) =>
       Uint8List.fromList([OpCodes.OP_PUSHDATA1, PoolHeader.byteSize, ...header, 20, ...signerPKH, ...body()]);
+}
+
+/// What V's unlock carries below its tail for one round: the root proof's
+/// unlock (its public lanes, then the proof), and the transfers' bundle
+/// hashes in order, which V checks against the proof's outHash lanes and
+/// header_{N+1}.outHash.
+class PoolRoundProof {
+  final List<int> belowTail;
+  final List<List<int>> bundleHashes;
+
+  PoolRoundProof(this.belowTail, this.bundleHashes) {
+    if (bundleHashes.any((c) => c.length != 32)) throw ArgumentError('32-byte bundle hashes');
+  }
+
+  /// The root proof [proof] of the wide statement [air] states, verified
+  /// at [rootP].
+  factory PoolRoundProof.root(StarkParams rootP, Air air, StarkProof proof, List<List<int>> bundleHashes) =>
+      PoolRoundProof(StarkVerifierGen(rootP, air).buildUnlock(proof).buffer, bundleHashes);
+
+  /// Bare public [lanes] and no proof, for a V built without a verifier.
+  /// Tests only: such a V checks the statement's shape, not its truth.
+  factory PoolRoundProof.bare(List<int> lanes, List<List<int>> bundleHashes) =>
+      PoolRoundProof(PoolVerifierGen.barePublics(lanes), bundleHashes);
 }
