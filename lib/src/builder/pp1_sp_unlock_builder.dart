@@ -51,7 +51,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _newOwnerPKH;
   List<int>? _newHeader;
   List<int>? _nextSlot;
-  List<int>? _yInput;
+  List<int>? _slotParts;
   List<int>? _verifierBody;
   List<int>? _bundles;
   List<int>? _withdrawals;
@@ -79,7 +79,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       {List<int>? newOwnerPKH,
       List<int>? newHeader,
       List<int>? nextSlot,
-      List<int>? yInput,
+      List<int>? slotParts,
       List<int>? verifierBody,
       List<int>? bundles,
       List<int>? withdrawals,
@@ -87,7 +87,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       : _newOwnerPKH = newOwnerPKH,
         _newHeader = newHeader,
         _nextSlot = nextSlot,
-        _yInput = yInput,
+        _slotParts = slotParts,
         _verifierBody = verifierBody,
         _bundles = bundles,
         _withdrawals = withdrawals,
@@ -130,10 +130,10 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       case ShieldedPoolAction.ROUND:
         // Stack: [withdrawals, receipts, preImage, pp2Out, ownerPK, changePkh,
         //         changeAmt, ownerSig, newOwnerPKH, newHeader, nextSlot,
-        //         yInput, vBody, bundles, scriptLHS, parentRawTx, padding,
+        //         slotParts, vBody, bundles, scriptLHS, parentRawTx, padding,
         //         OP_1]
         //
-        // nextSlot, yInput and vBody describe the verifier slot that round N+2
+        // nextSlot, slotParts and vBody describe the verifier slot that round N+2
         // will have to spend; PP1 certifies it holds this pool's verifier
         // carrying newHeader. bundles are the round's ciphertexts, published by
         // being in this witness and bound by newHeader.outHash.
@@ -156,7 +156,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs a 36-byte nextSlot outpoint");
         }
-        if (_yInput == null || _verifierBody == null) {
+        if (_slotParts == null || _verifierBody == null) {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs the slot transaction's input and the verifier body");
         }
@@ -181,7 +181,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
         result.addData(Uint8List.fromList(_newOwnerPKH!));
         result.addData(Uint8List.fromList(_newHeader!));
         result.addData(Uint8List.fromList(_nextSlot!));
-        result.addData(Uint8List.fromList(_yInput!));
+        result.addData(Uint8List.fromList(_slotParts!));
         result.addData(Uint8List.fromList(_verifierBody!));
         result.addData(Uint8List.fromList(_bundles ?? const <int>[]));
         result.addData(Uint8List.fromList(_tokenLHS!));
@@ -208,7 +208,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
     _newOwnerPKH = chunkList[8].buf;
     _newHeader = chunkList[9].buf;
     _nextSlot = chunkList[10].buf;
-    _yInput = chunkList[11].buf;
+    _slotParts = chunkList[11].buf;
     _verifierBody = chunkList[12].buf;
     _bundles = chunkList[13].buf;
     _tokenLHS = chunkList[14].buf;
@@ -228,7 +228,7 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get newOwnerPKH => _newOwnerPKH;
   List<int>? get newHeader => _newHeader;
   List<int>? get nextSlot => _nextSlot;
-  List<int>? get yInput => _yInput;
+  List<int>? get slotParts => _slotParts;
   List<int>? get verifierBody => _verifierBody;
   List<int>? get bundles => _bundles;
   List<int>? get withdrawals => _withdrawals;

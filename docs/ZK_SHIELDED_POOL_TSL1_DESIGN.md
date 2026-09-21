@@ -70,10 +70,13 @@ Created before round N by anyone, funded by anyone. Its content is fixed by roun
 
 | | |
 |---|---|
-| Inputs | any funding |
+| Inputs | exactly one, any funding, scriptSig under 253 bytes |
 | out0 | `V_N` = pushes of header_N, then the verifier body. 1 satoshi |
+| out1 | the anchor: P2PKH to the key that will sign round N, normally the coordinator's. 1 satoshi |
 
-**Exactly one input and one output is a requirement, not a convention.** It is what forces V to be output 0: PP1 rebuilds Y from its parts rather than parsing it, so with the counts fixed at one a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` where the round looks. The coordinator builds Y, so meeting the shape costs nothing. See 11.11 for why the alternative was dropped.
+**Exactly this shape is a requirement, not a convention.** It is what forces V to be output 0: PP1 rebuilds Y from its parts rather than parsing it, so with the counts and the anchor's template fixed a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` where the round looks. The coordinator builds Y, so meeting the shape costs nothing. See 11.11 for why the alternative to one slot was dropped.
+
+**The anchor, BUILT 2026-09-21.** Round N pins Y_N:0 in its PP3, and round N+1 spends it. Until the anchor, nothing made round N depend on Y_N itself, so round N could be mined pinning a Y_N that never was: its funding spent elsewhere, a conflicting Y, a policy rejection. Round N+1 then had nothing to spend at input 2, PP3_N could never be spent, and with no burn path the balance was frozen for good. The only guard was a rule, broadcast Y before the round. Now round N spends Y_N's output 1 at input 4, and PP3_{N-1} refuses the round without it (5.4), so a round pinning a Y that is not on chain cannot be mined either. It is not circular, because Y does not depend on the round that spends its anchor. The design that came first, Y spending a covenant output of round N, pointed the dependency the wrong way: it makes Y depend on the round, and the round still does not depend on Y.
 
 ### 4.2 Round N+1, the token transaction
 
@@ -83,7 +86,8 @@ Created before round N by anyone, funded by anyone. Its content is fixed by roun
 | 1 | witness_N out0 (ModP2PKH) | coordinator signature |
 | 2 | Y_N out0 (V_N) | preimage (small, see 5.5), proof, round N+1's outputs for the hashOutputs rebuild |
 | 3 | round N out3 (PP3_N) | SIGHASH_SINGLE preimage carrying PP3's whole script, midstate of witness_N, remainder blocks, output 3's value and slot |
-| 4.. | deposit covenants | preimage only |
+| 4 | Y_{N+1} out1, the anchor | signature of the anchor's key |
+| 5.. | deposit covenants | preimage only |
 
 Inputs 2 and 3 are the other way round from every other TSL1 archetype, where PP3 is input 2. PP3's forward covenant signs SIGHASH_SINGLE, which covers the output at the spending input's own index, and the output it constrains is output 3. See 5.4.
 
@@ -99,17 +103,19 @@ Inputs 2 and 3 are the other way round from every other TSL1 archetype, where PP
 
 The pool balance lives in PP3's value. PP3 is spent only on the transfer path, into the next round. This removes the separate vault output and gives V a single value to check.
 
+Five fixed inputs and five fixed outputs means the first deposit input and the first receipt output are both index 5, which is what a deposit covenant's SIGHASH_SINGLE needs (11.12).
+
 ### 4.3 Witness N+1
 
 | Input | Spends | Unlocking data |
 |---|---|---|
 | | coordinator funding | signature |
-| | round N+1 out1 (PP1) | preimage, lhs of round N+1, round N raw (parent), round N+1's rebuilt outputs, **(Y_{N+1}, 0)**, **Y_{N+1}'s single input**, **the verifier body**, **the ciphertext bundles of round N+1**, padding, action flag |
+| | round N+1 out1 (PP1) | preimage, lhs of round N+1, round N raw (parent), round N+1's rebuilt outputs, **(Y_{N+1}, 0)**, **Y_{N+1}'s input and anchor key hash**, **the verifier body**, **the ciphertext bundles of round N+1**, padding, action flag |
 | | round N+1 out2 (PP2) | preimage and fields as today |
 
 Single output: ModP2PKH to the coordinator, as today. Input order is whatever the existing tool uses to keep PP3's remainder small; see 11.3.
 
-Y_{N+1} is pushed as its outpoint plus its one input rather than whole, because PP1 rebuilds it rather than parsing it; see 5.2.
+Y_{N+1} is pushed as its outpoint plus its one input and the anchor's 20-byte key hash rather than whole, because PP1 rebuilds it rather than parsing it; see 5.2.
 
 ## 5. Header and script changes
 
@@ -159,7 +165,7 @@ Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyH
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 14,652 bytes since the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
+**Measured.** Script 14,704 bytes since the anchor (4.1), 14,652 after the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
 Tests: `test/sp_token_test.dart`, 58 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, a selector that names no branch, and the output tail cases of 5.7.
 
@@ -186,12 +192,16 @@ The checks, in the order the script does them:
 
 ```
 V = OP_PUSHDATA1 0xec ‖ header_{N+1} ‖ body
-Y = version=1 ‖ 0x01 ‖ yInput ‖ 0x01 ‖ output(V, 1 sat) ‖ nLockTime=0
+anchor = 1 sat ‖ 0x19 ‖ OP_DUP OP_HASH160 <anchorPKH> OP_EQUALVERIFY OP_CHECKSIG
+Y = version=1 ‖ 0x01 ‖ yInput ‖ 0x02 ‖ output(V, 1 sat) ‖ anchor ‖ nLockTime=0
+SIZE(yInput) == 41 + yInput[36]      and      yInput[36] < 0xfd
 SHA256(body) == verifierBodyHash
 SHA256d(Y)   == nextSlot[0:32]      and      nextSlot[32:36] == 0
 ```
 
-Only `yInput` and `body` are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for the value and varint. Requiring exactly one input and one output is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing.
+Only `yInput`, `body` and the anchor's key hash are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for V's value and varint. Fixing the shape is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing. `yInput` and the key hash arrive as one push, split 20 bytes from the end, so no other index in the branch moved.
+
+**yInput's length is checked, and the anchor is why it has to be.** The pin is a hash over bytes, and bytes mean something only through a parse. If yInput's own scriptSig length could disagree with how many bytes yInput actually holds, the real transaction would parse differently from what PP1 rebuilt. Claiming more lets the scriptSig, as one push, swallow the output count, V and the start of the anchor, with the parse resuming inside the anchor's key hash: 20 bytes of the spender's choosing, room for a sequence, an output count of 1 and a script `OP_1 OP_1 OP_EQUALVERIFY OP_CHECKSIG` that borrows the anchor's own last two opcodes. Claiming less ends the scriptSig early and lets the rest of yInput open an output whose `OP_1 OP_RETURN` script covers V and the anchor. Either way the real Y has one output an attacker spends without a proof, hashing exactly to the pin. Before the anchor, everything after yInput was fixed or hash-checked, so the parse had nowhere to land that the spender chose. Both Ys are built in `test/sp_token_test.dart`, parsed in Dart to show they really are one-output transactions, and refused; with the length check removed from the generator, PP1 accepts both.
 
 Checking the body alone would not be enough, and this is the check that earns the header's single-push layout. A slot can hold a genuine, correct, spendable copy of the pool's verifier that was simply initialised with some other round's header. Round N+2's proof would then be verified against publics that are not the state it follows. Rebuilding V from `header_{N+1}` and comparing the txid closes it, and costs one `OP_CAT` over a value the branch already has on the stack. There is a test for exactly that case: the right verifier, the wrong header.
 
@@ -224,10 +234,11 @@ hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ myOutpoint)
 where `myOutpoint` is PP3's own outpoint read from its preimage. The pool variant adds two terms and moves its own:
 
 ```
-hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ nextSlot ‖ myOutpoint ‖ extraPrevouts)
+hashPrevouts == SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ nextSlot ‖ myOutpoint ‖
+                        (nextSlotOut.txid, 1) ‖ extraPrevouts)
 ```
 
-`nextSlot` is embedded in the locking script, so input 2 is fixed at the time the round before it was built, and PP3 itself is input 3. `extraPrevouts` is supplied in the unlock and covers inputs 4 and up, the deposit covenants. Those stay opaque to PP3 on purpose: each covenant enforces itself through its own SIGHASH_SINGLE binding, V's balance equation accounts for them, and no input can create a token output. This is not the `extraPrevouts` weakness of the legacy PP1_SP, where extra inputs were invisible to a script that was supposed to be authorising them.
+`nextSlot` is embedded in the locking script, so input 2 is fixed at the time the round before it was built, and PP3 itself is input 3. Input 4 is the anchor of the slot the successor pins (4.1): `nextSlotOut` is the same 36 bytes the forward covenant below writes into output 3, so the anchor spent and the slot pinned are one transaction by construction, and PP1 then requires that transaction to be exactly V and the anchor. It costs 13 bytes of PP3. `extraPrevouts` is supplied in the unlock and covers inputs 5 and up, the deposit covenants. Those stay opaque to PP3 on purpose: each covenant enforces itself through its own SIGHASH_SINGLE binding, V's balance equation accounts for them, and no input can create a token output. This is not the `extraPrevouts` weakness of the legacy PP1_SP, where extra inputs were invisible to a script that was supposed to be authorising them.
 
 A pool PP3 is laid out
 
@@ -272,7 +283,7 @@ Three things had to change to make it possible, and each is the price of one pro
 
 With an owner and no slot the script is byte-identical to before, so every other archetype is untouched: `test/template_sync_test.dart` checks the NFT and FT templates against generator output and passes. PP3's hashed-tail geometry is unchanged (11.3): `getInOutSize` 111, hashed tail 115 of 119, 4 bytes of headroom.
 
-Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a round spending the named slot at input 2 is accepted; the same round without it is rejected; a partial hash that does not lead to the witness is rejected; output 3 as a burnable PP3, as a P2PKH paying the balance out, or with the real PP3 parked at output 4, each makes the round unmineable; an unlock that misstates the slot is rejected; a truthful dust value is accepted and a misstated one rejected; the smuggled anyone-can-spend prefix is rejected; `nextSlot` occurs exactly once; the in-script rebuild matches the builder byte for byte; the coordinator's burn spend is rejected while the identical spend of an ordinary token's PP3 is accepted; the script carries no owner; and an owner and a slot cannot be combined.
+Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a round spending the named slot at input 2 is accepted; the same round without it is rejected; a partial hash that does not lead to the witness is rejected; output 3 as a burnable PP3, as a P2PKH paying the balance out, or with the real PP3 parked at output 4, each makes the round unmineable; an unlock that misstates the slot is rejected; a truthful dust value is accepted and a misstated one rejected; the smuggled anyone-can-spend prefix is rejected; `nextSlot` occurs exactly once; the in-script rebuild matches the builder byte for byte; the coordinator's burn spend is rejected while the identical spend of an ordinary token's PP3 is accepted; the script carries no owner; an owner and a slot cannot be combined; and a round that does not spend the anchor, spends another transaction's output 1, spends the pinned slot's output 0 in its place, or puts the anchor anywhere but input 4, is rejected.
 
 ### 5.5 V, the verifier slot script
 
@@ -329,7 +340,7 @@ That closed the branch in the canonical program but did not make the program man
 
 PP1 does not inspect the round from the outside. It rebuilds the round it lives in, byte for byte, from data pushed in the witness: the lhs (version and every input, each with its full unlocking script), the outputs it reconstructs, and nLockTime. It hashes that and requires equality with its own outpoint's txid. This is what lets it assert that the round spent the right ancestor: input 2's outpoint is read out of a byte string whose hash the chain has already fixed. Anything variable in the round therefore has to be handled inside this rebuild, and every byte of it is push data in the witness.
 
-**Inputs.** The lhs is pushed as one blob and parsed in script by walking the input list: each input is a 36-byte outpoint, a varint script length, the script, and a 4-byte sequence. Outpoints come first in each input, so reading input k's outpoint means skipping k inputs, each by its varint. PP1 reads input 0 (issuance). The pool variant reads input 3 for the parent PP3, rather than TSL1's input 2, and input 2 for V_N; see 5.4 for why they swapped. Deposit covenants sit at inputs 4 and up, after everything PP1 needs, so PP1 never walks them; their contents are hashed as part of the blob and asserted about by nothing in PP1. That is correct: deposits are checked in the round by V and by the covenants themselves, and no input can create a token output. The cost is that input 2's unlocking script, the 230 KB proof, and input 3's, PP3's 49 KB unlock, are inside the lhs and are pushed in this witness and again in the next as part of the parent. Section 10 counts them.
+**Inputs.** The lhs is pushed as one blob and parsed in script by walking the input list: each input is a 36-byte outpoint, a varint script length, the script, and a 4-byte sequence. Outpoints come first in each input, so reading input k's outpoint means skipping k inputs, each by its varint. PP1 reads input 0 (issuance). The pool variant reads input 3 for the parent PP3, rather than TSL1's input 2, and input 2 for V_N; see 5.4 for why they swapped. Deposit covenants sit at inputs 5 and up, after the anchor at 4 and everything PP1 needs, so PP1 never walks them; their contents are hashed as part of the blob and asserted about by nothing in PP1. That is correct: deposits are checked in the round by V and by the covenants themselves, and no input can create a token output. The cost is that input 2's unlocking script, the 230 KB proof, and input 3's, PP3's 49 KB unlock, are inside the lhs and are pushed in this witness and again in the next as part of the parent. Section 10 counts them.
 
 **Outputs. BUILT 2026-09-21**, in `PP1SpScriptGen.emitBuildOutputTail`, with tests in the `SP the variable output tail` group.
 
@@ -345,7 +356,7 @@ Every other TSL1 archetype writes a literal output count of 5. That literal is a
 
 With that, the only outputs a round can carry are the five TSL1 outputs, P2PKH payouts and data receipts. Nothing in the tail can be spent as a token, so the induction is exactly as strong as it was with five outputs. `tool/scratch/output_tail_probe.dart` builds the round the whole exercise is about, one carrying a second copy of its own PP1_SP output, and the witness refuses it whether it calls the extra output a payout or does not mention it at all.
 
-**A pinned slot cannot be taken back.** PP1 certifies the next round's slot in this round's witness, which is built after this round is mined. A round that pins a slot PP1 will refuse therefore mines fine and then cannot produce a witness, and PP3's unlock path needs that witness, so the pool balance is frozen. Permanently: PP1 rebuilds Y from its parts and compares HASH256 against the pin, so a passing preimage means breaking SHA-256. There is a second way in with the same ending, worth naming because it needs a different guard: PP1 never checks that Y is on chain, only that it hashes right, so a slot whose content is correct but whose funding outpoint was spent elsewhere lets the witness be built and leaves round N+2 with nothing to spend at input 2. Broadcast Y before the round.
+**A pinned slot cannot be taken back.** PP1 certifies the next round's slot in this round's witness, which is built after this round is mined. A round that pins a slot PP1 will refuse therefore mines fine and then cannot produce a witness, and PP3's unlock path needs that witness, so the pool balance is frozen. Permanently: PP1 rebuilds Y from its parts and compares HASH256 against the pin, so a passing preimage means breaking SHA-256. There was a second way in with the same ending: PP1 never checks that Y is on chain, only that it hashes right, so a slot whose content is correct but which is never mined let the witness be built and left round N+2 with nothing to spend at input 2. The anchor (4.1) closes that one by consensus, since the round has to spend Y's output 1 to be mined at all. Wrong content still needs the guard below, because the anchor proves Y exists, not what is in it.
 
 Because none of that is recoverable on chain, the checks run in Dart first. `ShieldedPoolTool.checkSlotIsCertifiable` runs PP1's four checks, in PP1's order, and `createRoundTxn` refuses to build a round without them unless the caller passes `uncheckedNextSlot`, which is how the negative tests build a round that kills its own witness. It cannot check that Y will be mined; nothing offline can.
 
@@ -355,7 +366,7 @@ Because none of that is recoverable on chain, the checks run in Dart first. `Shi
 
 1. Coordinator aggregates round N+1's transfers, obtaining the proof and header_{N+1}.
 2. Coordinator (or anyone) publishes Y_{N+1} with V_{N+1} = header_{N+1} ‖ body. This must exist before round N+1 because PP3_{N+1} embeds its txid.
-3. Coordinator publishes round N+1: spends witness_N out0, PP3_N, Y_N out0 and the deposit covenants that named (round N, 3). V_N verifies the proof and the value equation. PP3_N verifies witness N and that Y_N out0 is spent.
+3. Coordinator publishes round N+1: spends witness_N out0, PP3_N, Y_N out0, Y_{N+1}'s anchor and the deposit covenants that named (round N, 3). V_N verifies the proof and the value equation. PP3_N verifies witness N, that Y_N out0 is spent, and that Y_{N+1} out1 is, which is what makes the round impossible without Y_{N+1}.
 4. Coordinator publishes witness N+1: PP1_{N+1} verifies round N+1's structure, the parent link, Y_{N+1}, the balance, and publishes the ciphertext bundles.
 5. Depositors for round N+2 create covenants naming (round N+1, 3).
 
@@ -658,11 +669,13 @@ Direct-slot mode put K user spend proofs in K verifier outputs on Y_N, plus an a
 
 ### 11.12 A deposit covenant's input index can match its receipt's output index
 
-**Open, and created by 5.7.** A deposit covenant proves it was paid by requiring, with SIGHASH_SINGLE, that the output at its own input index be its receipt. Receipts start at output 5. But a round has four fixed inputs, funding, the previous witness, PP3 and the verifier slot, so the first free input index is 4, not 5. The indices are off by one and SIGHASH_SINGLE has no way to bridge it.
+**RESOLVED 2026-09-21 by the anchor.** The round now has a fifth fixed input, Y_{N+1}'s anchor at input 4 (4.1), so deposits start at input 5 and receipts at output 5. The option that looked wasteful turned out to have a job: the anchor is what stops a round being mined without the slot it pins.
 
-**Options, none chosen:** give the round a fifth fixed input, which is honest but wastes an outpoint every round; move the metadata output to the end of the tail, which aligns the two at the cost of breaking the TSL1 five-output convention the parent parser reads by position; or have the covenant prove its receipt some other way than SIGHASH_SINGLE, which means pushing the whole output list and paying for it.
+**Created by 5.7.** A deposit covenant proves it was paid by requiring, with SIGHASH_SINGLE, that the output at its own input index be its receipt. Receipts start at output 5. But a round had four fixed inputs, funding, the previous witness, PP3 and the verifier slot, so the first free input index was 4, not 5. The indices were off by one and SIGHASH_SINGLE has no way to bridge it.
 
-**Find out:** this is the first thing the deposit work has to settle, before the covenant is written. Nothing in the output tail depends on the answer, because receipts being first is right under all three options.
+**Options considered:** give the round a fifth fixed input, which is honest but wastes an outpoint every round; move the metadata output to the end of the tail, which aligns the two at the cost of breaking the TSL1 five-output convention the parent parser reads by position; or have the covenant prove its receipt some other way than SIGHASH_SINGLE, which means pushing the whole output list and paying for it.
+
+Nothing in the output tail depended on the answer, because receipts being first is right under all three options.
 
 ### 11.13 The root's commitment-tree update did not bind its two walks
 

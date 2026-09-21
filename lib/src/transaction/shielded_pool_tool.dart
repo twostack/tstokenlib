@@ -134,7 +134,7 @@ class ShieldedPoolTool {
   /// [action] selects which PP1_SP branch runs. For [ShieldedPoolAction.ROUND],
   /// [newOwnerPKH] and [newHeader] must describe the PP1_SP output the token
   /// transaction actually built, because PP1 rebuilds that output from them and
-  /// compares the result against its own outpoint's txid. [nextSlot], [yInput]
+  /// compares the result against its own outpoint's txid. [nextSlot], [slotParts]
   /// and [verifierBody] describe the slot transaction round N+2 will have to
   /// spend, which PP1 certifies here; [bundles] are the round's ciphertexts,
   /// published by riding in this witness and bound by `newHeader.outHash`.
@@ -155,7 +155,7 @@ class ShieldedPoolTool {
       List<int>? newOwnerPKH,
       List<int>? newHeader,
       List<int>? nextSlot,
-      List<int>? yInput,
+      List<int>? slotParts,
       List<int>? verifierBody,
       List<int>? bundles,
       List<PoolWithdrawal>? withdrawals,
@@ -208,7 +208,7 @@ class ShieldedPoolTool {
         tokenChangeAmount, tokenTxLHS, pp1ParentBytes, padding,
         action, fundingOutpoint,
         newOwnerPKH: newOwnerPKH, newHeader: newHeader, nextSlot: nextSlot,
-        yInput: yInput, verifierBody: verifierBody, bundles: bundles,
+        slotParts: slotParts, verifierBody: verifierBody, bundles: bundles,
         withdrawals: PoolWithdrawal.encodeAll(withdrawals ?? const []),
         receipts: PoolReceipt.encodeAll(receipts ?? const []));
 
@@ -257,11 +257,15 @@ class ShieldedPoolTool {
   /// pool's balance is frozen permanently. Pass [uncheckedNextSlot] to build
   /// such a round deliberately, which is what the negative tests do.
   ///
-  /// This does not, and cannot, check that Y is or ever will be on chain. That
-  /// is the other way to freeze a pool: pin a slot whose content is right but
-  /// whose funding outpoint has been spent elsewhere, so the transaction can
-  /// never be mined and round N+2 has nothing to spend at input 2. Broadcast Y
-  /// before the round, not after.
+  /// The round also spends Y_{N+1}'s output 1, the anchor, at input 4, and
+  /// PP3_N refuses the round without it. That closes the other way to freeze
+  /// a pool: pinning a slot whose content is right but which is never mined
+  /// (its funding spent elsewhere, a conflicting Y), which would leave round
+  /// N+2 nothing to spend at input 2. With the anchor, a round pinning such a
+  /// Y cannot be mined either. The anchor is signed by [anchorSigner] with
+  /// [anchorPubKey], defaulting to the key that signs the previous witness's
+  /// output. Pass [spendAnchor] false only to build the round PP3 refuses,
+  /// which is what the negative tests do.
   ///
   /// [receipts] and [withdrawals] are the round's variable output tail, written
   /// after the five TSL1 outputs with the receipts first. That order is not
@@ -287,7 +291,10 @@ class ShieldedPoolTool {
        List<PoolReceipt>? receipts,
        Transaction? nextSlotTx,
        bool uncheckedNextSlot = false,
-       UnlockingScriptBuilder? slotUnlocker}) {
+       UnlockingScriptBuilder? slotUnlocker,
+       TransactionSigner? anchorSigner,
+       SVPublicKey? anchorPubKey,
+       bool spendAnchor = true}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
@@ -310,19 +317,21 @@ class ShieldedPoolTool {
           '${hex.encode(parentSlot.sublist(0, 32).reversed.toList())}.');
     }
 
-    if (nextSlotTx != null) {
+    if (nextSlotTx == null) {
+      throw ArgumentError(
+          'Pass nextSlotTx. The round spends its anchor, output 1, at input 4, '
+          'and PP3 refuses the round without it.');
+    }
+    if (!uncheckedNextSlot) {
       checkSlotIsCertifiable(
           slotTx: nextSlotTx,
           outpoint: nextSlot,
           header: newHeader,
           verifierBodyHash: prevPP1.verifierBodyHash!);
-    } else if (!uncheckedNextSlot) {
-      throw ArgumentError(
-          'Pass nextSlotTx so the slot can be checked before the round is '
-          'mined. A round pinning a slot PP1 will not certify can never '
-          'produce a witness, and its PP3 can then never be spent: the pool '
-          'balance is frozen permanently. Pass uncheckedNextSlot: true to '
-          'build such a round on purpose.');
+    }
+    if (nextSlotTx.outputs.length < 2) {
+      throw ArgumentError('nextSlotTx has no output 1 for the round to spend '
+          'as its anchor.');
     }
 
     var nextOwnerPKH = newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160);
@@ -382,12 +391,19 @@ class ShieldedPoolTool {
 
     var slotUnlock = slotUnlocker ??
         DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
+    var anchorUnlocker = P2PKHUnlockBuilder(anchorPubKey ?? ownerPubkey);
+    var anchorTxSigner = anchorSigner ?? fundingTxSigner;
 
     var childPreImageBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker);
+    if (spendAnchor) {
+      childPreImageBuilder.spendFromTxnWithSigner(anchorTxSigner, nextSlotTx, 1,
+          TransactionInput.MAX_SEQ_NUMBER, anchorUnlocker);
+    }
+    childPreImageBuilder
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)
@@ -440,7 +456,12 @@ class ShieldedPoolTool {
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker);
+    if (spendAnchor) {
+      childBuilder.spendFromTxnWithSigner(anchorTxSigner, nextSlotTx, 1,
+          TransactionInput.MAX_SEQ_NUMBER, anchorUnlocker);
+    }
+    childBuilder
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)
@@ -465,8 +486,8 @@ class ShieldedPoolTool {
   /// slot without building anything.
   ///
   /// The four checks are PP1's, in PP1's order: the outpoint names output 0 of
-  /// [slotTx]; Y has exactly one input and one output, which is what forces V
-  /// to be output 0; V is `OP_PUSHDATA1 0xec ‖ header ‖ body`; and the body
+  /// [slotTx]; Y has exactly one input and two outputs, V then the 1-satoshi
+  /// P2PKH anchor, which is what forces V to be output 0; V is `OP_PUSHDATA1 0xec ‖ header ‖ body`; and the body
   /// hashes to the pool's immutable [verifierBodyHash]. PP1 rebuilds Y from
   /// its parts and compares HASH256 against the pin, so a slot that fails any
   /// of these has no passing preimage short of breaking SHA-256.
@@ -484,19 +505,38 @@ class ShieldedPoolTool {
         .getUint32(0, Endian.little);
     if (vout != 0) {
       throw ArgumentError('The slot must name output 0 of Y, not output $vout. '
-          'PP1 rebuilds a one-output Y, so no other index can ever certify.');
+          'PP1 rebuilds Y with V at output 0, so no other index can ever certify.');
     }
     if (!_sameRange(outpoint, slotTx.hash, 0, 32)) {
       throw ArgumentError('nextSlot names '
           '${hex.encode(outpoint.sublist(0, 32).reversed.toList())}, which is '
           'not the slot transaction supplied.');
     }
-    if (slotTx.inputs.length != 1 || slotTx.outputs.length != 1) {
-      throw ArgumentError('Y must have exactly one input and one output, not '
-          '${slotTx.inputs.length} and ${slotTx.outputs.length}. That shape is '
-          'what forces V to be output 0: a Y with more outputs could park the '
-          'real verifier somewhere inert and put an OP_TRUE where the round '
-          'looks.');
+    if (slotTx.inputs.length != 1 || slotTx.outputs.length != 2) {
+      throw ArgumentError('Y must have exactly one input and two outputs, V '
+          'and the anchor, not ${slotTx.inputs.length} and '
+          '${slotTx.outputs.length}. That shape is what forces V to be output '
+          '0: a Y with other outputs could park the real verifier somewhere '
+          'inert and put an OP_TRUE where the round looks.');
+    }
+    if (slotTx.version != 1 || slotTx.nLockTime != 0) {
+      throw ArgumentError('Y must be version 1 with nLockTime 0; PP1 emits '
+          'both bytes itself.');
+    }
+    var input = slotTx.inputs[0].serialize();
+    if (input[36] >= 0xfd) {
+      throw ArgumentError('Y\'s scriptSig is 253 bytes or more, and PP1 '
+          'accepts only a one-byte scriptSig length.');
+    }
+    var anchor = slotTx.outputs[1];
+    var a = anchor.script.buffer;
+    if (anchor.satoshis != BigInt.one || a.length != 25 ||
+        !_sameRange(a, anchorScript(a.sublist(3, 23)).buffer, 0, 25)) {
+      throw ArgumentError('Y output 1 is not the anchor: a 1-satoshi P2PKH, '
+          'which PP1 rebuilds from its key hash alone.');
+    }
+    if (slotTx.outputs[0].satoshis != BigInt.one) {
+      throw ArgumentError('V must hold 1 satoshi; PP1 emits that value itself.');
     }
 
     var v = slotTx.outputs[0].script.buffer;
@@ -521,23 +561,36 @@ class ShieldedPoolTool {
     }
   }
 
-  /// Builds the slot transaction Y whose single output carries the verifier V
-  /// for [header], and returns it with the outpoint that names it and the bytes
-  /// of its input that PP1 needs to rebuild it.
+  /// Builds the slot transaction Y, whose output 0 carries the verifier V
+  /// for [header] and whose output 1 is the anchor, and returns it with the
+  /// outpoint that names it and the push PP1 needs to rebuild it.
   ///
-  /// Exactly one input and one output is a requirement, not a convention. It is
-  /// what forces V to be output 0: a Y with more outputs could park the real
-  /// verifier somewhere inert and put an OP_TRUE where the next round looks.
-  /// The coordinator builds Y, so meeting the shape costs nothing.
+  /// The shape is a requirement, not a convention. Exactly one input and V at
+  /// output 0 is what stops a Y parking the real verifier somewhere inert and
+  /// putting an OP_TRUE where the next round looks. Output 1 is a 1-satoshi
+  /// P2PKH to [anchorPKH], which the round that pins this slot has to spend
+  /// at input 4: PP3 refuses the round otherwise, so the round cannot be
+  /// mined without Y. [anchorPKH] is whoever will sign that round, normally
+  /// the coordinator. The coordinator builds Y, so meeting the shape costs
+  /// nothing.
   ///
   /// V is `OP_PUSHDATA1 0xec ‖ header ‖ verifierBody`, which is what lets PP1
   /// check the slot runs this pool's verifier *and* that the verifier was
   /// initialised with this header.
-  ({Transaction tx, List<int> outpoint, List<int> input}) buildSlotTxn({
+  ///
+  /// `parts` is `yInput ‖ anchorPKH`, the one push PP1's slot check takes.
+  /// Its input must have a scriptSig shorter than 253 bytes, because PP1
+  /// accepts only a one-byte length there (see
+  /// `PP1SpScriptGen.emitVerifySlotIsVerifier` for why the length matters).
+  ({Transaction tx, List<int> outpoint, List<int> parts}) buildSlotTxn({
     required PoolHeader header,
     required List<int> verifierBody,
     required TransactionInput fundingInput,
+    required List<int> anchorPKH,
   }) {
+    if (anchorPKH.length != 20) {
+      throw ArgumentError('anchorPKH is a 20-byte key hash, not ${anchorPKH.length} bytes');
+    }
     var v = Uint8List.fromList(
         [0x4c, PoolHeader.byteSize, ...header.encode(), ...verifierBody]);
 
@@ -545,14 +598,24 @@ class ShieldedPoolTool {
       ..version = 1
       ..nLockTime = 0
       ..addInput(fundingInput)
-      ..addOutput(TransactionOutput(BigInt.one, SVScript.fromByteArray(v)));
+      ..addOutput(TransactionOutput(BigInt.one, SVScript.fromByteArray(v)))
+      ..addOutput(TransactionOutput(BigInt.one, anchorScript(anchorPKH)));
 
+    var input = y.inputs[0].serialize();
+    if (input[36] >= 0xfd) {
+      throw ArgumentError('Y\'s input carries a scriptSig of 253 bytes or '
+          'more, and PP1 accepts only a one-byte scriptSig length.');
+    }
     return (
       tx: y,
       outpoint: getOutpoint(y.hash, outputIndex: 0),
-      input: y.inputs[0].serialize(),
+      parts: [...input, ...anchorPKH],
     );
   }
+
+  /// Y's output 1: `OP_DUP OP_HASH160 <anchorPKH> OP_EQUALVERIFY OP_CHECKSIG`.
+  static SVScript anchorScript(List<int> anchorPKH) => SVScript.fromByteArray(
+      Uint8List.fromList([0x76, 0xa9, 0x14, ...anchorPKH, 0x88, 0xac]));
 
   static bool _sameRange(List<int> a, List<int> b, int start, int end) {
     for (var i = start; i < end; i++) {

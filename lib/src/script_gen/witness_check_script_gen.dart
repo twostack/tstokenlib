@@ -133,7 +133,8 @@ class WitnessCheckScriptGen {
   ///    derives the witness txid from the partial hash and
   ///    [_emitOutpointVerification] checks the witness's last input.
   /// 2. The spending round's inputs are exactly funding, (witnessTxId, 0),
-  ///    the pinned verifier slot, this output, then the deposit covenants.
+  ///    the pinned verifier slot, this output, the successor slot's anchor,
+  ///    then the deposit covenants.
   /// 3. The spending round's output 3 runs this same program, with only the
   ///    slot it pins changed. See [_emitPoolForwardCovenant].
   /// 4. The preimage is genuine, via OCS with no OP_CODESEPARATOR, so that the
@@ -188,19 +189,34 @@ class WitnessCheckScriptGen {
   /// Checks the spending round's hashPrevouts is
   ///
   /// ```
-  /// SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ nextSlot ‖ myOutpoint ‖ extraPrevouts)
+  /// SHA256d(fundingOutpoint ‖ (witnessTxId, 0) ‖ nextSlot ‖ myOutpoint ‖
+  ///         (nextSlotOut.txid, 1) ‖ extraPrevouts)
   /// ```
   ///
   /// which fixes input 0 to the funding the spender named, input 1 to the
   /// witness's output 0, input 2 to the verifier slot this output pinned when
-  /// the round before it was built, input 3 to this output, and inputs 4 and
-  /// up to the deposit covenants. The slot has to be spent in the same round
-  /// or verification could be skipped entirely; PP1 cannot enforce that,
-  /// because it runs in the witness, after the round is already mined.
+  /// the round before it was built, input 3 to this output, input 4 to the
+  /// anchor of the slot the successor pins, and inputs 5 and up to the deposit
+  /// covenants. The slot has to be spent in the same round or verification
+  /// could be skipped entirely; PP1 cannot enforce that, because it runs in the
+  /// witness, after the round is already mined.
   ///
-  /// Pre:  [witnessTxId, preImage]
+  /// **The anchor, input 4.** The successor PP3 pins Y_{N+1}:0, which round
+  /// N+2 will have to spend. Nothing else makes this round depend on Y_{N+1}
+  /// existing, so without input 4 a round could be mined pinning a slot
+  /// transaction that never is (its funding spent elsewhere, a conflicting Y,
+  /// a policy rejection), and the round after it would have nothing to spend:
+  /// the pool frozen for good. Spending Y_{N+1}'s output 1 in this round makes
+  /// that a consensus fact rather than a broadcast discipline. There is no
+  /// cycle, because Y does not depend on this round. The txid comes from
+  /// nextSlotOut, the same 36 bytes the forward covenant writes into output 3,
+  /// so the anchor spent and the slot pinned are one transaction by
+  /// construction. PP1 in the witness then requires that transaction to have
+  /// exactly V at output 0 and the anchor at output 1.
+  ///
+  /// Pre:  [nextSlotOut, witnessTxId, preImage]
   ///       Alt: [nextSlot, extraPrevouts, fundingOutpoint]
-  /// Post: [preImage]   Alt: []
+  /// Post: [nextSlotOut, preImage]   Alt: []
   static void _emitPoolHashPrevOuts(ScriptBuilder b) {
     b.opCode(OpCodes.OP_FROMALTSTACK);   // fundingOutpoint
     b.opCode(OpCodes.OP_2);
@@ -223,6 +239,15 @@ class WitnessCheckScriptGen {
     b.opCode(OpCodes.OP_SPLIT);
     b.opCode(OpCodes.OP_NIP);            // myOutpoint
     b.opCode(OpCodes.OP_CAT);            // ... ‖ myOutpoint
+    // Stack: [nextSlotOut, witnessTxId, preImage, extraPrevouts, prefix]
+    b.opCode(OpCodes.OP_4);
+    b.opCode(OpCodes.OP_PICK);           // nextSlotOut
+    OpcodeHelpers.pushInt(b, 32);
+    b.opCode(OpCodes.OP_SPLIT);
+    b.opCode(OpCodes.OP_DROP);           // the successor slot's txid
+    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_CAT);            // ... ‖ (nextSlotTxId, 1)
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);            // ... ‖ extraPrevouts
     b.opCode(OpCodes.OP_SHA256);

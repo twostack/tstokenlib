@@ -333,7 +333,7 @@ class PP1SpScriptGen {
   /// four checks that make the next round's verification unavoidable.
   ///
   /// Stack: [withdrawals, receipts, preImage, pp2Out, ownerPK, changePkh,
-  ///         changeAmt, ownerSig, newOwnerPKH, newHeader, nextSlot, yInput,
+  ///         changeAmt, ownerSig, newOwnerPKH, newHeader, nextSlot, slotParts,
   ///         vBody, bundles, scriptLHS, parentRawTx, padding]
   /// Altstack pop order: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
   ///
@@ -358,7 +358,7 @@ class PP1SpScriptGen {
   /// always exists first.
   static void _emitRound(ScriptBuilder b) {
     // Stack indices from the top (15):
-    //   pad=0, rawTx=1, lhs=2, bundles=3, vBody=4, yInput=5, nextSlot=6,
+    //   pad=0, rawTx=1, lhs=2, bundles=3, vBody=4, slotParts=5, nextSlot=6,
     //   newHeader=7, newOwnerPKH=8, ownerSig=9, chgAmt=10, chgPkh=11,
     //   ownerPK=12, pp2=13, preImg=14
 
@@ -385,7 +385,7 @@ class PP1SpScriptGen {
     // slot this branch is busy certifying.
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // header
     // Alt: []
-    // Stack (18): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, yInput=6,
+    // Stack (18): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, slotParts=6,
     //   nextSlot=7, newHeader=8, newOwnerPKH=9, ownerSig=10, chgAmt=11,
     //   chgPkh=12, ownerPK=13, pp2=14, preImg=15, receipts=16, withdrawals=17
 
@@ -400,7 +400,7 @@ class PP1SpScriptGen {
     OpcodeHelpers.pushInt(b, 16);
     b.opCode(OpCodes.OP_ROLL); b.opCode(OpCodes.OP_TOALTSTACK);   // receipts
     // Alt: [withdrawals, receipts]
-    // Stack (16): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, yInput=6,
+    // Stack (16): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, slotParts=6,
     //   nextSlot=7, newHeader=8, newOwnerPKH=9, ownerSig=10, chgAmt=11,
     //   chgPkh=12, ownerPK=13, pp2=14, preImg=15
 
@@ -424,15 +424,15 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_4);
     b.opCode(OpCodes.OP_ROLL); b.opCode(OpCodes.OP_DROP);   // bundles consumed
-    // Stack (15): vbh=0, pad=1, rawTx=2, lhs=3, vBody=4, yInput=5, nextSlot=6,
+    // Stack (15): vbh=0, pad=1, rawTx=2, lhs=3, vBody=4, slotParts=5, nextSlot=6,
     //   newHeader=7, newOwnerPKH=8, ownerSig=9, chgAmt=10, chgPkh=11,
     //   ownerPK=12, pp2=13, preImg=14
 
     // --- The slot PP3 will pin holds this pool's verifier, for this header ---
     // emitVerifySlotIsVerifier wants, bottom to top:
-    //   yInput, vBody, bodyHash, header, nextSlot
+    //   slotParts, vBody, bodyHash, header, nextSlot
     OpcodeHelpers.pushInt(b, 5);
-    b.opCode(OpCodes.OP_ROLL);           // yInput
+    b.opCode(OpCodes.OP_ROLL);           // slotParts
     OpcodeHelpers.pushInt(b, 5);
     b.opCode(OpCodes.OP_ROLL);           // vBody
     b.opCode(OpCodes.OP_2);
@@ -759,12 +759,36 @@ class PP1SpScriptGen {
   ///
   /// The slot transaction Y is required to be canonical:
   ///
-  ///   version=1 ‖ 0x01 ‖ yInput ‖ 0x01 ‖ output(V, 1 sat) ‖ nLockTime=0
+  ///   version=1 ‖ 0x01 ‖ yInput ‖ 0x02 ‖ output(V, 1 sat) ‖
+  ///   output(P2PKH anchorPKH, 1 sat) ‖ nLockTime=0
   ///
-  /// Only yInput and V are free; this script emits every structural byte. One
-  /// input and one output means V is necessarily output 0, so a forged Y cannot
-  /// park the real verifier somewhere inert and put an OP_TRUE at output 0. The
+  /// Only yInput, V and the anchor's key hash are free; this script emits
+  /// every structural byte. V is output 0, so a forged Y cannot park the real
+  /// verifier somewhere inert and put an OP_TRUE where the next round looks.
+  /// Output 1 is the anchor the round that pins this slot has to spend (PP3
+  /// enforces that spend, see `WitnessCheckScriptGen._emitPoolHashPrevOuts`),
+  /// which is what makes that round impossible to mine without Y. The
   /// coordinator builds Y, so meeting this shape costs nothing.
+  ///
+  /// **yInput's own length is checked, and that is not tidiness.** The pin is
+  /// a HASH256 over bytes, and bytes only mean something through a parse.
+  /// yInput is `outpoint ‖ varint ‖ scriptSig ‖ sequence`, and if its varint
+  /// could claim a longer scriptSig than yInput actually holds, the real
+  /// transaction's scriptSig would run on past it, swallowing the output
+  /// count, V and the start of the anchor as one data push. The parse would
+  /// then resume inside the anchor's key hash, which is 20 bytes of the
+  /// spender's choosing: enough for a sequence, an output count of 1 and an
+  /// output whose script is `OP_1 OP_1 OP_EQUALVERIFY OP_CHECKSIG` with the
+  /// anchor's own `88 ac` as its tail. That Y has one output, spendable with
+  /// the attacker's own signature, and hashes exactly as PP1 would rebuild
+  /// it. Requiring `SIZE(yInput) == 41 + scriptSigLength`, with a one-byte
+  /// varint, makes PP1's parse the only parse. Before the anchor, the bytes
+  /// after yInput were all fixed or hash-checked, which is why the gap did
+  /// not matter until now.
+  ///
+  /// yInput and the anchor's key hash arrive as one push, `yInput ‖
+  /// anchorPKH`, split here 20 bytes from the end. That keeps every other
+  /// index in the round branch where it was.
   ///
   /// V itself is required to be `OP_PUSHDATA1 0xec ‖ header ‖ body`. That is
   /// what makes the check bind *state* and not just code: the body hash says
@@ -773,7 +797,7 @@ class PP1SpScriptGen {
   /// coordinator free to point the next round at a verifier holding some other
   /// round's state, which would verify a proof against the wrong publics.
   ///
-  /// Pre:  [yInput, vBody, bodyHash, header, nextSlot]   (nextSlot on top)
+  /// Pre:  [slotParts, vBody, bodyHash, header, nextSlot]   (nextSlot on top)
   /// Post: []   (all five consumed; the script fails if anything mismatches)
   static void emitVerifySlotIsVerifier(ScriptBuilder b) {
     // The pin must name output 0, which is where the canonical shape puts V.
@@ -810,18 +834,59 @@ class PP1SpScriptGen {
     // output = value(8 LE) ‖ varint(len) ‖ V, at the protocol dust value.
     b.opCode(OpCodes.OP_1);
     PP1FtScriptGen.emitBuildOutput(b);
+    // [slotParts, vOut]
 
-    // Y = version ‖ inputCount ‖ yInput ‖ outputCount ‖ output ‖ nLockTime
+    // slotParts = yInput ‖ anchorPKH. A slotParts shorter than 20 bytes
+    // makes the SPLIT fail, so the key hash is exactly 20 bytes.
     b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_SIZE);
+    OpcodeHelpers.pushInt(b, 20);
+    b.opCode(OpCodes.OP_SUB);
+    b.opCode(OpCodes.OP_SPLIT);
+    // [vOut, yInput, anchorPKH]
+
+    // anchor = 1 sat ‖ 0x19 ‖ OP_DUP OP_HASH160 <anchorPKH> OP_EQUALVERIFY OP_CHECKSIG
+    b.addData(Uint8List.fromList(
+        [0x01, 0, 0, 0, 0, 0, 0, 0, 0x19, 0x76, 0xa9, 0x14]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.addData(Uint8List.fromList([0x88, 0xac]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_SWAP);
+    // [vOut, anchorOut, yInput]
+
+    // yInput is exactly one input: outpoint(36) ‖ varint ‖ scriptSig ‖
+    // sequence(4), with a one-byte varint that accounts for every byte.
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 36);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    b.addData(Uint8List.fromList([0x00]));       // unsigned
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_BIN2NUM);                // scriptSig length
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 0xfd);
+    b.opCode(OpCodes.OP_LESSTHAN);
+    b.opCode(OpCodes.OP_VERIFY);                 // a one-byte varint
+    OpcodeHelpers.pushInt(b, 41);
+    b.opCode(OpCodes.OP_ADD);
+    b.opCode(OpCodes.OP_OVER);
+    b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_NUMEQUALVERIFY);
+
+    // Y = version ‖ inputCount ‖ yInput ‖ outputCount ‖ vOut ‖ anchorOut ‖ nLockTime
     b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00, 0x01]));
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
-    // OP_1 rather than addData([0x01]): dartsv rejects a single-byte push in
-    // 1..16 as non-minimal, and OP_1 puts the same [0x01] on the stack.
-    b.opCode(OpCodes.OP_1);
+    // OP_2 rather than addData([0x02]): dartsv rejects a single-byte push in
+    // 1..16 as non-minimal, and OP_2 puts the same [0x02] on the stack.
+    b.opCode(OpCodes.OP_2);
     b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_ROT);
+    b.opCode(OpCodes.OP_CAT);                    // ... ‖ vOut
     b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_CAT);                    // ... ‖ anchorOut
     b.addData(Uint8List.fromList([0x00, 0x00, 0x00, 0x00]));
     b.opCode(OpCodes.OP_CAT);
 
