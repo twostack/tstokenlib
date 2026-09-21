@@ -1,0 +1,616 @@
+<title>Pool Round Anatomy</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+  :root {
+    --paper:#eceff3; --surface:#fff; --sunk:#f4f6f9;
+    --ink:#141a21; --muted:#5a6672; --faint:#8794a2;
+    --line:#d2dae2; --line-soft:#e3e9ef;
+    --pp1:#3d5a9e; --pp2:#2f7d72; --pp3:#9a6a1f; --vfy:#7a4b8f; --plain:#68737f;
+    --pp1-bg:#e6ebf7; --pp2-bg:#e0f0ed; --pp3-bg:#f6ecd9; --vfy-bg:#f0e7f5; --plain-bg:#e8ebee;
+    --warn:#a1442b; --warn-bg:#f8e8e3;
+    --shadow:0 1px 2px rgba(20,26,33,.06), 0 8px 24px -16px rgba(20,26,33,.3);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:#0e1217; --surface:#161c24; --sunk:#111720;
+      --ink:#e4eaf1; --muted:#95a3b2; --faint:#6d7c8b;
+      --line:#26303b; --line-soft:#1d252e;
+      --pp1:#8fa8e4; --pp2:#5cc3b2; --pp3:#dca94f; --vfy:#bd91d4; --plain:#9dabb9;
+      --pp1-bg:#1a2338; --pp2-bg:#122d2a; --pp3-bg:#2e2513; --vfy-bg:#251a2e; --plain-bg:#1c232b;
+      --warn:#e08a6e; --warn-bg:#2d1b15;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:#0e1217; --surface:#161c24; --sunk:#111720;
+    --ink:#e4eaf1; --muted:#95a3b2; --faint:#6d7c8b;
+    --line:#26303b; --line-soft:#1d252e;
+    --pp1:#8fa8e4; --pp2:#5cc3b2; --pp3:#dca94f; --vfy:#bd91d4; --plain:#9dabb9;
+    --pp1-bg:#1a2338; --pp2-bg:#122d2a; --pp3-bg:#2e2513; --vfy-bg:#251a2e; --plain-bg:#1c232b;
+    --warn:#e08a6e; --warn-bg:#2d1b15;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+
+  body{background:var(--paper);color:var(--ink);
+    font-family:"IBM Plex Serif",Georgia,serif;font-size:16px;line-height:1.62;
+    -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1120px;margin:0 auto;padding-inline:20px;padding-block:44px 80px;}
+  h1,h2,h3,.lab,.chip,.mono,th,.boxlabel{font-family:"IBM Plex Sans",system-ui,sans-serif;}
+  .mono,code,.num{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;}
+
+  h1{font-size:clamp(28px,4.2vw,40px);line-height:1.12;font-weight:600;letter-spacing:-.02em;
+     margin:0 0 14px;text-wrap:balance;}
+  .standfirst{font-size:18px;color:var(--muted);max-width:60ch;margin:0;}
+  .lab{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+       color:var(--faint);margin:0 0 10px;}
+  h2{font-size:23px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance;}
+  h3{font-size:15px;font-weight:600;margin:0 0 4px;letter-spacing:-.005em;}
+  p{margin:0 0 14px;max-width:68ch;}
+  section{margin-top:56px;}
+  .rule{height:1px;background:var(--line);border:0;margin:0 0 22px;}
+
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px;}
+  .chip{font-size:11.5px;font-weight:500;letter-spacing:.02em;padding:4px 10px;border-radius:999px;
+        border:1px solid var(--line);color:var(--muted);background:var(--surface);}
+  .chip.alert{color:var(--warn);background:var(--warn-bg);border-color:transparent;}
+
+  .scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);
+          border-radius:10px;padding:14px;box-shadow:var(--shadow);}
+  svg.map{display:block;min-width:960px;width:100%;height:auto;}
+  svg text{font-family:"IBM Plex Sans",system-ui,sans-serif;}
+
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:1px;
+          background:var(--line-soft);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  .legend > div{background:var(--surface);padding:14px 16px;}
+  .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:7px;
+          vertical-align:baseline;}
+  .legend p{font-size:13.5px;color:var(--muted);margin:2px 0 0;line-height:1.5;}
+
+  .txgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:18px;}
+  .tx{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+      overflow:hidden;box-shadow:var(--shadow);}
+  .tx > header{padding:12px 16px;border-bottom:1px solid var(--line);
+               display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;}
+  .tx > header .name{font-family:"IBM Plex Sans",sans-serif;font-weight:600;font-size:15px;}
+  .tx > header .size{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                     margin-left:auto;font-variant-numeric:tabular-nums;}
+  .io{padding:6px 0;}
+  .io .hd{font-family:"IBM Plex Sans",sans-serif;font-size:10.5px;font-weight:600;
+          letter-spacing:.13em;text-transform:uppercase;color:var(--faint);padding:8px 16px 4px;}
+  .row{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:baseline;
+       padding:5px 16px;font-size:13.5px;}
+  .row .ix{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);}
+  .row .what{font-family:"IBM Plex Sans",sans-serif;line-height:1.4;}
+  .row .what small{display:block;color:var(--muted);font-size:12px;}
+  .row .sz{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+           font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;}
+  .row + .hd{border-top:1px solid var(--line-soft);margin-top:6px;}
+  .tag{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:500;
+       padding:1px 6px;border-radius:4px;margin-right:6px;}
+  .t-pp1{color:var(--pp1);background:var(--pp1-bg);}
+  .t-pp2{color:var(--pp2);background:var(--pp2-bg);}
+  .t-pp3{color:var(--pp3);background:var(--pp3-bg);}
+  .t-vfy{color:var(--vfy);background:var(--vfy-bg);}
+  .t-plain{color:var(--plain);background:var(--plain-bg);}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;
+        font-family:"IBM Plex Sans",sans-serif;}
+  .tblwrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);
+           border-radius:10px;box-shadow:var(--shadow);}
+  th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+     color:var(--faint);padding:12px 16px;border-bottom:1px solid var(--line);white-space:nowrap;}
+  td{padding:11px 16px;border-bottom:1px solid var(--line-soft);vertical-align:top;line-height:1.5;}
+  tr:last-child td{border-bottom:0;}
+  td.mono{font-size:12.5px;color:var(--muted);white-space:nowrap;}
+
+  .note{border-left:2px solid var(--line);padding:2px 0 2px 16px;color:var(--muted);
+        font-size:14.5px;margin:0 0 14px;max-width:66ch;}
+  .note.alert{border-color:var(--warn);color:var(--ink);}
+  .note.alert strong{color:var(--warn);}
+
+  .modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;}
+  .mode{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;box-shadow:var(--shadow);}
+  .mode h3{font-size:17px;margin-bottom:2px;}
+  .mode .sub{font-size:12px;color:var(--faint);font-family:"IBM Plex Sans",sans-serif;
+             letter-spacing:.03em;margin:0 0 12px;}
+  .mode dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13.5px;}
+  .mode dt{font-family:"IBM Plex Sans",sans-serif;color:var(--faint);font-size:11px;
+           letter-spacing:.09em;text-transform:uppercase;padding-top:3px;white-space:nowrap;}
+  .mode dd{margin:0;}
+  .mode dd .num{font-variant-numeric:tabular-nums;}
+
+  ul{margin:0 0 14px;padding-left:20px;max-width:66ch;}
+  li{margin-bottom:7px;}
+  code{font-size:13px;background:var(--sunk);padding:1px 5px;border-radius:4px;
+       border:1px solid var(--line-soft);}
+  a{color:var(--pp1);}
+  :focus-visible{outline:2px solid var(--pp1);outline-offset:2px;border-radius:3px;}
+  @media (prefers-reduced-motion:no-preference){.tx,.mode{transition:none;}}
+  @media (max-width:520px){
+    .row{grid-template-columns:22px 1fr;}
+    .row .sz{grid-column:2;text-align:left;}
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="lab">TSL1_SP · shielded pool</p>
+    <h1>Pool Round Anatomy</h1>
+    <p class="standfirst">Every transaction in two consecutive rounds, which script locks which
+      output, and which later input makes it run. Sizes are measured from a chain this repository
+      builds and the interpreter accepts.</p>
+    <div class="meta">
+      <span class="chip mono">two rounds verified end to end</span>
+      <span class="chip mono">branch feature/shielded-pool</span>
+      <span class="chip alert">V is a stub · withdrawals not built</span>
+    </div>
+  </header>
+
+  <section>
+    <p class="lab">Reading this</p>
+    <h2>A script is named for the output it locks</h2>
+    <hr class="rule">
+    <p>PP3 is the locking script on <strong>round N's output 3</strong>. It executes when
+      <strong>round N+1 spends it at input 2</strong>. Those are two different positions with two
+      different numbers, and the page keeps them apart everywhere: a box's outputs are what it
+      creates, and an arrow arriving at a box is what consumes them.</p>
+    <p>Three relationships appear in the map, and telling them apart is the whole design.
+      A <strong>solid arrow</strong> is a spend. A <strong>dotted line</strong> is a claim made
+      about a transaction that has not been spent yet: PP3 <em>pins</em> an outpoint the next round
+      must spend, and PP1 <em>certifies</em> what the script at that outpoint actually is.</p>
+  </section>
+
+  <section>
+    <p class="lab">The chain</p>
+    <h2>Rounds and witnesses alternate; slot transactions drop in from above</h2>
+    <hr class="rule">
+    <div class="scroll">
+      <svg class="map" viewBox="0 0 1220 372" role="img"
+           aria-label="Flow of the shielded pool chain across two rounds: round 0, witness 0, round 1, witness 1, round 2, with slot transactions above and PP3 arcs below.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                  orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+          </marker>
+          <marker id="arv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                  orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--vfy)"/>
+          </marker>
+          <marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6"
+                  orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--pp3)"/>
+          </marker>
+        </defs>
+
+        <!-- lane labels -->
+        <text x="8" y="26" font-size="10.5" font-weight="600" letter-spacing="1.6"
+              fill="var(--faint)">SLOT TRANSACTIONS</text>
+        <text x="8" y="136" font-size="10.5" font-weight="600" letter-spacing="1.6"
+              fill="var(--faint)">ROUNDS AND WITNESSES</text>
+
+        <!-- slot transactions -->
+        <g>
+          <rect x="40" y="40" width="130" height="52" rx="7" fill="var(--vfy-bg)"
+                stroke="var(--vfy)" stroke-width="1"/>
+          <text x="52" y="60" font-size="13" font-weight="600" fill="var(--vfy)">Y_0</text>
+          <text x="52" y="78" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">300 B · V 240 B</text>
+
+          <rect x="480" y="40" width="130" height="52" rx="7" fill="var(--vfy-bg)"
+                stroke="var(--vfy)" stroke-width="1"/>
+          <text x="492" y="60" font-size="13" font-weight="600" fill="var(--vfy)">Y_1</text>
+          <text x="492" y="78" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">300 B · V 240 B</text>
+
+          <rect x="920" y="40" width="130" height="52" rx="7" fill="none"
+                stroke="var(--vfy)" stroke-width="1" stroke-dasharray="4 3" opacity=".75"/>
+          <text x="932" y="60" font-size="13" font-weight="600" fill="var(--vfy)"
+                opacity=".85">Y_2</text>
+          <text x="932" y="78" font-size="11" fill="var(--faint)"
+                font-family="IBM Plex Mono, monospace">awaits round 3</text>
+        </g>
+
+        <!-- spine boxes -->
+        <g>
+          <rect x="40" y="152" width="160" height="80" rx="8" fill="var(--surface)"
+                stroke="var(--line)" stroke-width="1.5"/>
+          <text x="54" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 0</text>
+          <text x="54" y="192" font-size="10.5" fill="var(--faint)">issuance · genesis</text>
+          <text x="54" y="214" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">54,077 B · 1 in · 5 out</text>
+
+          <rect x="260" y="152" width="160" height="80" rx="8" fill="var(--sunk)"
+                stroke="var(--line)" stroke-width="1.5"/>
+          <text x="274" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Witness 0</text>
+          <text x="274" y="192" font-size="10.5" fill="var(--faint)">proves round 0</text>
+          <text x="274" y="214" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">57,971 B · 3 in · 1 out</text>
+
+          <rect x="480" y="152" width="160" height="80" rx="8" fill="var(--surface)"
+                stroke="var(--line)" stroke-width="1.5"/>
+          <text x="494" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 1</text>
+          <text x="494" y="192" font-size="10.5" fill="var(--faint)">balance 500,000 sat</text>
+          <text x="494" y="214" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">54,677 B · 4 in · 5 out</text>
+
+          <rect x="700" y="152" width="160" height="80" rx="8" fill="var(--sunk)"
+                stroke="var(--line)" stroke-width="1.5"/>
+          <text x="714" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Witness 1</text>
+          <text x="714" y="192" font-size="10.5" fill="var(--faint)">proves round 1</text>
+          <text x="714" y="214" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">60,723 B · 3 in · 1 out</text>
+
+          <rect x="920" y="152" width="160" height="80" rx="8" fill="var(--surface)"
+                stroke="var(--line)" stroke-width="1.5"/>
+          <text x="934" y="176" font-size="13.5" font-weight="600" fill="var(--ink)">Round 2</text>
+          <text x="934" y="192" font-size="10.5" fill="var(--faint)">balance 900,000 sat</text>
+          <text x="934" y="214" font-size="11" fill="var(--muted)"
+                font-family="IBM Plex Mono, monospace">54,678 B · 4 in · 5 out</text>
+
+          <rect x="1140" y="152" width="60" height="80" rx="8" fill="none"
+                stroke="var(--line)" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <text x="1152" y="196" font-size="11" fill="var(--faint)">W 2 …</text>
+        </g>
+
+        <!-- spine spends: round out1,out2 -> witness in1,in2 -->
+        <g stroke="var(--muted)" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+          <path d="M200,192 L252,192"/>
+          <path d="M420,192 L472,192"/>
+          <path d="M640,192 L692,192"/>
+          <path d="M860,192 L912,192"/>
+          <path d="M1080,192 L1132,192"/>
+        </g>
+        <g font-size="10" fill="var(--muted)" text-anchor="middle">
+          <text x="226" y="184">out1,2</text>
+          <text x="446" y="184">out0</text>
+          <text x="666" y="184">out1,2</text>
+          <text x="886" y="184">out0</text>
+        </g>
+        <g font-size="9.5" fill="var(--faint)" text-anchor="middle">
+          <text x="226" y="210">→ in1,2</text>
+          <text x="446" y="210">→ in1</text>
+          <text x="666" y="210">→ in1,2</text>
+          <text x="886" y="210">→ in1</text>
+        </g>
+
+        <!-- PP3 arcs: round N out3 -> round N+1 in2 -->
+        <g stroke="var(--pp3)" stroke-width="1.6" fill="none" marker-end="url(#arp)">
+          <path d="M120,232 L120,296 L560,296 L560,236"/>
+          <path d="M560,232 L560,320 L1000,320 L1000,236"/>
+        </g>
+        <g font-size="10.5" font-weight="600" fill="var(--pp3)" text-anchor="middle">
+          <text x="340" y="291">PP3 out3 → in2 · carries the balance</text>
+          <text x="780" y="315">PP3 out3 → in2 · carries the balance</text>
+        </g>
+
+        <!-- V spends: Y_N out0 -> round N+1 in3 -->
+        <g stroke="var(--vfy)" stroke-width="1.6" fill="none" marker-end="url(#arv)">
+          <path d="M170,66 L340,66 L340,120 L536,120 L536,148"/>
+          <path d="M610,66 L780,66 L780,120 L976,120 L976,148"/>
+        </g>
+        <g font-size="10.5" font-weight="600" fill="var(--vfy)" text-anchor="middle">
+          <text x="424" y="114">V out0 → in3</text>
+          <text x="864" y="114">V out0 → in3</text>
+        </g>
+
+        <!-- pins and certifies (dotted, not spends) -->
+        <g stroke="var(--pp3)" stroke-width="1.4" fill="none" stroke-dasharray="2.5 3">
+          <path d="M105,152 L105,92"/>
+          <path d="M545,152 L545,92"/>
+          <path d="M985,152 L985,92"/>
+        </g>
+        <g stroke="var(--pp1)" stroke-width="1.4" fill="none" stroke-dasharray="2.5 3">
+          <path d="M300,152 L300,104 L150,104 L150,92"/>
+          <path d="M740,152 L740,104 L590,104 L590,92"/>
+        </g>
+        <g font-size="9.5" fill="var(--pp3)">
+          <text x="112" y="140">PP3 pins</text>
+          <text x="552" y="140">PP3 pins</text>
+          <text x="992" y="140">PP3 pins</text>
+        </g>
+        <g font-size="9.5" fill="var(--pp1)">
+          <text x="308" y="140">PP1 certifies</text>
+          <text x="748" y="140">PP1 certifies</text>
+        </g>
+
+        <text x="40" y="352" font-size="11" fill="var(--faint)"
+              font-family="IBM Plex Serif, serif">Input 0 of every round and every witness is a
+          coordinator P2PKH funding UTXO, left out of the arrows. Solid = spend, dotted = a claim
+          about an outpoint not yet spent.</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <p class="lab">Script families</p>
+    <h2>Five kinds of script, colour-coded throughout</h2>
+    <hr class="rule">
+    <div class="legend">
+      <div>
+        <h3><span class="swatch" style="background:var(--pp1)"></span>PP1_SP</h3>
+        <p>Locks round out1. Runs when the witness spends it. Rebuilds its own round byte for
+          byte and certifies the next verifier slot. <span class="mono">3,319 B</span></p>
+      </div>
+      <div>
+        <h3><span class="swatch" style="background:var(--pp2)"></span>PP2</h3>
+        <p>Locks round out2. Runs in the witness. Forces every witness input to come from this
+          round and the witness output to pay the owner. <span class="mono">1,366 B</span></p>
+      </div>
+      <div>
+        <h3><span class="swatch" style="background:var(--pp3)"></span>PP3</h3>
+        <p>Locks round out3 and <em>holds the pool balance</em>. Runs when the next round spends
+          it. Pins the verifier slot that round must also spend. <span class="mono">49,156 B</span></p>
+      </div>
+      <div>
+        <h3><span class="swatch" style="background:var(--vfy)"></span>V</h3>
+        <p>Locks slot transaction out0, one satoshi. Runs as input 3 of the round it verifies.
+          Today a stub: a header push then <code>OP_DROP OP_1</code>. <span class="mono">240 B</span></p>
+      </div>
+      <div>
+        <h3><span class="swatch" style="background:var(--plain)"></span>P2PKH and metadata</h3>
+        <p>Change out0, the metadata <code>OP_FALSE OP_RETURN</code> at out4, and the witness's
+          single ModP2PKH output. No covenant on any of them.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="lab">Anatomy</p>
+    <h2>Round 1 and its witness, input by input</h2>
+    <hr class="rule">
+    <p>Round 2 has the same shape with different numbers, which is the point: after genesis every
+      round is identical in structure. The sizes below are the measured ones.</p>
+    <div class="txgrid">
+
+      <article class="tx">
+        <header>
+          <span class="name">Round 1</span>
+          <span class="chip mono">token transaction</span>
+          <span class="size">54,677 B</span>
+        </header>
+        <div class="io">
+          <p class="hd">Inputs · what each spends</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>coordinator funding
+              <small>pays the fee and tops up the balance</small></span>
+            <span class="sz">unlock 106 B</span></div>
+          <div class="row"><span class="ix">1</span>
+            <span class="what"><span class="tag t-plain">ModP2PKH</span>witness 0 out0
+              <small>the coordinator's signature authorises the round</small></span>
+            <span class="sz">unlock 106 B</span></div>
+          <div class="row"><span class="ix">2</span>
+            <span class="what"><span class="tag t-pp3">PP3</span>round 0 out3
+              <small>carries the induction and the balance forward</small></span>
+            <span class="sz">unlock 370 B</span></div>
+          <div class="row"><span class="ix">3</span>
+            <span class="what"><span class="tag t-vfy">V</span>Y_0 out0
+              <small>the verifier for header 0, pinned by PP3 of round 0</small></span>
+            <span class="sz">unlock 0 B</span></div>
+          <p class="hd">Outputs · what each creates</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>change</span>
+            <span class="sz">25 B · 999,499,866 sat</span></div>
+          <div class="row"><span class="ix">1</span>
+            <span class="what"><span class="tag t-pp1">PP1_SP</span>header 1
+              <small>ownerPKH, tokenId, verifierBodyHash, genesisHeader, header</small></span>
+            <span class="sz">3,319 B · 1 sat</span></div>
+          <div class="row"><span class="ix">2</span>
+            <span class="what"><span class="tag t-pp2">PP2</span>witness bridge</span>
+            <span class="sz">1,366 B · 1 sat</span></div>
+          <div class="row"><span class="ix">3</span>
+            <span class="what"><span class="tag t-pp3">PP3</span>pins Y_1
+              <small>holds the pool balance; the next round must spend Y_1 at its input 3</small></span>
+            <span class="sz">49,156 B · 500,000 sat</span></div>
+          <div class="row"><span class="ix">4</span>
+            <span class="what"><span class="tag t-plain">OP_RETURN</span>metadata</span>
+            <span class="sz">2 B · 0 sat</span></div>
+        </div>
+      </article>
+
+      <article class="tx">
+        <header>
+          <span class="name">Witness 1</span>
+          <span class="chip mono">inductive proof</span>
+          <span class="size">60,723 B</span>
+        </header>
+        <div class="io">
+          <p class="hd">Inputs · what each spends</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>coordinator funding</span>
+            <span class="sz">unlock 107 B</span></div>
+          <div class="row"><span class="ix">1</span>
+            <span class="what"><span class="tag t-pp1">PP1</span>round 1 out1
+              <small>where PP1 executes; 16 pushes, listed below</small></span>
+            <span class="sz">unlock 60,412 B</span></div>
+          <div class="row"><span class="ix">2</span>
+            <span class="what"><span class="tag t-pp2">PP2</span>round 1 out2</span>
+            <span class="sz">unlock 34 B</span></div>
+          <p class="hd">Outputs</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-plain">ModP2PKH</span>to the coordinator
+              <small>round 2 must spend this, which is what orders the chain</small></span>
+            <span class="sz">26 B · 1 sat</span></div>
+          <p class="hd">Inside input 1's unlocking script</p>
+          <div class="row"><span class="ix">—</span>
+            <span class="what">parent round, pushed whole
+              <small>89% of the witness; PP1 reads input 2's outpoint from bytes the chain fixed</small></span>
+            <span class="sz">54,077 B</span></div>
+          <div class="row"><span class="ix">—</span>
+            <span class="what">sighash preimage, PP2 output, lhs of round 1</span>
+            <span class="sz">5,610 B</span></div>
+          <div class="row"><span class="ix">—</span>
+            <span class="what">newHeader, nextSlot, Y_1's input, verifier body
+              <small>the forward-looking certificate about Y_1</small></span>
+            <span class="sz">315 B</span></div>
+          <div class="row"><span class="ix">—</span>
+            <span class="what">ciphertext bundles
+              <small>published by riding here; bound by header 1's outHash</small></span>
+            <span class="sz">200 B</span></div>
+        </div>
+      </article>
+
+      <article class="tx">
+        <header>
+          <span class="name">Y_1</span>
+          <span class="chip mono">slot transaction</span>
+          <span class="size">300 B</span>
+        </header>
+        <div class="io">
+          <p class="hd">Inputs</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what">any funding, from anyone
+              <small>exactly one input is a requirement, not a convention</small></span>
+            <span class="sz">41 B serialized</span></div>
+          <p class="hd">Outputs</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-vfy">V_1</span>
+              <code>4c ec</code> + header 1 + verifier body
+              <small>one output forces V to be output 0, so a forged Y cannot hide it</small></span>
+            <span class="sz">240 B · 1 sat</span></div>
+        </div>
+      </article>
+
+      <article class="tx">
+        <header>
+          <span class="name">Round 0</span>
+          <span class="chip mono">issuance · genesis</span>
+          <span class="size">54,077 B</span>
+        </header>
+        <div class="io">
+          <p class="hd">Inputs</p>
+          <div class="row"><span class="ix">0</span>
+            <span class="what"><span class="tag t-plain">P2PKH</span>funding out1
+              <small>this outpoint becomes the tokenId and can be spent once, which is the
+                base case of the whole induction</small></span>
+            <span class="sz">unlock 107 B</span></div>
+          <p class="hd">Outputs</p>
+          <div class="row"><span class="ix">0-4</span>
+            <span class="what">same five as every round
+              <small>PP3 pins Y_0 and holds 1 satoshi, the dust a pool opens with</small></span>
+            <span class="sz">PP3 1 sat</span></div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <p class="lab">The arrangement</p>
+    <h2>Three scripts, none of them sufficient alone</h2>
+    <hr class="rule">
+    <p>PP1 is the locking script on round N+1's output 1. It does not execute when that round is
+      mined; it executes later, when witness N+1 spends it. By then the round is confirmed and its
+      withdrawal outputs are already spendable, so PP1 can never gate its own round's money. That
+      is why its checks point one round ahead.</p>
+    <div class="tblwrap">
+      <table>
+        <thead><tr><th>Script</th><th>Locks</th><th>Executes when</th><th>Does what</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="tag t-vfy">V_N</span></td>
+            <td class="mono">Y_N out0</td>
+            <td class="mono">round N+1 spends it at in3</td>
+            <td>Verifies the proof, rebuilds the round's outputs against hashOutputs, checks the
+              withdrawal list and the balance equation. <strong>This is the gate on money</strong>,
+              and it sits in the same transaction as the payout.</td>
+          </tr>
+          <tr>
+            <td><span class="tag t-pp3">PP3_N</span></td>
+            <td class="mono">round N out3</td>
+            <td class="mono">round N+1 spends it at in2</td>
+            <td>Requires the round's input 3 to be the outpoint it named, so V cannot simply be
+              left out. Knows the address, not the tenant.</td>
+          </tr>
+          <tr>
+            <td><span class="tag t-pp1">PP1_N</span></td>
+            <td class="mono">round N out1</td>
+            <td class="mono">witness N spends it at in1</td>
+            <td>Certified, one round earlier, that the outpoint PP3_N names holds this pool's
+              verifier carrying header N. Can inspect, but arrives too late for its own round.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:18px">PP3 supplies the timing and PP1 supplies the sight. The ordering is
+      safe because round N+2 spends witness N+1's output 0, so witness N+1 always exists first and
+      the certificate is in place before the pin it describes is ever tested.</p>
+  </section>
+
+  <section>
+    <p class="lab">Modes</p>
+    <h2>Who produces the proof decides what Y looks like</h2>
+    <hr class="rule">
+    <p>The pool has two operating modes. They differ in one question: does the coordinator run a
+      prover? Everything else in the map above is unchanged, including PP1, PP2, PP3 and the
+      round-witness alternation. What changes is how many verifier outputs a slot transaction
+      carries, and therefore what a round costs per transfer.</p>
+    <div class="modes">
+
+      <article class="mode">
+        <h3>Direct-slot</h3>
+        <p class="sub">The coordinator proves nothing</p>
+        <p>Each user proves their own spend. Y_N carries <strong>K spend-verifier outputs plus one
+          subtree-append slot</strong>, and the round spends all of them. The coordinator only
+          assembles transactions.</p>
+        <dl>
+          <dt>Y_N outputs</dt><dd>K + 1</dd>
+          <dt>Cost</dt><dd>dominated by Y: <span class="num">1.7 MB</span> at K = 2</dd>
+          <dt>Needs</dt><dd>no coordinator prover at all</dd>
+          <dt>Good for</dt><dd>an MVP, and any deployment where the coordinator's prover is not
+            yet built or not yet trusted to exist</dd>
+        </dl>
+      </article>
+
+      <article class="mode">
+        <h3>Aggregated</h3>
+        <p class="sub">The coordinator folds K proofs into one</p>
+        <p>A recursive prover reduces every spend in the round to a single proof. Y_N carries
+          <strong>one output</strong>, the aggregated root verifier. This is the mode the design
+          document describes and the one the map above draws.</p>
+        <dl>
+          <dt>Y_N outputs</dt><dd>1</dd>
+          <dt>Cost</dt><dd><span class="num">~356 s</span> for a 256-transfer round on one machine</dd>
+          <dt>Needs</dt><dd>the recursion stack, a GPU-capable prover, and machine time</dd>
+          <dt>Good for</dt><dd>throughput; per-transfer cost is the only way the pool scales</dd>
+        </dl>
+      </article>
+
+    </div>
+    <p style="margin-top:20px">Neither mode makes the coordinator trusted. In both, a round is only
+      mineable if the verifier accepted it, and the coordinator's failure mode is that the pool
+      stops, not that funds move. They are kept as separate solutions selected by coordinator
+      configuration rather than a migration path, because the aggregated prover is a large piece of
+      machinery and direct-slot has to keep working without it.</p>
+
+    <p class="note alert"><strong>Open conflict.</strong> The certificate PP1 writes requires Y to
+      have exactly one input and one output, which is what forces V to be output 0. Direct-slot's
+      K + 1 outputs cannot satisfy that check as written, so the two are currently incompatible.
+      Options, none chosen: give each verifier its own single-output Y, so a round spends K + 1 slot
+      transactions; relax the check to "output 0 is V" with a proven output count; or give direct
+      mode its own PP1 variant. The first keeps the covenant untouched and costs transaction
+      overhead; the second weakens a property that has a test defending it.</p>
+  </section>
+
+  <section>
+    <p class="lab">Status</p>
+    <h2>What the map draws that does not exist yet</h2>
+    <hr class="rule">
+    <ul>
+      <li><strong>V is a stub.</strong> Today it is a header push followed by
+        <code>OP_DROP OP_1</code>, 240 bytes. The real one is roughly 1.5 MB and carries the
+        hashOutputs rebuild, the proof check and the balance equation. Everything around it is
+        real, which is what makes the covenant testable without it.</li>
+      <li><strong>Withdrawals are impossible, not merely ungated.</strong> PP1 still emits a fixed
+        output count of 5, so a round carrying a sixth output cannot produce a valid witness. The
+        variable shape-checked tail is the next piece of work.</li>
+      <li><strong>Deposits are unbuilt.</strong> The covenant outputs, their SIGHASH_SINGLE receipt
+        binding and the refund timelock are designed and not written.</li>
+      <li><strong>Everything else verifies.</strong> Genesis, two full rounds, both witnesses and
+        every PP3 spend are accepted by the interpreter, and the sizes on this page come from that
+        run rather than from the design document.</li>
+    </ul>
+  </section>
+
+</div>

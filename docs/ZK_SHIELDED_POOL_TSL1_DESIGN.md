@@ -60,6 +60,8 @@ The pool is one PP1_SM token. Its tokenId is the funding txid of the genesis rou
 
 Round N+1 is built from the products of round N. Three transactions are involved.
 
+A measured walk-through of two consecutive rounds, with every transaction's inputs and outputs and the sizes this repository actually produces, is in [pool_round_anatomy.html](pool_round_anatomy.html). Its numbers come from `tool/scratch/two_round_probe.dart`.
+
 **Naming.** A script is named for the output it locks, and it executes only when a later transaction spends that output. Those are two different positions with two different indices, and this document keeps them apart. PP3_N is the script locking **round N's output 3**; it executes when **round N+1 spends it at input 2**. Writing "PP3_N (input 2)" would merge the two and state the wrong index as the script's identity.
 
 ### 4.1 Slot transaction Y_N
@@ -71,7 +73,7 @@ Created before round N by anyone, funded by anyone. Its content is fixed by roun
 | Inputs | any funding |
 | out0 | `V_N` = pushes of header_N, then the verifier body. 1 satoshi |
 
-In direct-slot mode Y_N has K spend-verifier outputs and one append-slot output instead of one aggregated verifier. The rest of the design does not change.
+**Exactly one input and one output is a requirement, not a convention.** It is what forces V to be output 0: PP1 rebuilds Y from its parts rather than parsing it, so with the counts fixed at one a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` where the round looks. The coordinator builds Y, so meeting the shape costs nothing. See 11.11 for why the alternative was dropped.
 
 ### 4.2 Round N+1, the token transaction
 
@@ -541,9 +543,20 @@ By contrast every PP1 generator passes `useCodeSeparator: false` deliberately. P
 
 Every line marked est. is arithmetic over parts. The PP1 pool variant has not been generated. The V tail has not been generated. The round and witness have not been built. Section 12 is the remedy.
 
-### 11.11 Aggregated versus direct-slot mode
+### 11.11 Which slot mode
 
-The document describes aggregated mode. Direct-slot mode (K user spend proofs, coordinator proves nothing) works the same way with Y_N holding K verifier outputs and one append slot, but the per-transfer cost is dominated by Y (1.7 MB for K=2) and is not competitive. It remains the right mode for an MVP where the coordinator's prover is not yet trusted or built.
+**DECIDED 2026-09-21: aggregated only.** Direct-slot mode is dropped from this design. Every deployment runs a coordinator with a prover, so the pool has one shape and Y_N has one output.
+
+Direct-slot mode put K user spend proofs in K verifier outputs on Y_N, plus an append slot, and the coordinator proved nothing. Four things settled it:
+
+1. **The one-output shape is load-bearing.** It is what forces V to be output 0 (4.1), and `emitVerifySlotIsVerifier` enforces it with a test behind it. Direct-slot's K+1 outputs cannot satisfy that check, so keeping both modes meant either weakening the property or maintaining a second PP1.
+2. **Its justification expired.** Direct-slot existed for deployments whose coordinator had no prover. The recursive prover is built and measured: about 356 s for a 256-transfer round on one machine, later about 220 s.
+3. **Cost.** Per-transfer cost was dominated by Y, 1.7 MB at K=2.
+4. **It would have landed on the variable output tail.** PP1 reads the slot at input 3 and treats inputs 4 and up as opaque deposit covenants. K+1 slots would put deposits at input K+4, so PP1 would have to know K, inside the same lhs-walking code 5.7 is about to change.
+
+**The choice is free from the wallet's side, which is why it could be made on covenant cost alone.** `nk = H(sk, tagNk)` and `nf = H(nk, rho)`, so only the holder of a spending key can produce a nullifier and the coordinator cannot build a spend proof on anyone's behalf in either mode. The proof is produced at the edge regardless; the mode only decides what the coordinator does with a proof it has been handed. A wallet therefore does one read and one submission with no handshake, in either mode. What buys that is the ring: a spend may anchor to any of the four recent `cmRoot`s the header carries, so a proof stays valid for roughly four rounds and never races a round close. That is an argument against ever shrinking the ring to save header bytes.
+
+**What would bring it back.** A deployment whose coordinator genuinely cannot run a prover. It would return as a separate archetype with its own PP1, not as a mode of this one, so that it never constrains PP1_SP's covenant.
 
 ## 12. What would settle it
 

@@ -91,3 +91,26 @@ Roughly half a day for the six archetypes, given PP1_SP as a worked reference: t
 - Should the vout be pinned to 1, or become an immutable header field? Pinning is simpler and matches the stated convention, but it forecloses funding issuance from any other index. The header field costs 4 or 5 bytes and a layout change in every archetype.
 - Should the Rabin message itself also absorb the funding outpoint? That would make the attestation non-replayable at its source rather than relying on the outpoint check alone. It is defence in depth, and it changes the issuer signing flow, so it is a separate decision.
 - PP1_SP pins the index inside the script. If the header-field route is taken later, PP1_SP should follow so the archetypes stay consistent.
+
+---
+
+## 2. Remove the direct-slot branch from the coordinator
+
+**Severity:** low, dead code. **Status:** not started. **Decided:** 2026-09-21, aggregated mode only.
+
+### What is wrong
+
+`lib/src/transaction/pool_coordinator.dart` carries `CoordinatorMode.direct` alongside `CoordinatorMode.recursive`, with a separate round-building path, a `PoolCoordinator.direct` constructor and `spendP` parameters that only that path uses. Direct-slot mode is dropped from the design ([ZK_SHIELDED_POOL_TSL1_DESIGN.md](ZK_SHIELDED_POOL_TSL1_DESIGN.md) 11.11), so that branch is now code nobody can reach through a supported configuration.
+
+Leaving it costs more than the bytes. It keeps a second round shape alive in the one file that decides what a round looks like, so a later change has to be reasoned about twice, and the tests that cover it will keep passing while describing a mode the protocol no longer has.
+
+### The fix
+
+Delete `CoordinatorMode`, the `direct` constructor and its round-building path; make the aggregation plan, padding stock and level-1 provers required rather than "null in direct mode". The `mode` field disappears from `CoordinatorStatus` too.
+
+### What this breaks
+
+`test/pool_coordinator_test.dart` and `bin/pool_coordinator.dart` both construct direct-mode coordinators. `bin/pool_coordinator.dart` also reads a mode out of its configuration file, so the config schema loses a field.
+
+Note that this file belongs to the legacy pool's coordinator service, not to TSL1_SP. It was deliberately left in place when the aggregated-only decision was recorded, because deleting a working tested path immediately before a checkpoint tag is the wrong order of operations.
+
