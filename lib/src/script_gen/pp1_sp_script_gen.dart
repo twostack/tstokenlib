@@ -430,7 +430,7 @@ class PP1SpScriptGen {
 
     // --- The slot PP3 will pin holds this pool's verifier, for this header ---
     // emitVerifySlotIsVerifier wants, bottom to top:
-    //   slotParts, vBody, bodyHash, header, nextSlot
+    //   slotParts, vBody, bodyHash, header, signerPKH, nextSlot
     OpcodeHelpers.pushInt(b, 5);
     b.opCode(OpCodes.OP_ROLL);           // slotParts
     OpcodeHelpers.pushInt(b, 5);
@@ -439,7 +439,9 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_ROLL);           // verifierBodyHash
     OpcodeHelpers.pushInt(b, 7);
     b.opCode(OpCodes.OP_PICK);           // newHeader, kept for the rebuild
-    OpcodeHelpers.pushInt(b, 7);
+    OpcodeHelpers.pushInt(b, 9);
+    b.opCode(OpCodes.OP_PICK);           // newOwnerPKH, V's signer
+    OpcodeHelpers.pushInt(b, 8);
     b.opCode(OpCodes.OP_PICK);           // nextSlot, kept for PP3
     emitVerifySlotIsVerifier(b);
     // Stack (12): pad=0, rawTx=1, lhs=2, nextSlot=3, newHeader=4,
@@ -790,15 +792,29 @@ class PP1SpScriptGen {
   /// anchorPKH`, split here 20 bytes from the end. That keeps every other
   /// index in the round branch where it was.
   ///
-  /// V itself is required to be `OP_PUSHDATA1 0xec ‖ header ‖ body`. That is
-  /// what makes the check bind *state* and not just code: the body hash says
-  /// the slot runs the pool's verifier, and the header push says that verifier
-  /// was initialised with this header. Checking only the body would leave a
-  /// coordinator free to point the next round at a verifier holding some other
-  /// round's state, which would verify a proof against the wrong publics.
+  /// V itself is required to be `OP_PUSHDATA1 0xec ‖ header ‖ 0x14 ‖
+  /// signerPKH ‖ body`. That is what makes the check bind *state* and not just
+  /// code: the body hash says the slot runs the pool's verifier, and the
+  /// header push says that verifier was initialised with this header.
+  /// Checking only the body would leave a coordinator free to point the next
+  /// round at a verifier holding some other round's state, which would verify
+  /// a proof against the wrong publics.
   ///
-  /// Pre:  [slotParts, vBody, bodyHash, header, nextSlot]   (nextSlot on top)
-  /// Post: []   (all five consumed; the script fails if anything mismatches)
+  /// **signerPKH is the key V requires a signature from**, and the caller
+  /// passes this round's newOwnerPKH, not a free push. V's slot is spent by
+  /// the round after this one, and that round spends this witness's output 0
+  /// at input 1, so its signer is exactly the owner this round hands over to.
+  /// V needs the signature because nothing else stops a stranger spending
+  /// Y:0 on its own: PP3 pins the slot one way only, forcing it into the
+  /// round that moves the money, and a copied proof would otherwise satisfy
+  /// V in any transaction, leaving the next round nothing to spend and the
+  /// pool frozen. Tying the key to newOwnerPKH rather than letting the
+  /// coordinator choose it means an outgoing coordinator in a handover cannot
+  /// leave their own key in V and keep that power after the handover.
+  ///
+  /// Pre:  [slotParts, vBody, bodyHash, header, signerPKH, nextSlot]
+  ///       (nextSlot on top)
+  /// Post: []   (all six consumed; the script fails if anything mismatches)
   static void emitVerifySlotIsVerifier(ScriptBuilder b) {
     // The pin must name output 0, which is where the canonical shape puts V.
     b.opCode(OpCodes.OP_DUP);
@@ -811,7 +827,24 @@ class PP1SpScriptGen {
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_TOALTSTACK);
-    // [yInput, vBody, bodyHash, header]
+    // [slotParts, vBody, bodyHash, header, signerPKH]
+
+    // prefix = OP_PUSHDATA1 0xec ‖ header ‖ 0x14 ‖ signerPKH. The size check
+    // is what makes the 0x14 push byte true; PP1's own rebuild of output 1
+    // does not look at newOwnerPKH's length on its own.
+    b.opCode(OpCodes.OP_SIZE);
+    OpcodeHelpers.pushInt(b, 20);
+    b.opCode(OpCodes.OP_NUMEQUALVERIFY);
+    b.addData(Uint8List.fromList([0x14]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.addData(Uint8List.fromList([0x4c, PoolHeader.byteSize]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    // [slotParts, vBody, bodyHash, prefix]
 
     // The script at that output runs the pool's verifier, not something that
     // merely returns true.
@@ -820,16 +853,8 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_3); b.opCode(OpCodes.OP_ROLL);   // bodyHash to the top
     b.opCode(OpCodes.OP_EQUALVERIFY);
-    // [yInput, header, vBody]
-
-    // V = OP_PUSHDATA1 0xec ‖ header ‖ body
-    b.opCode(OpCodes.OP_SWAP);
-    b.addData(Uint8List.fromList([0x4c, PoolHeader.byteSize]));
-    b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
-    b.opCode(OpCodes.OP_SWAP);
-    b.opCode(OpCodes.OP_CAT);
-    // [yInput, V]
+    // [slotParts, V]
 
     // output = value(8 LE) ‖ varint(len) ‖ V, at the protocol dust value.
     b.opCode(OpCodes.OP_1);

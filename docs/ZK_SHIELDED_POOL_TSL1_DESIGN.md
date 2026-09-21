@@ -71,7 +71,7 @@ Created before round N by anyone, funded by anyone. Its content is fixed by roun
 | | |
 |---|---|
 | Inputs | exactly one, any funding, scriptSig under 253 bytes |
-| out0 | `V_N` = pushes of header_N, then the verifier body. 1 satoshi |
+| out0 | `V_N` = a push of header_N, a push of the signer's key hash, then the verifier body. 1 satoshi |
 | out1 | the anchor: P2PKH to the key that will sign round N, normally the coordinator's. 1 satoshi |
 
 **Exactly this shape is a requirement, not a convention.** It is what forces V to be output 0: PP1 rebuilds Y from its parts rather than parsing it, so with the counts and the anchor's template fixed a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` where the round looks. The coordinator builds Y, so meeting the shape costs nothing. See 11.11 for why the alternative to one slot was dropped.
@@ -165,7 +165,7 @@ Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyH
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 14,704 bytes since the anchor (4.1), 14,652 after the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
+**Measured.** Script 14,715 bytes since V gained its signer (5.5), 14,704 after the anchor (4.1), 14,652 after the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
 Tests: `test/sp_token_test.dart`, 58 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, a selector that names no branch, and the output tail cases of 5.7.
 
@@ -191,7 +191,7 @@ The checks, in the order the script does them:
 2. **The slot PP3 will pin holds this pool's verifier, initialised with header_{N+1}**, as `PP1SpScriptGen.emitVerifySlotIsVerifier`. Rather than parse Y to find its output, which needs variable-length walking over inputs and outputs, it **rebuilds** Y from parts, the pattern used everywhere else in TSL1:
 
 ```
-V = OP_PUSHDATA1 0xec ‖ header_{N+1} ‖ body
+V = OP_PUSHDATA1 0xec ‖ header_{N+1} ‖ 0x14 ‖ newOwnerPKH ‖ body
 anchor = 1 sat ‖ 0x19 ‖ OP_DUP OP_HASH160 <anchorPKH> OP_EQUALVERIFY OP_CHECKSIG
 Y = version=1 ‖ 0x01 ‖ yInput ‖ 0x02 ‖ output(V, 1 sat) ‖ anchor ‖ nLockTime=0
 SIZE(yInput) == 41 + yInput[36]      and      yInput[36] < 0xfd
@@ -199,7 +199,7 @@ SHA256(body) == verifierBodyHash
 SHA256d(Y)   == nextSlot[0:32]      and      nextSlot[32:36] == 0
 ```
 
-Only `yInput`, `body` and the anchor's key hash are free; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for V's value and varint. Fixing the shape is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing. `yInput` and the key hash arrive as one push, split 20 bytes from the end, so no other index in the branch moved.
+Only `yInput`, `body` and the anchor's key hash are free; V's signer is not, it is this round's `newOwnerPKH`; the script emits every structural byte, reusing `PP1FtScriptGen.emitBuildOutput` for V's value and varint. Fixing the shape is what makes it sound: V is then necessarily output 0, so a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` at output 0. The coordinator builds Y, so the shape costs nothing. `yInput` and the key hash arrive as one push, split 20 bytes from the end, so no other index in the branch moved.
 
 **yInput's length is checked, and the anchor is why it has to be.** The pin is a hash over bytes, and bytes mean something only through a parse. If yInput's own scriptSig length could disagree with how many bytes yInput actually holds, the real transaction would parse differently from what PP1 rebuilt. Claiming more lets the scriptSig, as one push, swallow the output count, V and the start of the anchor, with the parse resuming inside the anchor's key hash: 20 bytes of the spender's choosing, room for a sequence, an output count of 1 and a script `OP_1 OP_1 OP_EQUALVERIFY OP_CHECKSIG` that borrows the anchor's own last two opcodes. Claiming less ends the scriptSig early and lets the rest of yInput open an output whose `OP_1 OP_RETURN` script covers V and the anchor. Either way the real Y has one output an attacker spends without a proof, hashing exactly to the pin. Before the anchor, everything after yInput was fixed or hash-checked, so the parse had nowhere to land that the spender chose. Both Ys are built in `test/sp_token_test.dart`, parsed in Dart to show they really are one-output transactions, and refused; with the length check removed from the generator, PP1 accepts both.
 
@@ -289,12 +289,20 @@ Tests in `test/sp_token_test.dart`, group "SP PP3 pins the verifier slot": a rou
 
 One header push, then the existing verifier program, then a tail that:
 
-1. Checks hashPrevouts contains (round N, 3) at input 3, so V_N can only be spent beside PP3_N.
+1. **Requires a SIGHASH_ALL signature from the key hash in its second push**, so that only a round the owner signed can spend it. DECIDED 2026-09-21, replacing "checks hashPrevouts contains (round N, 3) at input 3", which cannot be built: Y_N exists before round N, because PP3_N embeds Y_N's txid, so V_N can never name round N. See "Why V needs a signer" below.
 2. Rebuilds round N+1's outputs from pushed bytes and checks hashOutputs. From them it reads header_{N+1}, PP3_{N+1}'s value, the withdrawal outputs and the deposit receipts.
 3. Verifies the proof against publics: header_N (embedded), header_{N+1}, the receipt list, the withdrawal list.
 4. Checks PP3_{N+1}.value = header_N.balance + sum(receipt values) − sum(withdrawal values).
 5. Ends with OP_CODESEPARATOR before its checksig so the preimage's scriptCode is the tail, not the 1.5 MB program. `CheckPreimageOCS` already supports this (`useCodeSeparator`, default true).
 6. **Does not need to pin PP3_{N+1}'s program; PP3 does.** DECIDED 2026-09-21. The program of the output holding the pool balance must be fixed at mining time, and there were two candidates: V, through the output rebuild of step 2 at the cost of one hash comparison, or PP3_N itself as a forward covenant at about 148 KB a round. PP3 was chosen, because it does not depend on V: the property holds now, before V exists, and it keeps holding if V's own checks are ever wrong. The cost is 2.8% of a round; see 5.4. V still gates the value (step 4), which PP3 cannot know. Whether V should also pin PP1's and PP2's programs is open. Substituting either looks, on reading the scripts, like it ends in the pool dying at the next witness rather than funds moving, but that is the kind of argument that breaks quietly, and in V it costs a hash each.
+
+**Why V needs a signer.** PP3_N pins the slot in one direction only: whatever spends PP3_N must spend Y_N:0 at input 2. Nothing pins the other direction. Y_N:0 is an ordinary output, and the only script guaranteed to run whenever it is spent is V_N itself. The honest round's proof is public in the mempool, so without more, anyone could copy it into a transaction of their own that spends Y_N:0 and not PP3_N. V's proof and output checks would pass, since the copier can reproduce the round's outputs byte for byte and only has to fund PP3_{N+1}'s value themselves. The outpoint PP3_N names would then be gone, PP3_N unspendable, and the pool frozen.
+
+V_N cannot close this by naming what the round must also spend: every covenant-controlled output round N+1 spends (witness N's output 0, PP3_N, the next anchor, the deposits) is created after Y_N. The only things that can exist before V_N are the coordinator's own. The three options considered were: a signer key in V (chosen, about 30 bytes of script and 140 of unlock); proving input 3 is PP3_N by rebuilding round N's txid (round N pushed whole, about 1 MB a round once paid three times); or a proof public naming witness N's txid, checked against input 1 (a circuit change, and the root cannot be finished until witness N exists). The signer adds no trust: the same key can already freeze the pool by spending witness N's output 0, which round N+1 needs at input 1. A copier holds the honest round's signature, but SIGHASH_ALL commits it to that exact transaction, so they can only rebroadcast the round itself.
+
+The key is PP1's, not the coordinator's choice. PP1 rebuilds V with this round's `newOwnerPKH` as the signer (5.2), because the round that spends Y_{N+1}:0 spends witness N+1's output 0 at input 1 and is therefore signed by that owner. An outgoing coordinator in a handover cannot leave their own key in V. `test/sp_token_test.dart`, group "SP V answers only to its signer", runs the signer check alone as V's body: the owner's spend is accepted, a stranger's key is refused, and the owner's signature replayed into a transaction paying elsewhere is refused.
+
+V runs two checksigs: the OCS one for its preimage and this one. Both sit after its single OP_CODESEPARATOR (11.6), so this signature covers V's tail as its scriptCode.
 
 **What the proof states, and what V still has to derive.** Mapped 2026-09-21 against the root's wide statement (`AggregationTree.widePublics`):
 
@@ -322,7 +330,7 @@ With that, every field of the header and every output of the round has a source 
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
 
-The shape is now fixed by 5.2, which rebuilds V as `OP_PUSHDATA1 0xec ‖ header ‖ body` and requires `SHA256(body) == verifierBodyHash`. So the header is exactly one push at the front, and everything after it is the same bytes in every round of a pool. The verifier reads its own header by splitting that push at the offsets in 5.1.
+The shape is now fixed by 5.2, which rebuilds V as `OP_PUSHDATA1 0xec ‖ header ‖ 0x14 ‖ signerPKH ‖ body` and requires `SHA256(body) == verifierBodyHash`. So the header is one push at the front, the signer a second, and everything after them is the same bytes in every round of a pool. When the body starts, the header and the signer's key hash are the top two stack items; the verifier reads its header by splitting that push at the offsets in 5.1.
 
 ### 5.6 Burn
 

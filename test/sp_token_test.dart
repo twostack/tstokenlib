@@ -265,7 +265,8 @@ void main() {
 
       var y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var issuanceTx = service.createTokenIssuanceTxn(
           fundingTx, operatorSigner, operatorPub, operatorAddress,
           verifierBodyHash, g, y0.outpoint, getOperatorFundingTx2().hash);
@@ -291,7 +292,8 @@ void main() {
       var g = genesisHeader();
       var y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       expect(() => service.createTokenIssuanceTxn(
               getOperatorFundingTx(),
               DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
@@ -311,7 +313,8 @@ void main() {
       var g = genesisHeader();
       var y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
           operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
 
@@ -446,10 +449,12 @@ void main() {
 
       y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       y1 = service.buildSlotTxn(
           header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
 
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
           operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
@@ -577,7 +582,8 @@ void main() {
       // be verified against a state that is not the one it follows.
       var stale = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x12),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var roundTx = round(h1, stale.outpoint, unchecked: true, slotTx: stale.tx);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: stale.outpoint,
@@ -588,7 +594,8 @@ void main() {
     test('rejects a slot holding something that is not the verifier', () {
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var roundTx = round(h1, decoy.outpoint, unchecked: true, slotTx: decoy.tx);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: decoy.outpoint,
@@ -599,7 +606,8 @@ void main() {
     test('rejects claiming the verifier is in a slot that holds a decoy', () {
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var roundTx = round(h1, decoy.outpoint, unchecked: true, slotTx: decoy.tx);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: decoy.outpoint,
@@ -612,7 +620,8 @@ void main() {
       // spend an uncertified one.
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       var roundTx = round(h1, decoy.outpoint, unchecked: true, slotTx: decoy.tx);
       expect(() => spendPP1(roundTx, roundWitness(roundTx,
               claimedHeader: h1, claimedSlot: y1.outpoint, slotParts: y1.parts,
@@ -667,7 +676,8 @@ void main() {
           outHash: PoolOutHash.roundOutHashOf(PoolOutHash.decodeBundles(bundles2)));
       var y2 = service.buildSlotTxn(
           header: h2, verifierBody: verifierBody, fundingInput: slotFunding(0x12),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
 
       var round2 = service.createRoundTxn(witness1, round1, y1.tx, operatorPub,
           fundA, signer, operatorPub, fundB.hash, h2, y2.outpoint,
@@ -696,7 +706,8 @@ void main() {
     test('the tool refuses a round that brings its own verifier slot', () {
       var stray = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x14),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       expect(() => service.createRoundTxn(createWitness, issuanceTx, stray.tx,
               operatorPub, fundA, signer, operatorPub, fundB.hash, h1,
               y1.outpoint, nextSlotTx: y1.tx),
@@ -1049,8 +1060,10 @@ void main() {
     var header = nextHeader(genesisHeader());
     var other = genesisHeader();
 
-    SVScript verifier(PoolHeader h, List<int> body) => SVScript.fromByteArray(
-        Uint8List.fromList([0x4c, PoolHeader.byteSize, ...h.encode(), ...body]));
+    var owner = hex.decode(operatorPubkeyHash);
+    SVScript verifier(PoolHeader h, List<int> body, {List<int>? signer}) =>
+        SVScript.fromByteArray(Uint8List.fromList([0x4c, PoolHeader.byteSize,
+            ...h.encode(), 0x14, ...(signer ?? owner), ...body]));
 
     var anchorPKH = hex.decode(operatorPubkeyHash);
     var anchor = TransactionOutput(BigInt.one, ShieldedPoolTool.anchorScript(anchorPKH));
@@ -1067,8 +1080,10 @@ void main() {
       return y;
     }
 
+    // newOwner is what the round branch passes as V's signer: the owner the
+    // certified round hands over to.
     void runCheck(List<int> yHash, List<int> parts, List<int> claimedBody,
-        PoolHeader claimedHeader, {int vout = 0}) {
+        PoolHeader claimedHeader, {int vout = 0, List<int>? newOwner}) {
       var slot = Uint8List(36)..setAll(0, yHash);
       slot.buffer.asByteData().setUint32(32, vout, Endian.little);
       var sig = ScriptBuilder()
@@ -1076,6 +1091,7 @@ void main() {
           .addData(Uint8List.fromList(claimedBody))
           .addData(Uint8List.fromList(verifierBodyHash))
           .addData(Uint8List.fromList(claimedHeader.encode()))
+          .addData(Uint8List.fromList(newOwner ?? owner))
           .addData(slot)
           .build();
       var b = ScriptBuilder();
@@ -1103,6 +1119,23 @@ void main() {
     test('accepts a slot that holds the verifier for this header', () {
       check(carried: verifier(header, verifierBody), claimedBody: verifierBody,
           claimedHeader: header);
+    });
+
+    test('rejects a V that answers to a key other than the new owner', () {
+      // The coordinator building Y could otherwise name any key, including,
+      // in a handover, their own after they have handed the pool on.
+      var y = slotTx(verifier(header, verifierBody,
+          signer: hex.decode(counterpartyPubkeyHash)));
+      expect(() => runCheck(y.hash, [...y.inputs[0].serialize(), ...anchorPKH],
+              verifierBody, header),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('accepts a V that answers to the owner a handover names', () {
+      var next = hex.decode(counterpartyPubkeyHash);
+      var y = slotTx(verifier(header, verifierBody, signer: next));
+      runCheck(y.hash, [...y.inputs[0].serialize(), ...anchorPKH],
+          verifierBody, header, newOwner: next);
     });
 
     test('rejects a slot holding something else', () {
@@ -1203,6 +1236,66 @@ void main() {
     });
   });
 
+  group('SP V answers only to its signer', () {
+    // PP3 pins the slot one way: the round that moves the money must spend
+    // Y:0. Nothing pins it the other way, so without this a stranger who
+    // copied the round's proof out of the mempool could spend Y:0 in a
+    // transaction of their own, and the round would have nothing left to
+    // spend. The key in V's second push is what refuses them. The body here
+    // is only the signer check the real V runs, so that the mechanism is
+    // tested before the rest of V exists:
+    //   [sig, pubkey, header, signerPKH]  NIP OVER HASH160 EQUALVERIFY CHECKSIG
+    var toyBody = Uint8List.fromList([OpCodes.OP_NIP, OpCodes.OP_OVER,
+        OpCodes.OP_HASH160, OpCodes.OP_EQUALVERIFY, OpCodes.OP_CHECKSIG]);
+    var service = ShieldedPoolTool();
+    var y = service.buildSlotTxn(
+        header: genesisHeader(), verifierBody: toyBody,
+        fundingInput: slotFunding(0x30),
+        anchorPKH: hex.decode(operatorPubkeyHash),
+        signerPKH: hex.decode(operatorPubkeyHash));
+
+    Transaction spendY(TransactionSigner signer, SVPublicKey pub, Address payTo) =>
+        TransactionBuilder()
+            .spendFromTxnWithSigner(signer, y.tx, 0,
+                TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(pub))
+            .spendToLockBuilder(P2PKHLockBuilder.fromAddress(payTo), BigInt.one)
+            .build(false);
+
+    void spend(Transaction tx) => Interpreter().correctlySpends(
+        tx.inputs[0].script!, y.tx.outputs[0].script, tx, 0, verifyFlags,
+        Coin.valueOf(BigInt.one));
+
+    var ownerSigner = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+
+    test('accepts a spend the owner signed', () {
+      spend(spendY(ownerSigner, operatorPub, operatorAddress));
+    });
+
+    test('rejects a stranger signing with their own key', () {
+      var stranger = DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey);
+      expect(() => spend(spendY(stranger, counterpartyPub, counterpartyAddress)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects the owner\'s signature copied into another transaction', () {
+      // What a front-runner actually has: the honest round's unlocking
+      // script, taken from the mempool. SIGHASH_ALL commits the signature to
+      // the whole round, so moved into a transaction of their own it fails.
+      var honest = spendY(ownerSigner, operatorPub, operatorAddress);
+      var copied = honest.inputs[0].script!;
+      Transaction payingTo(Address a) => TransactionBuilder()
+          .spendFromTxn(y.tx, 0, TransactionInput.MAX_SEQ_NUMBER,
+              DefaultUnlockBuilder.fromScript(copied))
+          .spendToLockBuilder(P2PKHLockBuilder.fromAddress(a), BigInt.one)
+          .build(false);
+      // Replayed into an identical transaction it still verifies, so the
+      // refusal below is the signature's commitment and not the harness.
+      spend(payingTo(operatorAddress));
+      expect(() => spend(payingTo(counterpartyAddress)),
+          throwsA(isA<ScriptException>()));
+    });
+  });
+
   group('SP the round must spend the slot its parent pinned', () {
     // A second, independent binding of the same fact PP3 enforces at mining
     // time. The outpoint is read out of the round's own left-hand side, which
@@ -1293,10 +1386,12 @@ void main() {
 
       y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       y1 = service.buildSlotTxn(
           header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
 
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
           operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
@@ -1482,10 +1577,12 @@ void main() {
       h1 = nextHeader(g);
       y0 = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       y1 = service.buildSlotTxn(
           header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
           operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
       createWitness = service.createWitnessTxn(
@@ -1521,7 +1618,8 @@ void main() {
       // body hash alone would pass it.
       var wrong = service.buildSlotTxn(
           header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x12),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       expect(() => round(wrong.outpoint, slotTx: wrong.tx),
           throwsA(isA<ArgumentError>()));
     });
@@ -1529,7 +1627,8 @@ void main() {
     test('refuses a verifier that is not this pool\'s', () {
       var decoy = service.buildSlotTxn(
           header: h1, verifierBody: decoyBody, fundingInput: slotFunding(0x13),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       expect(() => round(decoy.outpoint, slotTx: decoy.tx),
           throwsA(isA<ArgumentError>()));
     });
@@ -1579,7 +1678,8 @@ void main() {
     test('refuses an outpoint that is not the slot transaction supplied', () {
       var other = service.buildSlotTxn(
           header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x15),
-          anchorPKH: hex.decode(operatorPubkeyHash));
+          anchorPKH: hex.decode(operatorPubkeyHash),
+          signerPKH: hex.decode(operatorPubkeyHash));
       expect(() => round(other.outpoint, slotTx: y1.tx),
           throwsA(isA<ArgumentError>()));
     });

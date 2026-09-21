@@ -327,7 +327,8 @@ class ShieldedPoolTool {
           slotTx: nextSlotTx,
           outpoint: nextSlot,
           header: newHeader,
-          verifierBodyHash: prevPP1.verifierBodyHash!);
+          verifierBodyHash: prevPP1.verifierBodyHash!,
+          signerPKH: newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160));
     }
     if (nextSlotTx.outputs.length < 2) {
       throw ArgumentError('nextSlotTx has no output 1 for the round to spend '
@@ -485,10 +486,12 @@ class ShieldedPoolTool {
   /// monitor watching someone else's pool, wants to ask this question of a
   /// slot without building anything.
   ///
-  /// The four checks are PP1's, in PP1's order: the outpoint names output 0 of
+  /// The checks are PP1's, in PP1's order: the outpoint names output 0 of
   /// [slotTx]; Y has exactly one input and two outputs, V then the 1-satoshi
-  /// P2PKH anchor, which is what forces V to be output 0; V is `OP_PUSHDATA1 0xec ‖ header ‖ body`; and the body
-  /// hashes to the pool's immutable [verifierBodyHash]. PP1 rebuilds Y from
+  /// P2PKH anchor, which is what forces V to be output 0; V is
+  /// `OP_PUSHDATA1 0xec ‖ header ‖ 0x14 ‖ signerPKH ‖ body`, with [signerPKH]
+  /// the round's new owner; and the body hashes to the pool's immutable
+  /// [verifierBodyHash]. PP1 rebuilds Y from
   /// its parts and compares HASH256 against the pin, so a slot that fails any
   /// of these has no passing preimage short of breaking SHA-256.
   static void checkSlotIsCertifiable({
@@ -496,6 +499,7 @@ class ShieldedPoolTool {
     required List<int> outpoint,
     required PoolHeader header,
     required List<int> verifierBodyHash,
+    required List<int> signerPKH,
   }) {
     if (outpoint.length != 36) {
       throw ArgumentError('A slot outpoint is 36 bytes, not ${outpoint.length}');
@@ -540,14 +544,22 @@ class ShieldedPoolTool {
     }
 
     var v = slotTx.outputs[0].script.buffer;
-    var bodyStart = 2 + PoolHeader.byteSize;
-    if (v.length <= bodyStart || v[0] != 0x4c || v[1] != PoolHeader.byteSize) {
+    var signerStart = 2 + PoolHeader.byteSize + 1;
+    var bodyStart = signerStart + 20;
+    if (v.length <= bodyStart || v[0] != 0x4c || v[1] != PoolHeader.byteSize ||
+        v[signerStart - 1] != 0x14) {
       throw ArgumentError('Y output 0 does not open with a '
-          '${PoolHeader.byteSize}-byte header push, so it is not a verifier '
-          'slot for this pool.');
+          '${PoolHeader.byteSize}-byte header push and a 20-byte signer push, '
+          'so it is not a verifier slot for this pool.');
+    }
+    if (!_sameRange(v.sublist(signerStart, bodyStart), signerPKH, 0, 20)) {
+      throw ArgumentError('The verifier in Y requires a signature from '
+          '${hex.encode(v.sublist(signerStart, bodyStart))}, but PP1 will '
+          'require it to be the round\'s new owner, ${hex.encode(signerPKH)}. '
+          'That owner signs the round that spends this slot.');
     }
     var encoded = header.encode();
-    if (!_sameRange(v.sublist(2, bodyStart), encoded, 0, PoolHeader.byteSize)) {
+    if (!_sameRange(v.sublist(2, signerStart - 1), encoded, 0, PoolHeader.byteSize)) {
       throw ArgumentError('The verifier in Y carries a different header than '
           'the round does. A slot built for another state is a genuine, '
           'spendable verifier that was never told what to check, which is the '
@@ -574,9 +586,14 @@ class ShieldedPoolTool {
   /// the coordinator. The coordinator builds Y, so meeting the shape costs
   /// nothing.
   ///
-  /// V is `OP_PUSHDATA1 0xec ‖ header ‖ verifierBody`, which is what lets PP1
-  /// check the slot runs this pool's verifier *and* that the verifier was
-  /// initialised with this header.
+  /// V is `OP_PUSHDATA1 0xec ‖ header ‖ 0x14 ‖ signerPKH ‖ verifierBody`,
+  /// which is what lets PP1 check the slot runs this pool's verifier *and*
+  /// that the verifier was initialised with this header. [signerPKH] is the
+  /// key V will require a signature from, so that only a round the owner
+  /// signed can spend it. PP1 requires it to be the new owner of the round
+  /// whose witness certifies this slot, which is the key that signs the round
+  /// spending it; normally the coordinator's, and the same as [anchorPKH]
+  /// except in a round that hands the pool to a new key.
   ///
   /// `parts` is `yInput ‖ anchorPKH`, the one push PP1's slot check takes.
   /// Its input must have a scriptSig shorter than 253 bytes, because PP1
@@ -587,12 +604,16 @@ class ShieldedPoolTool {
     required List<int> verifierBody,
     required TransactionInput fundingInput,
     required List<int> anchorPKH,
+    required List<int> signerPKH,
   }) {
     if (anchorPKH.length != 20) {
       throw ArgumentError('anchorPKH is a 20-byte key hash, not ${anchorPKH.length} bytes');
     }
-    var v = Uint8List.fromList(
-        [0x4c, PoolHeader.byteSize, ...header.encode(), ...verifierBody]);
+    if (signerPKH.length != 20) {
+      throw ArgumentError('signerPKH is a 20-byte key hash, not ${signerPKH.length} bytes');
+    }
+    var v = Uint8List.fromList([0x4c, PoolHeader.byteSize, ...header.encode(),
+        0x14, ...signerPKH, ...verifierBody]);
 
     var y = Transaction()
       ..version = 1
