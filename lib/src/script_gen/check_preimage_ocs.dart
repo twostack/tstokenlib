@@ -69,7 +69,16 @@ class CheckPreimageOCS {
   /// When false, no OP_CODESEPARATOR is emitted. The preimage's scriptCode
   /// field contains the FULL locking script, which allows Util.scriptCode()
   /// to extract it for inductive proof checks (e.g. PP1_FT).
-  static void emitCheckPreimageOCS(ScriptBuilder b, {bool useCodeSeparator = true}) {
+  ///
+  /// [sighashType] is the byte appended to the constructed signature, and so
+  /// decides which preimage the node will accept: 0x41, SIGHASH_ALL|FORKID,
+  /// everywhere except a pool PP3, which signs 0x43, SIGHASH_SINGLE|FORKID,
+  /// so that its preimage's hashOutputs covers exactly the output at its own
+  /// index. Nothing else in the preimage the scripts read moves: under SINGLE
+  /// hashPrevouts is still committed and the outpoint is still at [68:104];
+  /// hashSequence becomes zero, and no script here reads it.
+  static void emitCheckPreimageOCS(ScriptBuilder b,
+      {bool useCodeSeparator = true, int sighashType = 0x41}) {
     // Step 1: hash256(preImage) → sighash (32 bytes)
     b.opCode(OpCodes.OP_HASH256);
 
@@ -115,7 +124,7 @@ class CheckPreimageOCS {
     b.opCode(OpCodes.OP_ENDIF);
 
     // Step 5: DER encode
-    emitDerEncode(b);
+    emitDerEncode(b, sighashType: sighashType);
 
     // Step 6: OP_CHECKSIG (optionally with OP_CODESEPARATOR)
     b.addData(pubKey);
@@ -128,8 +137,8 @@ class CheckPreimageOCS {
   /// Converts script number s to DER-encoded signature.
   ///
   /// Pre: [s_final] on stack (script number, positive, < N/2).
-  /// Post: [sig] on stack (DER-encoded signature with sighash type 0x41).
-  static void emitDerEncode(ScriptBuilder b) {
+  /// Post: [sig] on stack (DER-encoded signature with [sighashType] appended).
+  static void emitDerEncode(ScriptBuilder b, {int sighashType = 0x41}) {
     // Get slen = SIZE of minimal encoding of s
     b.opCode(OpCodes.OP_DUP);
     b.opCode(OpCodes.OP_SIZE);
@@ -179,8 +188,8 @@ class CheckPreimageOCS {
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);
 
-    // Append sighash type: SIGHASH_ALL | SIGHASH_FORKID = 0x41
-    b.addData(Uint8List.fromList([0x41]));
+    // Append the sighash type, SIGHASH_ALL | SIGHASH_FORKID = 0x41 by default
+    b.addData(Uint8List.fromList([sighashType]));
     b.opCode(OpCodes.OP_CAT);
   }
 }

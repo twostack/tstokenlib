@@ -119,7 +119,9 @@ Note that this file belongs to the legacy pool's coordinator service, not to TSL
 
 ## 3. Remove the burn branch from PP2 and PP3
 
-**Severity:** critical for the pool, cosmetic for everything else. **Status:** not started. **Measured:** 2026-09-21.
+**Severity:** critical for the pool, cosmetic for everything else. **Status:** DONE for PP3 2026-09-21; PP2 deliberately left, see the outcome at the end. **Measured:** 2026-09-21.
+
+**Closed the same day by a forward covenant in PP3.** Removing burn made the canonical program safe but not mandatory: nothing pinned PP3's program when a round was mined. PP3 now enforces its own successor at mining time (design 5.4), at 2.8% of a round. The one remaining gap is the base case, the genesis PP3, which a depositor closes by checking the PP3 their covenant names.
 
 ### What is wrong
 
@@ -157,3 +159,16 @@ Half a day, most of it in moving the PP3 offsets and re-running the geometry pro
 ### Related
 
 Item 2 above, and the freeze note in 5.7. The two interact in one specific way worth stating: **removing burn makes the freeze unrecoverable for real.** Today a coordinator who bricks the pool by pinning an uncertifiable slot can still sweep the balance back out, which is theft-shaped but recovers depositors' money if the coordinator is honest. After this change, a bricked pool is bricked, and the build-time guard in `ShieldedPoolTool.checkSlotIsCertifiable` becomes the only thing standing between a typo and a permanent loss. Do not remove burn without that guard in place. It is, as of 2026-09-21.
+
+### Outcome, 2026-09-21
+
+**PP3: done.** The pool variant has no owner push, no selector dispatch and no burn path. `WitnessCheckScriptGen.generate` takes exactly one of `ownerPKH` and `nextSlot` and throws on both; `PartialWitnessLockBuilder.forPool(nextSlot)` replaced the optional argument so the two cannot be mixed; `PartialWitnessUnlockBuilder` pushes no selector when it pushes `extraPrevouts`. The flag route was taken, as argued above, so there is still exactly one copy of the witness check.
+
+What moved, as predicted: `pp3NextSlotStart`/`pp3NextSlotEnd` went from 22/58 to 1/37, and `emitRebuildPP3WithNextSlot` lost its owner window, becoming `parent[0:1] ‖ newSlot ‖ parent[37:]`. PP1's phase 10 no longer picks `newOwnerPKH` for it. What did not move: PP3's hashed-tail geometry, re-measured rather than assumed, is still `getInOutSize` 111 and 115 of 119 bytes with 4 of headroom. The pool PP3 is 49,124 bytes, 32 fewer than before. The NFT and FT templates are byte-identical, per `test/template_sync_test.dart`, so no other archetype lost its burn.
+
+`tool/scratch/pp3_freeze_probe.dart` now shows the coordinator's sweep **rejected**. The test that pins it makes the identical spend against an ordinary token's PP3 as well, which succeeds, so the rejection is known to be about the missing branch.
+
+**The limit of the fix, and how it was closed.** Nothing checked PP3's program when a round was mined. PP1 copies it from the parent, but in the witness, one step late; create never looks at it. So removing burn made the canonical program safe, not mandatory. PP3 now carries a forward covenant: signing SIGHASH_SINGLE from input 3, with no OP_CODESEPARATOR, it rebuilds output 3 from its own scriptCode and the new slot and value, and a round whose PP3 runs anything else cannot be mined. Measured cost about 148 KB a round, 2.8% of the design's 5.2 MB. Design 5.4 has the details, including the two length checks the covenant's security rests on.
+
+**PP2: left, deliberately.** Its burn path lets the coordinator spend PP2 before the witness does, which freezes the pool. That is death, not theft, and the coordinator can already kill the pool by not building witnesses, since the round branch needs their signature. So the branch grants no new power. Removing it would not be enforceable either: PP1 validates four push-length bytes of PP2 and drops the hash of the rest, TSL1-wide and on purpose (the NFT generator carries the comment "individual field checks provide sufficient validation"). PP2's program is whatever the coordinator writes until V pins it. This departs from design 5.6's original "removed from all three", and the reason is recorded there. Revisit if a recovery path for abandoned pools is ever added, because a burn that forecloses recovery would then be a new power.
+

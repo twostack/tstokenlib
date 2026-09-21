@@ -5,6 +5,7 @@ import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
+import 'package:tstokenlib/src/script_gen/witness_check_script_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
 
@@ -493,8 +494,8 @@ void main() {
 
       // The spend of the parent PP3 is what carries the induction forward, and
       // what refuses to happen unless the verifier slot is an input.
-      Interpreter().correctlySpends(roundTx.inputs[2].script!,
-          issuanceTx.outputs[3].script, roundTx, 2, verifyFlags,
+      Interpreter().correctlySpends(roundTx.inputs[3].script!,
+          issuanceTx.outputs[3].script, roundTx, 3, verifyFlags,
           Coin.valueOf(BigInt.one));
 
       spendPP1(roundTx, honestWitness(roundTx));
@@ -660,8 +661,8 @@ void main() {
 
       // Round 1's PP3 held 500000 satoshis, not dust, and round 2 has to spend it.
       expect(round1.outputs[3].satoshis, h1.balance);
-      Interpreter().correctlySpends(round2.inputs[2].script!,
-          round1.outputs[3].script, round2, 2, verifyFlags,
+      Interpreter().correctlySpends(round2.inputs[3].script!,
+          round1.outputs[3].script, round2, 3, verifyFlags,
           Coin.valueOf(h1.balance));
 
       var witness2 = service.createWitnessTxn(
@@ -719,43 +720,229 @@ void main() {
       remainder = parts.$2;
     });
 
-    Transaction round({required bool withSlot}) {
-      var empty = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
-      var b = TransactionBuilder()
-          .spendFromTxnWithSigner(
-              DefaultTransactionSigner(sigHashAll, operatorPrivateKey), opFunding, 1,
-              TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
-          .spendFromTxn(witnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, empty)
-          .spendFromTxn(tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, empty);
-      if (withSlot) {
-        b.spendFromTxn(slotTx, 0, TransactionInput.MAX_SEQ_NUMBER, empty);
+    var newSlot = outpoint(List<int>.filled(32, 0x77), 0);
+    var pp3In = PP1SpScriptGen.poolPP3Input;
+    var pp3Sighash = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_SINGLE.value;
+
+    List<int> le8(BigInt v) {
+      var o = Uint8List(8);
+      o.buffer.asByteData().setUint64(0, v.toInt(), Endian.little);
+      return o;
+    }
+
+    /// A round spending the issuance's PP3, built by hand so that every part
+    /// the covenant looks at can be got wrong on purpose.
+    ///
+    /// [output3] is what the round actually carries at output 3, and
+    /// [claimedSlot] and [claimedValue] are what the unlock says it carries.
+    /// Honest rounds make them agree. [unlockOverride] replaces the unlocking
+    /// script outright, for attacks the builder refuses to construct.
+    Transaction round({
+      bool withSlot = true,
+      TransactionOutput? output3,
+      bool successorAt4 = false,
+      List<int>? claimedSlot,
+      List<int>? claimedValue,
+      List<int>? fakePartialHash,
+      SVScript Function(List<int> preImage)? unlockOverride,
+    }) {
+      var successor = TransactionOutput(BigInt.from(777),
+          PartialWitnessLockBuilder.forPool(newSlot).getScriptPubkey());
+      var carried = output3 ?? successor;
+      var pay = P2PKHLockBuilder.fromAddress(operatorAddress).getScriptPubkey();
+
+      var tx = Transaction()
+        ..version = 1
+        ..nLockTime = 0
+        ..addInput(TransactionInput(opFunding.id, 1, 0xffffffff))
+        ..addInput(TransactionInput(witnessTx.id, 0, 0xffffffff));
+      if (withSlot) tx.addInput(TransactionInput(slotTx.id, 0, 0xffffffff));
+      tx.addInput(TransactionInput(tokenTx.id, 3, 0xffffffff));
+      tx
+        ..addOutput(TransactionOutput(BigInt.from(1000), pay))
+        ..addOutput(TransactionOutput(BigInt.one, pay))
+        ..addOutput(TransactionOutput(BigInt.one, pay));
+      if (successorAt4) {
+        tx
+          ..addOutput(TransactionOutput(BigInt.one, pay))
+          ..addOutput(carried);
+      } else {
+        tx.addOutput(carried);
       }
-      var tx = b
-          .spendToPKH(operatorAddress, BigInt.from(1000))
-          .withFee(BigInt.from(500))
-          .build(false);
-      var pre = Sighash().createSighashPreImage(tx, sigHashAll, 2, pp3Script, BigInt.one);
-      tx.inputs[2].script = PartialWitnessUnlockBuilder(
-              pre!, partialHash, remainder, outpoint(opFunding.hash, 1),
-              extraPrevouts: const <int>[])
-          .getScriptSig();
+
+      var at = withSlot ? pp3In : pp3In - 1;
+      var pre = Sighash().createSighashPreImage(tx, pp3Sighash, at, pp3Script, BigInt.one)!;
+      tx.inputs[at].script = unlockOverride != null
+          ? unlockOverride(pre)
+          : PartialWitnessUnlockBuilder.forPool(
+                  pre, fakePartialHash ?? partialHash, remainder,
+                  outpoint(opFunding.hash, 1),
+                  nextSlot: claimedSlot ?? newSlot,
+                  nextValue: claimedValue ?? le8(successor.satoshis))
+              .getScriptSig();
       return tx;
     }
 
-    void spendPP3(Transaction tx) => Interpreter().correctlySpends(
-        tx.inputs[2].script!, pp3Script, tx, 2, verifyFlags, Coin.valueOf(BigInt.one));
+    void spendPP3(Transaction tx) {
+      var at = tx.inputs.length - 1;
+      Interpreter().correctlySpends(tx.inputs[at].script!, pp3Script, tx, at,
+          verifyFlags, Coin.valueOf(BigInt.one));
+    }
 
-    test('accepts a round that spends the named slot at input 3', () {
-      spendPP3(round(withSlot: true));
+    test('accepts a round that spends the named slot at input 2', () {
+      spendPP3(round());
     });
 
     test('rejects a round that skips verification', () {
       expect(() => spendPP3(round(withSlot: false)), throwsA(isA<ScriptException>()));
     });
 
-    test('costs 46 bytes over a plain PP3', () {
-      var plain = PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash)).getScriptPubkey();
-      expect(pp3Script.buffer.length - plain.buffer.length, 46);
+    test('still requires the witness', () {
+      // The covenant is added to the witness check, not substituted for it. A
+      // partial hash that does not lead to this round's witness gives the
+      // wrong witness txid, and input 1 no longer matches.
+      expect(() => spendPP3(round(fakePartialHash: List<int>.filled(32, 0x13))),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a round whose output 3 is a burnable PP3', () {
+      // The attack the covenant exists for: carry the pool balance forward in
+      // a PP3 that still has the token archetype's burn path, then burn it.
+      var burnable = TransactionOutput(BigInt.from(777),
+          PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash)).getScriptPubkey());
+      expect(() => spendPP3(round(output3: burnable)), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a round that pays the balance out at output 3', () {
+      var theft = TransactionOutput(BigInt.from(777),
+          P2PKHLockBuilder.fromAddress(operatorAddress).getScriptPubkey());
+      expect(() => spendPP3(round(output3: theft)), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects the successor anywhere but output 3', () {
+      // SIGHASH_SINGLE ties the covenant to the output at PP3's own index, so
+      // the real PP3 cannot be parked elsewhere with something weaker at 3.
+      var pay = TransactionOutput(BigInt.from(777),
+          P2PKHLockBuilder.fromAddress(operatorAddress).getScriptPubkey());
+      expect(() => spendPP3(round(output3: pay, successorAt4: true)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects an unlock that misstates the slot output 3 pins', () {
+      expect(() => spendPP3(round(claimedSlot: outpoint(List<int>.filled(32, 0x78), 0))),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('leaves the value to V', () {
+      // The new balance is the proof's to say, so the covenant takes whatever
+      // value output 3 holds as long as the unlock states it truthfully. This
+      // test pins that down so nobody mistakes the covenant for the money gate.
+      var dust = TransactionOutput(BigInt.one,
+          PartialWitnessLockBuilder.forPool(newSlot).getScriptPubkey());
+      spendPP3(round(output3: dust, claimedValue: le8(BigInt.one)));
+      expect(() => spendPP3(round(output3: dust, claimedValue: le8(BigInt.from(777)))),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects an anyone-can-spend prefix smuggled in through the value', () {
+      // The covenant compares bytes, and an output's serialization fixes where
+      // its script starts only through the varint. So a spender who could push
+      // more than 8 bytes of "value" could move the varint into it and put
+      // OP_1 OP_RETURN in front of the real program: same bytes, same hash,
+      // and the output parses as one anyone can spend.
+      var code = pp3Script.buffer;
+      var body = code.sublist(37);
+      var prefix = [0x51, 0x6a];                  // OP_1 OP_RETURN
+      var codeVarint = [0xfd, code.length & 0xff, code.length >> 8];
+      var evil = [...prefix, ...codeVarint, 0x24, ...newSlot, ...body];
+      var evilVarint = [0xfd, evil.length & 0xff, evil.length >> 8];
+      var evilOut = TransactionOutput(BigInt.from(777),
+          SVScript.fromByteArray(Uint8List.fromList(evil)));
+      var smuggled = [...le8(BigInt.from(777)), ...evilVarint, ...prefix];
+
+      // Confirm the attack is real: what the covenant would hash is exactly
+      // the serialized output, so only the length check stands in the way.
+      expect(_same([...smuggled, ...codeVarint, 0x24, ...newSlot, ...body],
+                   evilOut.serialize()), true);
+
+      SVScript unlock(List<int> pre) => ScriptBuilder()
+          .addData(Uint8List.fromList(smuggled))
+          .addData(Uint8List.fromList(newSlot))
+          .addData(Uint8List.fromList(pre))
+          .addData(Uint8List.fromList(partialHash))
+          .addData(Uint8List.fromList(remainder))
+          .addData(Uint8List.fromList(outpoint(opFunding.hash, 1)))
+          .addData(Uint8List.fromList(const <int>[]))
+          .build();
+      expect(() => spendPP3(round(output3: evilOut, unlockOverride: unlock)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('cannot be burned, not even by the coordinator', () {
+      // An ordinary token's PP3 has a burn path, and for a token that is a
+      // feature. A pool's PP3 holds every depositor's balance and its owner is
+      // the coordinator, so a burn path there would let the coordinator take
+      // the pool on a signature. Before 2026-09-21 it did.
+      var sweep = TransactionBuilder()
+          .spendFromTxnWithSigner(
+              DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+              opFunding, 1, TransactionInput.MAX_SEQ_NUMBER,
+              P2PKHUnlockBuilder(operatorPub))
+          .spendFromTxnWithSigner(
+              DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+              tokenTx, 3, TransactionInput.MAX_SEQ_NUMBER,
+              PartialWitnessUnlockBuilder.forBurn(operatorPub))
+          .sendChangeToPKH(operatorAddress)
+          .withFee(BigInt.from(500))
+          .build(false);
+      expect(
+          () => Interpreter().correctlySpends(sweep.inputs[1].script!,
+              pp3Script, sweep, 1, verifyFlags, Coin.valueOf(BigInt.one)),
+          throwsA(isA<ScriptException>()));
+
+      // And the same sweep does work on an ordinary token's PP3, which is what
+      // makes the rejection above mean something.
+      var tokenPP3 = PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash))
+          .getScriptPubkey();
+      var tokenTxWithOwnerPP3 = Transaction.fromHex(tokenTx.serialize());
+      tokenTxWithOwnerPP3.outputs[3] = TransactionOutput(BigInt.one, tokenPP3);
+      var sweepOwned = TransactionBuilder()
+          .spendFromTxnWithSigner(
+              DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+              opFunding, 1, TransactionInput.MAX_SEQ_NUMBER,
+              P2PKHUnlockBuilder(operatorPub))
+          .spendFromTxnWithSigner(
+              DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
+              tokenTxWithOwnerPP3, 3, TransactionInput.MAX_SEQ_NUMBER,
+              PartialWitnessUnlockBuilder.forBurn(operatorPub))
+          .sendChangeToPKH(operatorAddress)
+          .withFee(BigInt.from(500))
+          .build(false);
+      Interpreter().correctlySpends(sweepOwned.inputs[1].script!, tokenPP3,
+          sweepOwned, 1, verifyFlags, Coin.valueOf(BigInt.one));
+    });
+
+    test('carries no owner, so a key rotation leaves its code untouched', () {
+      var slot = outpoint(slotTx.hash, 0);
+      expect(pp3Script.buffer.sublist(0, 1), [0x24],
+          reason: 'the first push is the slot, not an owner');
+      var owned = PartialWitnessLockBuilder.forPool(slot).getScriptPubkey().buffer;
+      expect(_same(owned, pp3Script.buffer), true,
+          reason: 'nothing about the coordinator is in the script');
+      expect(PartialWitnessLockBuilder.fromScript(pp3Script).ownerPKH, isNull);
+      expect(PartialWitnessLockBuilder.fromScript(pp3Script).nextSlot, slot);
+    });
+
+    test('an owner and a slot cannot be combined', () {
+      // The two kinds of PP3 must not mix: an output with a verifier slot is a
+      // pool's, and a pool's PP3 with an owner would be one the owner can burn.
+      expect(
+          () => WitnessCheckScriptGen.generate(
+              ownerPKH: hex.decode(operatorPubkeyHash),
+              nextSlot: outpoint(slotTx.hash, 0)),
+          throwsA(isA<ScriptException>()));
+      expect(() => WitnessCheckScriptGen.generate(),
+          throwsA(isA<ScriptException>()));
     });
 
     test('nextSlot appears exactly once, so the rebuild can substitute it', () {
@@ -771,20 +958,18 @@ void main() {
         if (match) occurrences++;
       }
       expect(occurrences, 1);
-      expect(pp3Script.buffer[21], 0x24);   // 36-byte push opcode
+      expect(pp3Script.buffer[PP1SpScriptGen.pp3NextSlotStart - 1], 0x24,
+          reason: '36-byte push opcode');
     });
 
     test('in-script rebuild reproduces the builder output exactly', () {
-      var oldPKH = hex.decode(operatorPubkeyHash);
-      var newPKH = hex.decode(counterpartyPubkeyHash);
       var oldSlot = outpoint(List<int>.filled(32, 0x10), 0);
       var newSlot = outpoint(List<int>.filled(32, 0x90), 7);
-      var parent = PartialWitnessLockBuilder(oldPKH, nextSlot: oldSlot).getScriptPubkey();
-      var want = PartialWitnessLockBuilder(newPKH, nextSlot: newSlot).getScriptPubkey();
+      var parent = PartialWitnessLockBuilder.forPool(oldSlot).getScriptPubkey();
+      var want = PartialWitnessLockBuilder.forPool(newSlot).getScriptPubkey();
 
       var sig = ScriptBuilder()
           .addData(Uint8List.fromList(parent.buffer))
-          .addData(Uint8List.fromList(newPKH))
           .addData(Uint8List.fromList(newSlot))
           .build();
       var b = ScriptBuilder();
@@ -884,30 +1069,30 @@ void main() {
     var pinned = outpoint(List<int>.filled(32, 0x55), 0);
 
     SVScript parentPP3(List<int> slot) =>
-        PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash), nextSlot: slot)
-            .getScriptPubkey();
+        PartialWitnessLockBuilder.forPool(slot).getScriptPubkey();
 
-    /// version + input count + four inputs, which is the shape getTxLHS gives.
-    List<int> lhsWithInputAt3(List<int> slotOutpoint) {
+    /// version + input count + four inputs, which is the shape getTxLHS gives,
+    /// with [slotOutpoint] at the pool's slot input and filler everywhere else.
+    /// The filler after the slot matters: it is PP3's position, so a reader
+    /// that looked one input too far would land on it and fail.
+    List<int> lhsWithSlot(List<int> slotOutpoint) {
       var out = <int>[0x01, 0x00, 0x00, 0x00, 0x04];
-      for (var i = 0; i < 3; i++) {
+      for (var i = 0; i < 4; i++) {
         out
-          ..addAll(List<int>.filled(36, i))
+          ..addAll(i == PP1SpScriptGen.poolSlotInput
+              ? slotOutpoint
+              : List<int>.filled(36, i))
           ..add(0x02)                      // a two-byte unlocking script
           ..addAll([0x51, 0x51])
           ..addAll([0xff, 0xff, 0xff, 0xff]);
       }
-      out
-        ..addAll(slotOutpoint)
-        ..add(0x00)
-        ..addAll([0xff, 0xff, 0xff, 0xff]);
       return out;
     }
 
     void check(List<int> pinnedSlot, List<int> spentSlot) {
       var sig = ScriptBuilder()
           .addData(Uint8List.fromList(parentPP3(pinnedSlot).buffer))
-          .addData(Uint8List.fromList(lhsWithInputAt3(spentSlot)))
+          .addData(Uint8List.fromList(lhsWithSlot(spentSlot)))
           .build();
       var b = ScriptBuilder();
       PP1SpScriptGen.emitVerifySpentPinnedSlot(b);
@@ -919,7 +1104,7 @@ void main() {
           {VerifyFlag.UTXO_AFTER_GENESIS}, Coin.valueOf(BigInt.one));
     }
 
-    test('accepts a round whose input 3 is the pinned slot', () {
+    test('accepts a round whose input 2 is the pinned slot', () {
       check(pinned, pinned);
     });
 

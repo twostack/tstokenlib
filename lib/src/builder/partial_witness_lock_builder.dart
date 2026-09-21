@@ -27,32 +27,46 @@ import '../script_gen/witness_check_script_gen.dart';
 ///   ownerPKH - The Pubkey Hash of the current token owner (needed for burn)
 class PartialWitnessLockBuilder extends LockingScriptBuilder {
 
-  List<int> _ownerPKH;
+  List<int>? _ownerPKH;
   List<int>? _nextSlot;
 
-  /// Creates a partial witness locking script builder.
+  /// Creates the PP3 of an ordinary token, which its owner can burn.
   ///
   /// [_ownerPKH] - 20-byte pubkey hash of the current token owner (needed for burn).
-  /// [nextSlot] - optional 36-byte outpoint of the verifier slot the spending
-  /// transaction must also spend, at input 3. Pool rounds set this; plain TSL1
-  /// tokens leave it null and generate a byte-identical script to before.
-  PartialWitnessLockBuilder(this._ownerPKH, {List<int>? nextSlot})
-      : _nextSlot = nextSlot {
-    if (_ownerPKH.length != 20) {
+  PartialWitnessLockBuilder(List<int> ownerPKH) : _ownerPKH = ownerPKH {
+    if (ownerPKH.length != 20) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Owner PKH must be 20 bytes");
     }
   }
 
-  /// Reconstructs a [PartialWitnessLockBuilder] by parsing an existing script.
-  PartialWitnessLockBuilder.fromScript(SVScript script) :
-      _ownerPKH = [],
-      super.fromScript(script);
+  /// Creates the PP3 of a shielded pool round, which nobody can burn.
+  ///
+  /// [nextSlot] is the 36-byte outpoint of the verifier slot the spending
+  /// round must also spend, at input 3.
+  ///
+  /// A separate constructor rather than an optional argument, because the two
+  /// kinds must not mix: a pool's PP3 holds every depositor's balance, so an
+  /// owner who could burn it would be an owner who could take it. There is no
+  /// owner here to pass.
+  PartialWitnessLockBuilder.forPool(List<int> nextSlot) : _nextSlot = nextSlot {
+    if (nextSlot.length != 36) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "nextSlot must be a 36-byte outpoint");
+    }
+  }
 
-  /// The 36-byte verifier-slot outpoint this output pins, or null.
+  /// Reconstructs a [PartialWitnessLockBuilder] by parsing an existing script.
+  PartialWitnessLockBuilder.fromScript(SVScript script) : super.fromScript(script);
+
+  /// The 36-byte verifier-slot outpoint a pool PP3 pins, or null for an
+  /// ordinary token's.
   List<int>? get nextSlot => _nextSlot;
 
-  /// The 20-byte pubkey hash of the current token owner.
-  List<int> get ownerPKH => _ownerPKH;
+  /// The 20-byte pubkey hash of the owner who may burn this output, or null
+  /// for a pool's, which has none.
+  List<int>? get ownerPKH => _ownerPKH;
+
+  /// Whether this is a pool PP3, which has no burn path.
+  bool get isPool => _nextSlot != null;
 
   @override
   SVScript getScriptPubkey() {
@@ -65,9 +79,15 @@ class PartialWitnessLockBuilder extends LockingScriptBuilder {
 
   @override
   void parse(SVScript script) {
+    // The first push says which kind this is: 20 bytes is an owner, 36 is a
+    // verifier slot. A pool PP3 carries no owner at all.
     var chunks = script.chunks;
-    if (chunks.isNotEmpty && chunks[0].buf != null) {
-      _ownerPKH = chunks[0].buf!.toList();
+    if (chunks.isEmpty || chunks[0].buf == null) return;
+    var first = chunks[0].buf!.toList();
+    if (first.length == 36) {
+      _nextSlot = first;
+    } else {
+      _ownerPKH = first;
     }
   }
 }

@@ -49,6 +49,10 @@ class ShieldedPoolTool {
 
   var sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
 
+  /// SIGHASH_SINGLE | SIGHASH_FORKID, which a pool PP3 signs; see
+  /// `WitnessCheckScriptGen.poolSighashType`.
+  var pp3SighashType = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_SINGLE.value;
+
   /// Constructs a 36-byte outpoint (txid + output index).
   List<int> getOutpoint(List<int> txId, {int outputIndex = 1}) {
     var outputWriter = ByteDataWriter();
@@ -112,9 +116,9 @@ class ShieldedPoolTool {
 
     // nextSlot makes PP3 refuse to be spent unless the verifier slot it names is
     // also an input of the spending round. PP3 holds the pool balance, which at
-    // genesis is the dust the output needs to exist.
-    var shaLocker = PartialWitnessLockBuilder(hex.decode(ownerAddress.pubkeyHash160),
-        nextSlot: nextSlot);
+    // genesis is the dust the output needs to exist. It has no owner and no
+    // burn path: whoever could burn it could take every depositor's money.
+    var shaLocker = PartialWitnessLockBuilder.forPool(nextSlot);
     tokenTxBuilder.spendToLockBuilder(shaLocker, genesisHeader.balance);
 
     var metadataLocker = MetadataLockBuilder(metadataBytes: metadataBytes);
@@ -239,7 +243,8 @@ class ShieldedPoolTool {
   /// transaction's PP3, which is the spend that carries the induction forward.
   ///
   /// [prevSlotTx] is Y_N, whose output 0 carries the verifier for the parent
-  /// header. PP3_N pins it, so it has to be input 3.
+  /// header. PP3_N pins it, so it has to be input 2. PP3_N itself is input 3,
+  /// not TSL1's usual input 2; see `PP1SpScriptGen.poolPP3Input`.
   /// [newOwnerPKH] defaults to the current owner; supply it to rotate the
   /// coordinator's key.
   /// [nextSlot] pins the verifier slot that round N+2 must spend.
@@ -255,7 +260,7 @@ class ShieldedPoolTool {
   /// This does not, and cannot, check that Y is or ever will be on chain. That
   /// is the other way to freeze a pool: pin a slot whose content is right but
   /// whose funding outpoint has been spent elsewhere, so the transaction can
-  /// never be mined and round N+2 has nothing to spend at input 3. Broadcast Y
+  /// never be mined and round N+2 has nothing to spend at input 2. Broadcast Y
   /// before the round, not after.
   ///
   /// [receipts] and [withdrawals] are the round's variable output tail, written
@@ -287,14 +292,15 @@ class ShieldedPoolTool {
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
 
-    // PP3_N pins the slot this round must spend at input 3. Without a slot in
+    // PP3_N pins the slot this round must spend at input 2. Without a slot in
     // the parent there is nothing to spend and the round can never be mined, so
     // say that here rather than leaving it to the interpreter.
     var parentPP3 = prevTokenTx.outputs[3].script.buffer;
-    if (parentPP3.length < PP1SpScriptGen.pp3NextSlotEnd || parentPP3[21] != 0x24) {
+    if (parentPP3.length < PP1SpScriptGen.pp3NextSlotEnd ||
+        parentPP3[PP1SpScriptGen.pp3NextSlotStart - 1] != 0x24) {
       throw ArgumentError(
           'The parent PP3 carries no verifier slot, so this round has nothing '
-          'to spend at input 3. The pool was issued without a nextSlot.');
+          'to spend at input 2. The pool was issued without a nextSlot.');
     }
     var parentSlot =
         parentPP3.sublist(PP1SpScriptGen.pp3NextSlotStart, PP1SpScriptGen.pp3NextSlotEnd);
@@ -348,7 +354,7 @@ class ShieldedPoolTool {
         nextOwnerPKH, 1, nextOwnerPKH);
     // PP3 holds the pool balance and names the slot round N+2 must spend. PP1
     // checks both against the header when this round's witness is built.
-    var shaLocker = PartialWitnessLockBuilder(nextOwnerPKH, nextSlot: nextSlot);
+    var shaLocker = PartialWitnessLockBuilder.forPool(nextSlot);
 
     var metadataScript = prevTokenTx.outputs[4].script;
     var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
@@ -380,8 +386,8 @@ class ShieldedPoolTool {
     var childPreImageBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)
@@ -399,10 +405,16 @@ class ShieldedPoolTool {
     // while the parent was the genesis round, whose balance is 1; from round 2
     // onwards it produced a preimage the interpreter would not agree with, and
     // PP3 refused to be spent.
+    //
+    // A pool PP3 signs SIGHASH_SINGLE, over its whole script: SINGLE so that
+    // hashOutputs is output 3 alone, which is the successor its forward
+    // covenant constrains, and the whole script because it has no
+    // OP_CODESEPARATOR and reads its own program out of the preimage.
     var pp3Subscript = prevTokenTx.outputs[3].script;
     var pp3Value = prevTokenTx.outputs[3].satoshis;
     var sigPreImageChildTx = Sighash().createSighashPreImage(
-        childPreImageTxn, sigHashAll, 2, pp3Subscript, pp3Value);
+        childPreImageTxn, pp3SighashType, PP1SpScriptGen.poolPP3Input,
+        pp3Subscript, pp3Value);
 
     var tsl1 = TransactionUtils();
     var (partialHash, witnessPartialPreImage) = tsl1.computePartialHash(
@@ -412,21 +424,23 @@ class ShieldedPoolTool {
     roundFundingOutpoint.setAll(0, fundingTx.hash);
     roundFundingOutpoint.buffer.asByteData().setUint32(32, fundingVout, Endian.little);
 
-    // A pool PP3 always pops extraPrevouts, even when there is nothing after
-    // input 3, so the empty list has to be pushed. Omitting it leaves the
-    // script reading the wrong stack item.
-    var sha256Unlocker = PartialWitnessUnlockBuilder(
+    // The successor PP3 is output 3 of this round: the slot it pins and the
+    // balance it holds. PP3's covenant rebuilds it from these and its own code.
+    var nextValue = Uint8List(8);
+    nextValue.buffer.asByteData().setUint64(0, newHeader.balance.toInt(), Endian.little);
+    var sha256Unlocker = PartialWitnessUnlockBuilder.forPool(
         sigPreImageChildTx!,
         partialHash,
         witnessPartialPreImage,
         roundFundingOutpoint,
-        extraPrevouts: const <int>[]);
+        nextSlot: nextSlot,
+        nextValue: nextValue);
 
     var childBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
-        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
+        .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)

@@ -34,6 +34,8 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _extraPrevouts;
   SVPublicKey? _ownerPubKey;
   TokenAction? _action;
+  List<int>? _nextSlot;
+  List<int>? _nextValue;
 
   /// Creates a partial witness unlock builder for a normal token transfer.
   ///
@@ -41,20 +43,53 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
   /// [partialHash] - The intermediate SHA256 hash state.
   /// [partialWitnessPreImage] - The remaining preimage bytes for the witness.
   /// [fundingOutpoint] - The 36-byte outpoint (txid + vout) funding the witness.
-  /// [extraPrevouts] - concatenated outpoints of any inputs after the verifier
-  /// slot, empty when there are none. Required exactly when the PP3 output it
-  /// spends was built with a nextSlot, and omitted otherwise.
   PartialWitnessUnlockBuilder(
     List<int> preImage,
     List<int> partialHash,
     List<int> partialWitnessPreImage,
+    List<int> fundingOutpoint,
+  ) : _preImage = preImage,
+      _partialHash = partialHash,
+      _partialWitnessPreImage = partialWitnessPreImage,
+      _fundingOutpoint = fundingOutpoint;
+
+  /// Creates the unlock for a pool PP3, built with
+  /// [PartialWitnessLockBuilder.forPool], which a round spends at input 3.
+  ///
+  /// [preImage] must be the SIGHASH_SINGLE|FORKID preimage for input 3 with
+  /// the PP3 script as its scriptCode: a pool PP3 signs SINGLE so that its
+  /// hashOutputs covers output 3 alone, and uses no OP_CODESEPARATOR so that
+  /// it can read its own program.
+  /// [extraPrevouts] - concatenated outpoints of the inputs after PP3, the
+  /// deposit covenants; empty when there are none.
+  /// [nextSlot] and [nextValue] describe the round's output 3, the PP3 that
+  /// replaces this one: the slot it pins and the 8-byte little-endian value it
+  /// holds. PP3's forward covenant rebuilds that output from its own program
+  /// and these two, so they must be exactly what the round carries.
+  ///
+  /// No function selector is pushed: a pool PP3 has no burn path to select.
+  PartialWitnessUnlockBuilder.forPool(
+    List<int> preImage,
+    List<int> partialHash,
+    List<int> partialWitnessPreImage,
     List<int> fundingOutpoint, {
-    List<int>? extraPrevouts,
+    required List<int> nextSlot,
+    required List<int> nextValue,
+    List<int> extraPrevouts = const <int>[],
   }) : _preImage = preImage,
       _partialHash = partialHash,
       _partialWitnessPreImage = partialWitnessPreImage,
       _fundingOutpoint = fundingOutpoint,
-      _extraPrevouts = extraPrevouts;
+      _extraPrevouts = extraPrevouts,
+      _nextSlot = nextSlot,
+      _nextValue = nextValue {
+    if (nextSlot.length != 36) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, 'nextSlot must be a 36-byte outpoint');
+    }
+    if (nextValue.length != 8) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, 'nextValue must be 8 bytes, little endian');
+    }
+  }
 
   /// Creates a partial witness unlock builder for burning a token.
   PartialWitnessUnlockBuilder.forBurn(SVPublicKey ownerPubKey)
@@ -91,15 +126,27 @@ class PartialWitnessUnlockBuilder extends UnlockingScriptBuilder {
 
     if (_preImage == null) return SVScript();
 
-    var builder = ScriptBuilder()
+    var builder = ScriptBuilder();
+    if (_extraPrevouts != null) {
+      // A pool PP3: the successor's value and slot go first, so they land at
+      // the bottom of the stack and sit untouched under the witness check
+      // until the forward covenant needs them.
+      builder
+          .addData(Uint8List.fromList(_nextValue!))
+          .addData(Uint8List.fromList(_nextSlot!));
+    }
+    builder
         .addData(Uint8List.fromList(_preImage!))
         .addData(Uint8List.fromList(_partialHash!))
         .addData(Uint8List.fromList(_partialWitnessPreImage!))
         .addData(Uint8List.fromList(_fundingOutpoint!));
     if (_extraPrevouts != null) {
+      // A pool PP3. It has no burn path, so there is nothing to select
+      // between and no selector is pushed; extraPrevouts is the last push.
       builder.addData(Uint8List.fromList(_extraPrevouts!));
+    } else {
+      builder.opCode(OpCodes.OP_0); // function selector: unlock=0
     }
-    builder.opCode(OpCodes.OP_0); // function selector: unlock=0
 
     var result = builder.build();
     return result;

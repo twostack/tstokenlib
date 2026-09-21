@@ -99,10 +99,20 @@ class PP1SpScriptGen {
   static const int immutableMidStart = pkhDataEnd;          // 21
   static const int immutableMidLength = headerDataStart - pkhDataEnd; // 306
 
-  /// A pool PP3 begins `<0x14> ownerPKH(20) <0x24> nextSlot(36) OP_DROP ...`,
-  /// so the outpoint it pins the next round to is a fixed window.
-  static const int pp3NextSlotStart = 22;
-  static const int pp3NextSlotEnd = 58;
+  /// A pool PP3 begins `<0x24> nextSlot(36) OP_TOALTSTACK ...`, so the
+  /// outpoint it pins the next round to is a fixed window at offset 1. It has
+  /// no owner push: a pool PP3 has no burn path, so there is nobody to name.
+  static const int pp3NextSlotStart = 1;
+  static const int pp3NextSlotEnd = 37;
+
+  /// Where a pool round spends its verifier slot and its parent's PP3.
+  ///
+  /// Every other TSL1 archetype spends PP3 at input 2. A pool swaps the two,
+  /// because PP3's forward covenant signs SIGHASH_SINGLE, whose hashOutputs
+  /// covers the output at the spending input's own index, and the output PP3
+  /// has to constrain is its successor at output 3.
+  static const int poolSlotInput = 2;
+  static const int poolPP3Input = 3;
 
   static const int pp2FundingOutpointStart = 117;
   static const int pp2WitnessChangePKHStart = 154;
@@ -567,14 +577,14 @@ class PP1SpScriptGen {
     // Phase 10: Build PP3 output
     //
     // Two things differ from a plain TSL1 transfer. PP3 carries the slot the
-    // next round must spend, so the rebuild substitutes it as well as the owner
-    // key; and PP3 holds the pool balance rather than a dust satoshi, so its
+    // next round must spend, so the rebuild substitutes it, and it carries no
+    // owner key, because a pool PP3 has no burn path; and PP3 holds the pool
+    // balance rather than a dust satoshi, so its
     // value comes from the header. Both are enforced by the same thing as
     // everything else here: the rebuilt output goes into the transaction this
     // script hashes against its own outpoint's txid, so a round whose PP3 names
     // a different slot or holds a different amount cannot be spent afterwards.
     b.opCode(OpCodes.OP_5); b.opCode(OpCodes.OP_PICK);  // pp3S
-    b.opCode(OpCodes.OP_8); b.opCode(OpCodes.OP_PICK);  // newOwnerPKH
     b.opCode(OpCodes.OP_FROMALTSTACK);                  // nextSlot
     emitRebuildPP3WithNextSlot(b);
     b.opCode(OpCodes.OP_FROMALTSTACK);                  // balance, 8 bytes LE
@@ -670,7 +680,10 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);
 
     b.opCode(OpCodes.OP_DROP);  // rawTx
-    PP1FtScriptGen.emitReadOutpoint(b, 2);
+    // A pool round spends its parent's PP3 at input 3, not the TSL1 input 2:
+    // PP3 signs SIGHASH_SINGLE so that its forward covenant sees output 3,
+    // and SINGLE ties output index to input index.
+    PP1FtScriptGen.emitReadOutpoint(b, poolPP3Input);
     OpcodeHelpers.pushInt(b, 32);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
     b.opCode(OpCodes.OP_FROMALTSTACK);
@@ -988,7 +1001,7 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_NUMEQUALVERIFY);
   }
 
-  /// Checks that a round spent, at input 3, the verifier slot its parent's PP3
+  /// Checks that a round spent, at input 2, the verifier slot its parent's PP3
   /// pinned.
   ///
   /// PP3 already enforces this when the round is mined, by folding `nextSlot`
@@ -999,12 +1012,12 @@ class PP1SpScriptGen {
   ///
   /// The outpoint is read out of the round's own left-hand side, which the
   /// inductive proof has already tied to the round's txid, so it is not the
-  /// spender's word for what input 3 was.
+  /// spender's word for what input 2 was.
   ///
   /// Pre:  [parentPP3Script, scriptLHS]   (scriptLHS on top)
   /// Post: []
   static void emitVerifySpentPinnedSlot(ScriptBuilder b) {
-    PP1FtScriptGen.emitReadOutpoint(b, 3);
+    PP1FtScriptGen.emitReadOutpoint(b, poolSlotInput);
     b.opCode(OpCodes.OP_SWAP);
     OpcodeHelpers.pushInt(b, pp3NextSlotEnd);
     b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
@@ -1013,41 +1026,39 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_EQUALVERIFY);
   }
 
-  /// Rebuilds a pool PP3 script with a new ownerPKH **and** a new nextSlot.
+  /// Rebuilds a pool PP3 script with a new nextSlot.
   ///
-  /// A pool PP3 begins `<0x14> ownerPKH(20) <0x24> nextSlot(36) OP_DROP ...`,
-  /// so the slot the next round must spend is a fixed 36-byte window at
-  /// offset 22. Each round names a different slot, so unlike the plain
-  /// [PP1FtScriptGen.emitRebuildPP3] the rebuild has to substitute two fields:
+  /// A pool PP3 begins `<0x24> nextSlot(36) OP_TOALTSTACK ...`, so the slot
+  /// the next round must spend is a fixed 36-byte window at offset 1, and it
+  /// is the only thing that changes from one round to the next:
   ///
-  ///   rebuilt = parent[0:1] + newPKH + parent[21:22] + newSlot + parent[58:]
+  ///   rebuilt = parent[0:1] + newSlot + parent[37:]
   ///
-  /// Pre:  [parentPP3Script, newOwnerPKH, newNextSlot]  (newNextSlot on top)
+  /// There used to be a second window, the owner's pubkey hash, which only the
+  /// burn path read. The pool variant has no burn path, so PP3's code is now
+  /// identical across a coordinator key rotation and the owner lives only in
+  /// PP1 and PP2.
+  ///
+  /// Note what this does and does not enforce. The rest of the parent is
+  /// copied, so every PP3 in a pool's chain runs the same program as the
+  /// genesis PP3, but PP1 only checks that in the witness, after the round is
+  /// mined. A round that swaps in a different PP3 program is caught one
+  /// witness too late to stop it being spent. Pinning the program at mining
+  /// time is V's job, in its hashOutputs rebuild; see the design's 5.5.
+  ///
+  /// Pre:  [parentPP3Script, newNextSlot]  (newNextSlot on top)
   /// Post: [rebuiltPP3Script]
   static void emitRebuildPP3WithNextSlot(ScriptBuilder b) {
-    b.opCode(OpCodes.OP_ROT);            // parent, newSlot, newPKH
-
+    b.opCode(OpCodes.OP_SWAP);           // newSlot, parent
     b.opCode(OpCodes.OP_1);
-    b.opCode(OpCodes.OP_SPLIT);          // rest1, pkhPushOp, ...
-    OpcodeHelpers.pushInt(b, 20);
-    b.opCode(OpCodes.OP_SPLIT);
-    b.opCode(OpCodes.OP_NIP);            // drop the old ownerPKH
-    // parent[21:], pkhPushOp, newSlot, newPKH
-
-    b.opCode(OpCodes.OP_1);
-    b.opCode(OpCodes.OP_SPLIT);          // rest3, slotPushOp, ...
+    b.opCode(OpCodes.OP_SPLIT);          // newSlot, slotPushOp, rest
     OpcodeHelpers.pushInt(b, 36);
     b.opCode(OpCodes.OP_SPLIT);
-    b.opCode(OpCodes.OP_NIP);            // drop the old nextSlot
-    // tail, slotPushOp, pkhPushOp, newSlot, newPKH
-
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // pkhPushOp up
-    b.opCode(OpCodes.OP_4); b.opCode(OpCodes.OP_ROLL);   // newPKH up
-    b.opCode(OpCodes.OP_CAT);            // pkhPushOp + newPKH
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // slotPushOp up
-    b.opCode(OpCodes.OP_CAT);            // + slotPushOp
-    b.opCode(OpCodes.OP_2); b.opCode(OpCodes.OP_ROLL);   // newSlot up
-    b.opCode(OpCodes.OP_CAT);            // + newSlot
+    b.opCode(OpCodes.OP_NIP);            // newSlot, slotPushOp, tail
+    b.opCode(OpCodes.OP_ROT);            // slotPushOp, tail, newSlot
+    b.opCode(OpCodes.OP_ROT);            // tail, newSlot, slotPushOp
+    b.opCode(OpCodes.OP_SWAP);           // tail, slotPushOp, newSlot
+    b.opCode(OpCodes.OP_CAT);            // tail, slotPushOp+newSlot
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);            // + tail
   }
