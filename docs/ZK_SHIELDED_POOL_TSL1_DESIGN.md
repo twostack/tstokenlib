@@ -16,7 +16,7 @@ Companions: [ARCHITECTURE.md](ARCHITECTURE.md) for TSL1 itself, [ZK_SHIELDED_POO
 4. [Transactions per round](#4-transactions-per-round)
 5. [Header and script changes](#5-header-and-script-changes)
 6. [Round lifecycle](#6-round-lifecycle)
-7. [Deposits and withdrawals](#7-deposits-and-withdrawals)
+7. [Deposits, withdrawals, and what a wallet needs](#7-deposits-withdrawals-and-what-a-wallet-needs)
 8. [Security argument](#8-security-argument)
 9. [Attack pass](#9-attack-pass)
 10. [Cost estimate](#10-cost-estimate)
@@ -285,7 +285,9 @@ With that, the only outputs a round can carry are the five TSL1 outputs, P2PKH p
 
 Rounds chain at zero confirmations as TSL1 transfers do. Y transactions are content-fixed given a header and can be prepared the moment a proof finishes.
 
-## 7. Deposits and withdrawals
+## 7. Deposits, withdrawals, and what a wallet needs
+
+### 7.1 Mechanism
 
 **Withdrawals** are P2PKH outputs of the round. The proof's publics carry the (pkh, amount) list; V rebuilds the outputs and checks the list is present exactly. A coordinator fee can be a withdrawal to the coordinator, proved like any other.
 
@@ -294,6 +296,40 @@ Rounds chain at zero confirmations as TSL1 transfers do. Y transactions are cont
 V requires the balance to move by exactly the receipt total. If the coordinator omits a deposit from the receipt list, that covenant's SIGHASH_SINGLE check fails and the round is invalid. If the coordinator adds a receipt with no matching deposit input, the balance must still rise by that amount and consensus requires the coordinator's funding input to cover it. The coordinator can donate but not take.
 
 A deposit proof mints no nullifier. As recorded in the design notes, a replayed deposit proof costs the replayer and produces a duplicate commitment sharing a nullifier. That is unchanged here.
+
+### 7.2 Where the gate on a payout actually is
+
+It is easy to read 5.2 and conclude that withdrawals are gated by PP3's forward-looking pin. They are not, and the difference decides what a recipient has to be sent.
+
+A withdrawal is an unconditional P2PKH output of round N+1. Once that round is accepted the money is spendable by its recipient and nothing later can claw it back. So the gate cannot be anywhere downstream, and it is not: it is **V, in the same transaction as the payout**.
+
+| | runs when | does what |
+|---|---|---|
+| **V_N**, input 3 | round N+1 is mined | verifies the proof, rebuilds the round's outputs against `hashOutputs`, checks the withdrawal list against the proof's publics and the balance equation in 5.5 |
+| **PP3_N**, input 2 | round N+1 is mined | forces input 3 to be the outpoint it named, so V cannot simply be left out |
+| **PP1_N**, in witness N | one round earlier | certified that the outpoint PP3_N names holds this pool's verifier carrying header_N |
+
+V checks, PP3 makes V unskippable, PP1 makes V trustworthy. Remove any one and the other two are worthless. Only PP1's certificate looks forward; the gate on money is contemporaneous with the money, which is the property that makes the wallet story below as short as it is.
+
+### 7.3 What each kind of recipient has to fetch
+
+Wallets on BSV do not scan the chain, so the coordinator has to deliver the evidence. What it has to deliver differs by what the participant received, because of where 2's rule put each piece.
+
+**A withdrawal recipient needs one transaction.** Round N+1 and a merkle proof to a block header. That is sufficient because every input script of a mined transaction ran, V among them, so acceptance of the round *is* the statement that the proof verified and this payout was in its publics. The recipient does not need the witness, the earlier rounds, the proof itself, or any trust in the coordinator. They are receiving satoshis in a P2PKH output, and its provenance does not change what it is worth.
+
+**A shielded-note recipient needs two.** The ciphertext bundle that lets them find and open their note is in **witness N+1**, not in the round, because a witness's bytes are paid once and an output's three times (section 2). The `outHash` that binds the bundles to the round is in **round N+1's PP1 output**. So the coordinator must send both transactions and both merkle proofs, and the wallet checks `SHA256(bundles) == header_{N+1}.outHash` before trusting what it decrypts.
+
+| Participant | Needs | Why |
+|---|---|---|
+| Withdrawal recipient | round N+1, one merkle proof | the payout is an output of that round and V ran inside it |
+| Note recipient | witness N+1 and round N+1, two merkle proofs | the bundle rides in the witness, `outHash` binds it from the round |
+| Depositor | round N+1, one merkle proof | their receipt is `OP_FALSE OP_RETURN cm value` in the round |
+
+**Timing.** The chain alternates round, witness, round, ordered by dependency and not by confirmation depth. There is no maturity rule and no waiting: all three can sit in one block. So the coordinator can send a withdrawal notice the moment the round is broadcast, with finality arriving on confirmation like any other payment. A note recipient's evidence is only complete once the witness exists, which is one transaction later but not one round later.
+
+**Withdrawals survive the pool dying.** If witness N+1 is never built, PP3_{N+1} can never be spent and the pool is bricked with its balance locked, but withdrawals round N+1 already paid stay paid. A recipient's claim does not depend on the pool continuing.
+
+**Build state.** None of this is exercisable yet. V is still the stub described in 5.2, so the `hashOutputs` and balance checks are designed and not built, and PP1 still emits a fixed output count of 5, so a round carrying a withdrawal output cannot produce a valid witness at all. Withdrawals are not merely ungated today, they are impossible. 5.7 gives PP1 the variable tail and 5.5 gives V its checks, in that order.
 
 ## 8. Security argument
 
