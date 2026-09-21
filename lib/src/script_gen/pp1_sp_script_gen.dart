@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 import 'package:dartsv/dartsv.dart';
 import '../shielded_pool/pool_header.dart';
+import '../shielded_pool/pool_outputs.dart';
 import 'opcode_helpers.dart';
 import 'check_preimage_ocs.dart';
 import 'pp1_ft_script_gen.dart';
@@ -320,10 +321,14 @@ class PP1SpScriptGen {
   /// pool header substituted instead of the state machine's fields, plus the
   /// four checks that make the next round's verification unavoidable.
   ///
-  /// Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
-  ///         newOwnerPKH, newHeader, nextSlot, yInput, vBody, bundles,
-  ///         scriptLHS, parentRawTx, padding]
+  /// Stack: [withdrawals, receipts, preImage, pp2Out, ownerPK, changePkh,
+  ///         changeAmt, ownerSig, newOwnerPKH, newHeader, nextSlot, yInput,
+  ///         vBody, bundles, scriptLHS, parentRawTx, padding]
   /// Altstack pop order: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
+  ///
+  /// withdrawals and receipts are the round's variable output tail. They are
+  /// pushed first so they land at the bottom, which leaves every other stack
+  /// index in this branch unchanged.
   ///
   /// The owner signature says the coordinator wants this round. What makes the
   /// round *correct* is the verifier, and PP1 cannot run it: PP1 lives in the
@@ -369,6 +374,21 @@ class PP1SpScriptGen {
     // slot this branch is busy certifying.
     b.opCode(OpCodes.OP_FROMALTSTACK); b.opCode(OpCodes.OP_DROP); // header
     // Alt: []
+    // Stack (18): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, yInput=6,
+    //   nextSlot=7, newHeader=8, newOwnerPKH=9, ownerSig=10, chgAmt=11,
+    //   chgPkh=12, ownerPK=13, pp2=14, preImg=15, receipts=16, withdrawals=17
+
+    // --- Park the variable output tail until the rebuild needs it ---
+    //
+    // These two are wanted in phase 12b, most of a branch away, and the
+    // altstack is the only place they can wait without moving every index in
+    // between. Pushed withdrawals first so the pops come out receipts first,
+    // which is the order they are written into the round.
+    OpcodeHelpers.pushInt(b, 17);
+    b.opCode(OpCodes.OP_ROLL); b.opCode(OpCodes.OP_TOALTSTACK);   // withdrawals
+    OpcodeHelpers.pushInt(b, 16);
+    b.opCode(OpCodes.OP_ROLL); b.opCode(OpCodes.OP_TOALTSTACK);   // receipts
+    // Alt: [withdrawals, receipts]
     // Stack (16): vbh=0, pad=1, rawTx=2, lhs=3, bundles=4, vBody=5, yInput=6,
     //   nextSlot=7, newHeader=8, newOwnerPKH=9, ownerSig=10, chgAmt=11,
     //   chgPkh=12, ownerPK=13, pp2=14, preImg=15
@@ -430,7 +450,7 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);     // newHeader
     // Stack (10): pad=0, rawTx=1, lhs=2, newOwnerPKH=3, ownerSig=4,
     //   chgAmt=5, chgPkh=6, ownerPK=7, pp2=8, preImg=9
-    // Alt: [balance, nextSlot, newHeader]
+    // Alt: [withdrawals, receipts, balance, nextSlot, newHeader]
 
     // --- newOwnerPKH on top, which is the inductive proof's precondition ---
     b.opCode(OpCodes.OP_3);
@@ -449,7 +469,7 @@ class PP1SpScriptGen {
   ///                   lhs, rawTx, pad, newOwnerPKH]
   ///      idx: newOwnerPKH=0, pad=1, rawTx=2, lhs=3, mSig=4,
   ///           chgAmt=5, chgPkh=6, mPK=7, pp2=8, preImg=9
-  ///      Alt: [balance, nextSlot, newHeader]
+  ///      Alt: [withdrawals, receipts, balance, nextSlot, newHeader]
   static void _emitInductiveProofRound(ScriptBuilder b) {
     // Phase 2: Validate padding and parentRawTx
     b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_PICK);  // padding
@@ -577,16 +597,27 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_PICK);  // changeAmt (+1)
     PP1FtScriptGen.emitBuildOutput(b);
 
+    // Phase 12b: Build the variable output tail
+    //
+    // This is where withdrawals and deposit receipts enter the round. Both
+    // come out of the altstack as flat blobs of fixed-size records, and leave
+    // as the bytes of the outputs themselves plus the output-count varint.
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // receipts
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // withdrawals
+    emitBuildOutputTail(b);
+    // Stack: [..., changeOut, countVarint, tail]
+    b.opCode(OpCodes.OP_TOALTSTACK);     // the tail waits for its turn below
+
     // Phase 13: Reconstruct fullTx
-    // idx: changeOut=0, metaOut=1, pp3Out=2, pp1Out=3, currentTxId=4, nLocktime=5,
-    //   pp1S=6, pp2S=7, pp3S=8, metaS=9, newOwnerPKH=10,
-    //   pad=11, rawTx=12, lhs=13, mSig=14, chgAmt=15, chgPkh=16,
-    //   mPK=17, pp2Out=18
-    OpcodeHelpers.pushInt(b, 13);
+    // idx: countVarint=0, changeOut=1, metaOut=2, pp3Out=3, pp1Out=4,
+    //   currentTxId=5, nLocktime=6, pp1S=7, pp2S=8, pp3S=9, metaS=10,
+    //   newOwnerPKH=11, pad=12, rawTx=13, lhs=14, mSig=15, chgAmt=16,
+    //   chgPkh=17, mPK=18, pp2Out=19
+    OpcodeHelpers.pushInt(b, 14);
     b.opCode(OpCodes.OP_PICK);  // scriptLHS
-    b.opCode(OpCodes.OP_5);
-    b.opCode(OpCodes.OP_1); b.opCode(OpCodes.OP_NUM2BIN);
-    b.opCode(OpCodes.OP_CAT);   // lhs + varint(5)
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);   // lhs + varint(5 + receipts + withdrawals)
+    // From here the stack is what a fixed five-output round had.
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);   // + changeOut
 
@@ -604,6 +635,8 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_FROMALTSTACK);  // pp3Out
     b.opCode(OpCodes.OP_CAT);
     b.opCode(OpCodes.OP_FROMALTSTACK);  // metaOut
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_FROMALTSTACK);  // the variable tail
     b.opCode(OpCodes.OP_CAT);
 
     // nLocktime
@@ -797,6 +830,162 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_SWAP);
     b.opCode(OpCodes.OP_CAT);            // [value8, varint+script]
     b.opCode(OpCodes.OP_CAT);
+  }
+
+  // =========================================================================
+  // The variable output tail
+  // =========================================================================
+
+  /// Builds the round's withdrawal and receipt outputs, and the output-count
+  /// varint that has to precede all of them.
+  ///
+  /// Every other TSL1 archetype writes a literal 5 here, and that literal is a
+  /// security property rather than a convenience: it is what makes it
+  /// impossible for a round to carry a second PP1 with the same tokenId and
+  /// fork the chain through the sanctioned path. A pool has to carry payouts
+  /// and deposit receipts, so the count has to move. Taking the tail as an
+  /// opaque blob of the spender's choosing would hand back exactly what the
+  /// fixed count was defending, so instead each extra output is rebuilt here
+  /// from a template with only its variable bytes free:
+  ///
+  /// * a withdrawal is `value8 ‖ 0x19 ‖ OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY
+  ///   OP_CHECKSIG`, 34 bytes, of which only the 20-byte hash and the value
+  ///   come from the witness;
+  /// * a receipt is eight zero bytes of value, then `OP_FALSE OP_RETURN <cm>
+  ///   <value>`, 53 bytes, of which only the 32-byte commitment and the
+  ///   8-byte amount come from the witness.
+  ///
+  /// So the only outputs a round can carry are the five TSL1 outputs, P2PKH
+  /// payouts and data receipts. Nothing in the tail is spendable as a token
+  /// and the induction is exactly as strong as it was with five outputs.
+  ///
+  /// The counts are not pushed. They are derived from the blob sizes, which
+  /// means there is no second number for a spender to disagree with: the count
+  /// in the varint and the number of outputs actually emitted come from the
+  /// same bytes. The maxima are enforced by running out of unrolled steps and
+  /// then requiring both blobs to be empty.
+  ///
+  /// Receipts are written before withdrawals. A deposit covenant proves its
+  /// receipt with SIGHASH_SINGLE, which matches output index to input index,
+  /// and a depositor building that covenant cannot know how many withdrawals
+  /// the round will end up carrying. Their own count they can agree in advance.
+  ///
+  /// Pre:  [receipts, withdrawals]   (withdrawals on top)
+  /// Post: [countVarint, tailBytes]
+  static void emitBuildOutputTail(ScriptBuilder b) {
+    // --- The counts, from the sizes ---
+    b.opCode(OpCodes.OP_SIZE);
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, PoolWithdrawal.recordSize);
+    b.opCode(OpCodes.OP_MOD);
+    b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_NUMEQUALVERIFY);
+    OpcodeHelpers.pushInt(b, PoolWithdrawal.recordSize);
+    b.opCode(OpCodes.OP_DIV);
+    b.opCode(OpCodes.OP_TOALTSTACK);     // w
+    b.opCode(OpCodes.OP_SWAP);           // [withdrawals, receipts]
+    b.opCode(OpCodes.OP_SIZE);
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, PoolReceipt.recordSize);
+    b.opCode(OpCodes.OP_MOD);
+    b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_NUMEQUALVERIFY);
+    OpcodeHelpers.pushInt(b, PoolReceipt.recordSize);
+    b.opCode(OpCodes.OP_DIV);            // r
+    b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_ADD);
+    b.opCode(OpCodes.OP_5);
+    b.opCode(OpCodes.OP_ADD);            // 5 + r + w
+    // Five plus the tail can pass 252, so the count needs a real varint and
+    // not the single byte every fixed-count archetype gets away with.
+    PP1FtScriptGen.emitWriteVarint(b);
+    b.opCode(OpCodes.OP_ROT); b.opCode(OpCodes.OP_ROT);
+    // Stack: [countVarint, withdrawals, receipts]
+
+    // --- The outputs ---
+    b.opCode(OpCodes.OP_0);              // the accumulator starts empty
+    b.opCode(OpCodes.OP_SWAP);
+    // Stack: [countVarint, withdrawals, tail, receipts]
+    for (var i = 0; i < PoolReceipt.maxPerRound; i++) {
+      _emitOneTailOutput(b, PoolReceipt.recordSize, _receiptSteps);
+    }
+    _emitBlobIsEmpty(b);
+    b.opCode(OpCodes.OP_SWAP);
+    // Stack: [countVarint, tail, withdrawals]
+    for (var i = 0; i < PoolWithdrawal.maxPerRound; i++) {
+      _emitOneTailOutput(b, PoolWithdrawal.recordSize, _withdrawalSteps);
+    }
+    _emitBlobIsEmpty(b);
+    // Stack: [countVarint, tail]
+  }
+
+  /// One unrolled step of a tail loop: if the blob still has bytes, take
+  /// [recordSize] of them, turn them into an output with [build], and append
+  /// it to the accumulator.
+  ///
+  /// The step is a no-op once the blob is empty, which is how one unrolled
+  /// body serves every count up to the maximum. A blob whose length is not a
+  /// multiple of the record size cannot reach here: the size check in
+  /// [emitBuildOutputTail] rejects it, and the OP_SPLIT would fail anyway.
+  ///
+  /// Pre:  [tail, blob]   Post: [tail', blob']
+  static void _emitOneTailOutput(
+      ScriptBuilder b, int recordSize, void Function(ScriptBuilder) build) {
+    b.opCode(OpCodes.OP_SIZE);
+    b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_GREATERTHAN);
+    b.opCode(OpCodes.OP_IF);
+    OpcodeHelpers.pushInt(b, recordSize);
+    b.opCode(OpCodes.OP_SPLIT);          // [tail, record, rest]
+    b.opCode(OpCodes.OP_TOALTSTACK);     // rest waits
+    build(b);                            // [tail, outputBytes]
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_FROMALTSTACK);
+    b.opCode(OpCodes.OP_ENDIF);
+  }
+
+  /// `value8 ‖ 0x19 ‖ 76 a9 14 ‖ pkh ‖ 88 ac`.
+  ///
+  /// Pre: [record28]   Post: [outputBytes34]
+  static void _withdrawalSteps(ScriptBuilder b) {
+    OpcodeHelpers.pushInt(b, 20);
+    b.opCode(OpCodes.OP_SPLIT);          // [pkh, value8]
+    b.addData(Uint8List.fromList([0x19, 0x76, 0xa9, 0x14]));
+    b.opCode(OpCodes.OP_CAT);            // [pkh, value8+prefix]
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+    b.addData(Uint8List.fromList([0x88, 0xac]));
+    b.opCode(OpCodes.OP_CAT);
+  }
+
+  /// Eight zero bytes of value, then `0x2c ‖ 00 6a 20 ‖ cm ‖ 08 ‖ value8`.
+  ///
+  /// The script is 44 bytes whatever the amount is, because the amount is
+  /// pushed as eight bytes rather than as a script number. A minimally encoded
+  /// number would change length with the value and the shape check would have
+  /// to know about that; this way it does not.
+  ///
+  /// Pre: [record40]   Post: [outputBytes53]
+  static void _receiptSteps(ScriptBuilder b) {
+    OpcodeHelpers.pushInt(b, 32);
+    b.opCode(OpCodes.OP_SPLIT);          // [cm, value8]
+    b.opCode(OpCodes.OP_8);              // the push opcode for the value
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);            // [cm, 08+value8]
+    b.opCode(OpCodes.OP_CAT);
+    b.addData(Uint8List.fromList(
+        [0, 0, 0, 0, 0, 0, 0, 0, 0x2c, 0x00, 0x6a, 0x20]));
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_CAT);
+  }
+
+  /// Requires the blob on top to have been used up, and drops it.
+  ///
+  /// This is what enforces the maxima. A witness carrying more records than
+  /// there are unrolled steps leaves bytes behind, and leftover bytes are the
+  /// same thing as a count nobody checked.
+  ///
+  /// Pre: [blob]   Post: []
+  static void _emitBlobIsEmpty(ScriptBuilder b) {
+    b.opCode(OpCodes.OP_SIZE); b.opCode(OpCodes.OP_NIP);
+    b.opCode(OpCodes.OP_0); b.opCode(OpCodes.OP_NUMEQUALVERIFY);
   }
 
   /// Checks that a round spent, at input 3, the verifier slot its parent's PP3

@@ -28,6 +28,7 @@ import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../shielded_pool/pool_header.dart';
+import '../shielded_pool/pool_outputs.dart';
 import 'utils.dart';
 
 /// High-level API for building shielded pool (PP1_SP) transactions.
@@ -132,6 +133,11 @@ class ShieldedPoolTool {
   /// and [verifierBody] describe the slot transaction round N+2 will have to
   /// spend, which PP1 certifies here; [bundles] are the round's ciphertexts,
   /// published by riding in this witness and bound by `newHeader.outHash`.
+  ///
+  /// [withdrawals] and [receipts] must be the same lists, in the same order,
+  /// that [createRoundTxn] was given. PP1 rebuilds those outputs from these
+  /// records and hashes the result against the round's txid, so a witness that
+  /// describes a different tail than the round carries is simply invalid.
   Transaction createWitnessTxn(
       TransactionSigner signer,
       Transaction fundingTx,
@@ -147,6 +153,8 @@ class ShieldedPoolTool {
       List<int>? yInput,
       List<int>? verifierBody,
       List<int>? bundles,
+      List<PoolWithdrawal>? withdrawals,
+      List<PoolReceipt>? receipts,
       int? nLockTime,
       int pp1OutputIndex = 1,
       int pp2OutputIndex = 2}) {
@@ -195,7 +203,9 @@ class ShieldedPoolTool {
         tokenChangeAmount, tokenTxLHS, pp1ParentBytes, padding,
         action, fundingOutpoint,
         newOwnerPKH: newOwnerPKH, newHeader: newHeader, nextSlot: nextSlot,
-        yInput: yInput, verifierBody: verifierBody, bundles: bundles);
+        yInput: yInput, verifierBody: verifierBody, bundles: bundles,
+        withdrawals: PoolWithdrawal.encodeAll(withdrawals ?? const []),
+        receipts: PoolReceipt.encodeAll(receipts ?? const []));
 
     // Two passes: the padding that makes PP3's partial hash land on a 64-byte
     // boundary depends on the witness's own size, so the witness is built once
@@ -232,6 +242,13 @@ class ShieldedPoolTool {
   /// [newOwnerPKH] defaults to the current owner; supply it to rotate the
   /// coordinator's key.
   /// [nextSlot] pins the verifier slot that round N+2 must spend.
+  ///
+  /// [receipts] and [withdrawals] are the round's variable output tail, written
+  /// after the five TSL1 outputs with the receipts first. That order is not
+  /// cosmetic: a deposit covenant proves its receipt with SIGHASH_SINGLE, which
+  /// ties output index to input index, and a depositor cannot know in advance
+  /// how many withdrawals the round will carry. The same lists have to be
+  /// handed to [createWitnessTxn].
   Transaction createRoundTxn(
       Transaction prevWitnessTx,
       Transaction prevTokenTx,
@@ -246,6 +263,8 @@ class ShieldedPoolTool {
       {int fundingVout = 1,
        int witnessFundingVout = 1,
        List<int>? newOwnerPKH,
+       List<PoolWithdrawal>? withdrawals,
+       List<PoolReceipt>? receipts,
        UnlockingScriptBuilder? slotUnlocker}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
@@ -302,6 +321,23 @@ class ShieldedPoolTool {
     var metadataScript = prevTokenTx.outputs[4].script;
     var metadataLocker = DefaultLockBuilder.fromScript(metadataScript);
 
+    if ((receipts?.length ?? 0) > PoolReceipt.maxPerRound) {
+      throw ArgumentError('A round takes at most ${PoolReceipt.maxPerRound} '
+          'deposits; PP1 has no unrolled step for the rest.');
+    }
+    if ((withdrawals?.length ?? 0) > PoolWithdrawal.maxPerRound) {
+      throw ArgumentError('A round pays at most ${PoolWithdrawal.maxPerRound} '
+          'withdrawals; PP1 has no unrolled step for the rest.');
+    }
+    // Receipts before withdrawals, because a deposit covenant's SIGHASH_SINGLE
+    // check ties its receipt's output index to its own input index.
+    var tailLockers = <(LockingScriptBuilder, BigInt)>[
+      for (var r in receipts ?? const <PoolReceipt>[])
+        (DefaultLockBuilder.fromScript(r.lockingScript), BigInt.zero),
+      for (var w in withdrawals ?? const <PoolWithdrawal>[])
+        (DefaultLockBuilder.fromScript(w.lockingScript), w.satoshis),
+    ];
+
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var prevWitnessUnlocker = ModP2PKHUnlockBuilder(ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
@@ -309,7 +345,7 @@ class ShieldedPoolTool {
     var slotUnlock = slotUnlocker ??
         DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
 
-    var childPreImageTxn = TransactionBuilder()
+    var childPreImageBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker)
@@ -317,7 +353,11 @@ class ShieldedPoolTool {
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
+        .spendToLockBuilder(metadataLocker, BigInt.zero);
+    for (var (locker, value) in tailLockers) {
+      childPreImageBuilder.spendToLockBuilder(locker, value);
+    }
+    var childPreImageTxn = childPreImageBuilder
         .sendChangeToPKH(ownerAddress)
         .withFee(defaultFee)
         .build(false);
@@ -350,7 +390,7 @@ class ShieldedPoolTool {
         roundFundingOutpoint,
         extraPrevouts: const <int>[]);
 
-    var childTxn = TransactionBuilder()
+    var childBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
         .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker)
@@ -358,7 +398,11 @@ class ShieldedPoolTool {
         .spendToLockBuilder(pp1Locker, BigInt.one)
         .spendToLockBuilder(pp2Locker, BigInt.one)
         .spendToLockBuilder(shaLocker, newHeader.balance)
-        .spendToLockBuilder(metadataLocker, BigInt.zero)
+        .spendToLockBuilder(metadataLocker, BigInt.zero);
+    for (var (locker, value) in tailLockers) {
+      childBuilder.spendToLockBuilder(locker, value);
+    }
+    var childTxn = childBuilder
         .sendChangeToPKH(ownerAddress)
         .withFee(defaultFee)
         .build(false);

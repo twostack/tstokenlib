@@ -18,6 +18,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import '../shielded_pool/pool_header.dart';
+import '../shielded_pool/pool_outputs.dart';
 
 /// What a spend of a PP1_SP output is doing.
 enum ShieldedPoolAction {
@@ -53,6 +54,8 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? _yInput;
   List<int>? _verifierBody;
   List<int>? _bundles;
+  List<int>? _withdrawals;
+  List<int>? _receipts;
 
   List<int>? _sigBytes;
 
@@ -78,13 +81,17 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
       List<int>? nextSlot,
       List<int>? yInput,
       List<int>? verifierBody,
-      List<int>? bundles})
+      List<int>? bundles,
+      List<int>? withdrawals,
+      List<int>? receipts})
       : _newOwnerPKH = newOwnerPKH,
         _newHeader = newHeader,
         _nextSlot = nextSlot,
         _yInput = yInput,
         _verifierBody = verifierBody,
-        _bundles = bundles;
+        _bundles = bundles,
+        _withdrawals = withdrawals,
+        _receipts = receipts;
 
   PP1SpUnlockBuilder.fromScript(SVScript script,
       {ShieldedPoolAction this.action = ShieldedPoolAction.ROUND})
@@ -121,14 +128,22 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
         break;
 
       case ShieldedPoolAction.ROUND:
-        // Stack: [preImage, pp2Out, ownerPK, changePkh, changeAmt, ownerSig,
-        //         newOwnerPKH, newHeader, nextSlot, yInput, vBody, bundles,
-        //         scriptLHS, parentRawTx, padding, OP_1]
+        // Stack: [withdrawals, receipts, preImage, pp2Out, ownerPK, changePkh,
+        //         changeAmt, ownerSig, newOwnerPKH, newHeader, nextSlot,
+        //         yInput, vBody, bundles, scriptLHS, parentRawTx, padding,
+        //         OP_1]
         //
         // nextSlot, yInput and vBody describe the verifier slot that round N+2
         // will have to spend; PP1 certifies it holds this pool's verifier
         // carrying newHeader. bundles are the round's ciphertexts, published by
         // being in this witness and bound by newHeader.outHash.
+        //
+        // withdrawals and receipts are the round's variable output tail, as
+        // flat blobs of 28- and 40-byte records. They go first so they land at
+        // the bottom of the stack, which is what lets the branch keep every
+        // other index it had when the output count was fixed at five. Their
+        // counts are not pushed: PP1 divides the blob sizes, so there is no
+        // separate number to disagree with what is actually emitted.
         if (_newHeader == null || _newHeader!.length != PoolHeader.byteSize) {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs a ${PoolHeader.byteSize}-byte header");
@@ -145,6 +160,18 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
           throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
               "A round needs the slot transaction's input and the verifier body");
         }
+        if (_withdrawals != null &&
+            _withdrawals!.length % PoolWithdrawal.recordSize != 0) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "Withdrawals must be whole ${PoolWithdrawal.recordSize}-byte records");
+        }
+        if (_receipts != null &&
+            _receipts!.length % PoolReceipt.recordSize != 0) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "Receipts must be whole ${PoolReceipt.recordSize}-byte records");
+        }
+        result.addData(Uint8List.fromList(_withdrawals ?? const <int>[]));
+        result.addData(Uint8List.fromList(_receipts ?? const <int>[]));
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_pp2Output!));
         result.addData(Uint8List.fromList(hex.decode(_ownerPubKey!.toHex())));
@@ -170,21 +197,23 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   @override
   void parse(SVScript script) {
     var chunkList = script.chunks;
-    _preImage = chunkList[0].buf;
-    _pp2Output = chunkList[1].buf;
-    _ownerPubKey = SVPublicKey.fromBuffer(chunkList[2].buf ?? []);
-    _changePKH = hex.encode(chunkList[3].buf ?? [00]);
-    _changeAmount = castToBigInt(chunkList[4].buf ?? [], true);
-    _sigBytes = chunkList[5].buf;
-    _newOwnerPKH = chunkList[6].buf;
-    _newHeader = chunkList[7].buf;
-    _nextSlot = chunkList[8].buf;
-    _yInput = chunkList[9].buf;
-    _verifierBody = chunkList[10].buf;
-    _bundles = chunkList[11].buf;
-    _tokenLHS = chunkList[12].buf;
-    _prevTokenTx = chunkList[13].buf;
-    _witnessPadding = chunkList[14].buf;
+    _withdrawals = chunkList[0].buf;
+    _receipts = chunkList[1].buf;
+    _preImage = chunkList[2].buf;
+    _pp2Output = chunkList[3].buf;
+    _ownerPubKey = SVPublicKey.fromBuffer(chunkList[4].buf ?? []);
+    _changePKH = hex.encode(chunkList[5].buf ?? [00]);
+    _changeAmount = castToBigInt(chunkList[6].buf ?? [], true);
+    _sigBytes = chunkList[7].buf;
+    _newOwnerPKH = chunkList[8].buf;
+    _newHeader = chunkList[9].buf;
+    _nextSlot = chunkList[10].buf;
+    _yInput = chunkList[11].buf;
+    _verifierBody = chunkList[12].buf;
+    _bundles = chunkList[13].buf;
+    _tokenLHS = chunkList[14].buf;
+    _prevTokenTx = chunkList[15].buf;
+    _witnessPadding = chunkList[16].buf;
   }
 
   List<int>? get pp2Output => _pp2Output;
@@ -202,4 +231,6 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
   List<int>? get yInput => _yInput;
   List<int>? get verifierBody => _verifierBody;
   List<int>? get bundles => _bundles;
+  List<int>? get withdrawals => _withdrawals;
+  List<int>? get receipts => _receipts;
 }

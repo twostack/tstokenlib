@@ -157,9 +157,9 @@ Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyH
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 3,319 bytes: 563 header, 2,756 body, with the verifier checks of 5.2 included. The state machine it came from was 10,537 bytes, of which 10,376 was body.
+**Measured.** Script 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
-Tests: `test/sp_token_test.dart`, 45 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, and a selector that names no branch.
+Tests: `test/sp_token_test.dart`, 58 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, a selector that names no branch, and the output tail cases of 5.7.
 
 ### 5.2 PP1, pool variant
 
@@ -199,7 +199,7 @@ The txid is what binds every part of the claim. Supplying the genuine body along
 
 4. **Round N+1 spent, at input 3, the slot PP3_N pinned**, as `emitVerifySpentPinnedSlot`. PP3_N already enforces this at mining time by folding `nextSlot` into the `hashPrevouts` it demands, so this is deliberately redundant: a second, independent binding in a different script, so that the covenant on the money and the covenant on the token both have to agree the round brought the verifier it was told to. The outpoint is read out of the round's own left-hand side, which the inductive proof has already tied to the round's txid, so it is not the spender's word for what input 3 was.
 
-Still to add: deposit receipts and withdrawals as a variable tail of outputs, see 5.7 and 11.4.
+**Outputs after the five.** The rebuild emits the round's withdrawals and deposit receipts as a shape-checked tail, so the output count is no longer the literal 5 every other archetype writes. See 5.7 for what replaces it and why a length would not have done.
 
 **Authorisation** is the owner's signature, as in every other archetype's transfer branch. That says the coordinator wants this round; it is not what makes the round correct, and it is not what protects depositors. A coordinator who signs a round that the verifier would reject simply cannot produce the next one.
 
@@ -269,13 +269,19 @@ PP1 does not inspect the round from the outside. It rebuilds the round it lives 
 
 **Inputs.** The lhs is pushed as one blob and parsed in script by walking the input list: each input is a 36-byte outpoint, a varint script length, the script, and a 4-byte sequence. Outpoints come first in each input, so reading input k's outpoint means skipping k inputs, each by its varint. Today PP1 reads input 0 (issuance) and input 2 (parent PP3). The pool variant also reads input 3 (V_N). Deposit covenants sit at inputs 4 and up, after everything PP1 needs, so PP1 never walks them; their contents are hashed as part of the blob and asserted about by nothing in PP1. That is correct: deposits are checked in the round by V and by the covenants themselves, and no input can create a token output. The cost is that input 3's unlocking script, the 230 KB proof, and input 2's, PP3's unlock, are inside the lhs and are pushed in this witness and again in the next as part of the parent. Section 10 counts them.
 
-**Outputs.** Today PP1 rebuilds exactly five outputs from templates and header pushes, and the output-count varint is fixed at 5. That fixed count is a security property, not a convenience: it is what makes it impossible for a round to carry a second PP1 with the same tokenId, which would fork the chain through the sanctioned path. The pool variant needs outputs after the five, and it must not take them as an opaque blob for the same reason. The rebuild must:
+**Outputs. BUILT 2026-09-21**, in `PP1SpScriptGen.emitBuildOutputTail`, with tests in the `SP the variable output tail` group.
 
-1. Take a withdrawal count w and a receipt count r from the witness, with fixed maxima (256 and 8 are the numbers the aggregation is sized for), and emit the output-count varint as 5 + w + r.
-2. Rebuild each withdrawal as an 8-byte value plus a 25-byte P2PKH script whose only free bytes are the 20-byte hash, and each receipt as a zero value plus `OP_FALSE OP_RETURN` with a 32-byte push and an 8-byte push. Each is an unrolled step of a few dozen script bytes; at the maxima the unrolled tail check is on the order of 10 KB.
-3. Refuse any other script shape in the tail.
+Every other TSL1 archetype writes a literal output count of 5. That literal is a security property, not a convenience: it is what makes it impossible for a round to carry a second PP1 with the same tokenId, which would fork the chain through the sanctioned path. A pool has to pay withdrawals and acknowledge deposits, so the count has to move, and taking the tail as an opaque blob would hand back exactly what the literal was defending. So the count moved and the shape did not:
 
-With that, the only outputs a round can carry are the five TSL1 outputs, P2PKH payouts and data receipts. Nothing in the tail can be spent as a token, so the induction is exactly as strong as with five outputs. PP1_SP's `roundOutputs(..., extras)` already rebuilds a variable extras region for the pool; the difference is that here it happens inside the SM generator's rebuild, and with a shape check rather than a length.
+1. The counts are **not pushed**. The witness pushes two flat blobs, withdrawals as 28-byte records and receipts as 40-byte records, and PP1 divides the blob sizes to get w and r. There is no second number a spender could make disagree with what is actually emitted: the count in the varint and the outputs in the tail come from the same bytes. The varint is written with `emitWriteVarint` rather than a single byte, because 5 + 256 does not fit in one.
+2. Each extra output is rebuilt from a template with only its variable bytes free. A withdrawal is `value8 ‖ 0x19 ‖ OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY OP_CHECKSIG`, 34 bytes, of which the 20-byte hash and the value come from the record. A receipt is eight zero bytes of value, then `OP_FALSE OP_RETURN <cm> <value>`, 53 bytes, of which the 32-byte commitment and the 8-byte amount come from the record. The receipt's amount is pushed as eight raw bytes rather than as a minimally encoded script number, so the script is 44 bytes whatever the amount is and the shape check does not have to know about encoding length.
+3. The maxima, 256 withdrawals and 8 receipts, are enforced by running out of unrolled steps: both blobs must be empty when the loops finish, and leftover bytes are the same thing as a count nobody checked. A blob that is not a whole number of records dies on the same check.
+
+**Receipts are written before withdrawals.** A deposit covenant proves its receipt with SIGHASH_SINGLE, which ties output index to input index, and a depositor building that covenant cannot know how many withdrawals the round will end up carrying. How many deposits the round takes is something they can be told in advance. Withdrawals have no index constraint at all, so they go last. See the open point in 11.12 about what this costs on the input side.
+
+**Measured.** `emitBuildOutputTail` is 6,981 bytes, which takes the PP1_SP lock from 3,329 to 10,310 bytes. A round witness is 74,675 bytes with an empty tail and 81,843 bytes at 256 withdrawals, against the stub verifier. The tail does not touch PP3's hashed geometry: `getInOutSize` is still 111 and the hashed tail still 115 of 119, with 4 bytes of headroom, at every tail size (11.3).
+
+With that, the only outputs a round can carry are the five TSL1 outputs, P2PKH payouts and data receipts. Nothing in the tail can be spent as a token, so the induction is exactly as strong as it was with five outputs. `tool/scratch/output_tail_probe.dart` builds the round the whole exercise is about, one carrying a second copy of its own PP1_SP output, and the witness refuses it whether it calls the extra output a payout or does not mention it at all.
 
 **What this rules out.** Outputs of arbitrary script in a round, including a second vault, a covenant, or any future output type, unless PP1 is regenerated to know its shape. The design accepts this. A round is a token transfer; anything else belongs in another transaction.
 
@@ -333,7 +339,7 @@ Wallets on BSV do not scan the chain, so the coordinator has to deliver the evid
 
 **Withdrawals survive the pool dying.** If witness N+1 is never built, PP3_{N+1} can never be spent and the pool is bricked with its balance locked, but withdrawals round N+1 already paid stay paid. A recipient's claim does not depend on the pool continuing.
 
-**Build state.** None of this is exercisable yet. V is still the stub described in 5.2, so the `hashOutputs` and balance checks are designed and not built, and PP1 still emits a fixed output count of 5, so a round carrying a withdrawal output cannot produce a valid witness at all. Withdrawals are not merely ungated today, they are impossible. 5.7 gives PP1 the variable tail and 5.5 gives V its checks, in that order.
+**Build state.** Half of this is exercisable. A round can now carry withdrawals and deposit receipts and produce a valid witness, because PP1 has the variable shape-checked tail of 5.7 as of 2026-09-21. What is still missing is the gate: V is the stub described in 5.2, so the `hashOutputs` and balance checks are designed and not built. Withdrawals are therefore ungated rather than impossible, which is the weaker of the two states but the one that can be tested. 5.5 gives V its checks and is next.
 
 ## 8. Security argument
 
@@ -455,9 +461,9 @@ None of this touches the round transaction. The 128-byte rule applies only to th
 
 ### 11.4 PP1_SM accepts a variable tail of outputs
 
-**Assumed:** the SM generator's output rebuild (Phase 15 in `pp1_sm_script_gen.dart`) can be extended as section 5.7 describes: a counted, shape-checked tail after the five fixed outputs, and an lhs parser that reaches input 3. The shape check is what preserves the fixed-count security property; an opaque tail would let a round carry a second PP1 and fork the chain.
-**If wrong:** if the rebuild cannot be made to take a variable count, withdrawals and receipts move to a fixed count per round, padded with empty outputs. Ugly, not fatal. If the shape check turns out to be too large to unroll at the chosen maxima, the maxima come down.
-**Find out:** read `_emitInductiveProofSettle` for how the output count and the input walk are emitted today, then generate the pool variant and measure it.
+**RESOLVED 2026-09-21, built and measured.** The rebuild takes a variable, shape-checked tail at the maxima the design asked for, and it is smaller than the estimate: 6,981 bytes unrolled rather than the order of 10 KB, taking the PP1_SP lock to 10,310 bytes. The counts turned out not to need pushing at all, which removed the one number a spender could have lied about; see 5.7. The lhs parser already reached input 3 from the slot work.
+
+The one thing the build changed about the plan: the tail order. Receipts go first, not withdrawals, because a deposit covenant's SIGHASH_SINGLE check ties its receipt's output index to its own input index and a depositor cannot know the withdrawal count in advance. That leaves a real open point on the input side, 11.12.
 
 ### 11.5 PP1's issuance branch checks the funding vout
 
@@ -557,6 +563,14 @@ Direct-slot mode put K user spend proofs in K verifier outputs on Y_N, plus an a
 **The choice is free from the wallet's side, which is why it could be made on covenant cost alone.** `nk = H(sk, tagNk)` and `nf = H(nk, rho)`, so only the holder of a spending key can produce a nullifier and the coordinator cannot build a spend proof on anyone's behalf in either mode. The proof is produced at the edge regardless; the mode only decides what the coordinator does with a proof it has been handed. A wallet therefore does one read and one submission with no handshake, in either mode. What buys that is the ring: a spend may anchor to any of the four recent `cmRoot`s the header carries, so a proof stays valid for roughly four rounds and never races a round close. That is an argument against ever shrinking the ring to save header bytes.
 
 **What would bring it back.** A deployment whose coordinator genuinely cannot run a prover. It would return as a separate archetype with its own PP1, not as a mode of this one, so that it never constrains PP1_SP's covenant.
+
+### 11.12 A deposit covenant's input index can match its receipt's output index
+
+**Open, and created by 5.7.** A deposit covenant proves it was paid by requiring, with SIGHASH_SINGLE, that the output at its own input index be its receipt. Receipts start at output 5. But a round has four fixed inputs, funding, the previous witness, PP3 and the verifier slot, so the first free input index is 4, not 5. The indices are off by one and SIGHASH_SINGLE has no way to bridge it.
+
+**Options, none chosen:** give the round a fifth fixed input, which is honest but wastes an outpoint every round; move the metadata output to the end of the tail, which aligns the two at the cost of breaking the TSL1 five-output convention the parent parser reads by position; or have the covenant prove its receipt some other way than SIGHASH_SINGLE, which means pushing the whole output list and paying for it.
+
+**Find out:** this is the first thing the deposit work has to settle, before the covenant is written. Nothing in the output tail depends on the answer, because receipts being first is right under all three options.
 
 ## 12. What would settle it
 

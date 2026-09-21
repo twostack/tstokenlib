@@ -6,6 +6,7 @@ import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_script_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
+import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
 
 // The pool coordinator.
 var operatorWif = "cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS";
@@ -921,6 +922,200 @@ void main() {
     test('rejects the pinned txid at a different output index', () {
       expect(() => check(pinned, outpoint(List<int>.filled(32, 0x55), 1)),
           throwsA(isA<ScriptException>()));
+    });
+  });
+
+  // =========================================================================
+  // The variable output tail
+  // =========================================================================
+  //
+  // Every other TSL1 archetype writes a literal output count of 5, and that
+  // literal is what makes it impossible for a round to carry a second PP1 with
+  // the same tokenId and fork the chain through the sanctioned path. A pool
+  // has to pay withdrawals and acknowledge deposits, so the count has to move.
+  // These tests are about what replaces the literal: not a length the spender
+  // supplies, but a shape PP1 rebuilds and refuses to deviate from.
+  group('SP the variable output tail', () {
+    late ShieldedPoolTool service;
+    late Transaction fundA, fundB, issuanceTx, createWitness;
+    late DefaultTransactionSigner signer;
+    late PoolHeader g, h1;
+    late ({Transaction tx, List<int> outpoint, List<int> input}) y0, y1;
+    late List<int> bundles;
+
+    setUp(() {
+      service = ShieldedPoolTool();
+      fundA = getOperatorFundingTx();
+      fundB = getOperatorFundingTx2();
+      signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+      g = genesisHeader();
+      bundles = <int>[1, 2, 3, 4, 5];
+      var base = nextHeader(g);
+      h1 = PoolHeader(
+          cmRoot: base.cmRoot, nfRoot: base.nfRoot, ring: base.ring,
+          size: base.size, balance: BigInt.from(500000),
+          outHash: crypto.sha256.convert(bundles).bytes);
+
+      y0 = service.buildSlotTxn(
+          header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10));
+      y1 = service.buildSlotTxn(
+          header: h1, verifierBody: verifierBody, fundingInput: slotFunding(0x11));
+
+      issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+      createWitness = service.createWitnessTxn(
+          signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+    });
+
+    Transaction round(
+            {List<PoolWithdrawal>? withdrawals, List<PoolReceipt>? receipts}) =>
+        service.createRoundTxn(createWitness, issuanceTx, y0.tx, operatorPub,
+            fundA, signer, operatorPub, fundB.hash, h1, y1.outpoint,
+            withdrawals: withdrawals, receipts: receipts);
+
+    Transaction witnessFor(Transaction roundTx,
+            {List<PoolWithdrawal>? withdrawals, List<PoolReceipt>? receipts}) =>
+        service.createWitnessTxn(
+            signer, fundB, roundTx, hex.decode(issuanceTx.serialize()),
+            operatorPub, operatorPubkeyHash, ShieldedPoolAction.ROUND,
+            newOwnerPKH: hex.decode(operatorPubkeyHash),
+            newHeader: h1.encode(), nextSlot: y1.outpoint, yInput: y1.input,
+            verifierBody: verifierBody, bundles: bundles,
+            withdrawals: withdrawals, receipts: receipts);
+
+    void spendPP1(Transaction roundTx, Transaction witness) =>
+        Interpreter().correctlySpends(witness.inputs[1].script!,
+            roundTx.outputs[1].script, witness, 1, verifyFlags,
+            Coin.valueOf(BigInt.one));
+
+    PoolWithdrawal payout(int n, int sats) =>
+        PoolWithdrawal(List<int>.filled(20, n), BigInt.from(sats));
+    PoolReceipt deposit(int n, int sats) =>
+        PoolReceipt(List<int>.filled(32, n), BigInt.from(sats));
+
+    test('a round with no tail is still the five TSL1 outputs', () {
+      var roundTx = round();
+      expect(roundTx.outputs.length, 5);
+      spendPP1(roundTx, witnessFor(roundTx));
+    });
+
+    test('a withdrawal is a P2PKH output the witness accepts', () {
+      var w = [payout(1, 1000)];
+      var roundTx = round(withdrawals: w);
+      expect(roundTx.outputs.length, 6);
+      expect(roundTx.outputs[5].satoshis, BigInt.from(1000));
+      expect(roundTx.outputs[5].script.buffer,
+          [0x76, 0xa9, 0x14, ...List<int>.filled(20, 1), 0x88, 0xac]);
+      spendPP1(roundTx, witnessFor(roundTx, withdrawals: w));
+    });
+
+    test('a receipt is a zero-value OP_FALSE OP_RETURN the witness accepts', () {
+      var r = [deposit(0xAA, 100000)];
+      var roundTx = round(receipts: r);
+      expect(roundTx.outputs.length, 6);
+      expect(roundTx.outputs[5].satoshis, BigInt.zero);
+      expect(roundTx.outputs[5].script.buffer.sublist(0, 3), [0x00, 0x6a, 0x20]);
+      expect(roundTx.outputs[5].script.buffer.length, 44,
+          reason: 'the amount is eight raw bytes, so the shape never varies');
+      spendPP1(roundTx, witnessFor(roundTx, receipts: r));
+    });
+
+    test('receipts come before withdrawals', () {
+      // Not cosmetic. A deposit covenant proves its receipt with
+      // SIGHASH_SINGLE, which ties output index to input index, and a
+      // depositor cannot know how many withdrawals the round will carry.
+      var w = [payout(1, 1000), payout(2, 2500)];
+      var r = [deposit(0xAA, 100000)];
+      var roundTx = round(withdrawals: w, receipts: r);
+      expect(roundTx.outputs.length, 8);
+      expect(roundTx.outputs[5].script.buffer.sublist(0, 2), [0x00, 0x6a]);
+      expect(roundTx.outputs[6].script.buffer.sublist(0, 3), [0x76, 0xa9, 0x14]);
+      expect(roundTx.outputs[7].script.buffer.sublist(0, 3), [0x76, 0xa9, 0x14]);
+      spendPP1(roundTx, witnessFor(roundTx, withdrawals: w, receipts: r));
+    });
+
+    test('the output count survives passing 252', () {
+      // The count is a varint, and every fixed-count archetype gets away with
+      // one byte. 5 + 256 does not fit in one byte.
+      var w = [for (var i = 0; i < PoolWithdrawal.maxPerRound; i++) payout(i % 251, 100 + i)];
+      var roundTx = round(withdrawals: w);
+      expect(roundTx.outputs.length, 261);
+      spendPP1(roundTx, witnessFor(roundTx, withdrawals: w));
+    });
+
+    test('rejects a witness that names a payee the round did not pay', () {
+      var roundTx = round(withdrawals: [payout(1, 1000)]);
+      expect(() => spendPP1(roundTx, witnessFor(roundTx, withdrawals: [payout(9, 1000)])),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a witness that names an amount the round did not pay', () {
+      var roundTx = round(withdrawals: [payout(1, 1000)]);
+      expect(() => spendPP1(roundTx, witnessFor(roundTx, withdrawals: [payout(1, 999)])),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a witness that leaves a paid withdrawal out', () {
+      var roundTx = round(withdrawals: [payout(1, 1000), payout(2, 2000)]);
+      expect(() => spendPP1(roundTx, witnessFor(roundTx, withdrawals: [payout(1, 1000)])),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a round carrying a second PP1_SP in the tail', () {
+      // This is the property the fixed count of five was defending. A round
+      // with two PP1 outputs for the same tokenId forks the chain through the
+      // path the protocol sanctions, so it has to die in the witness whatever
+      // the witness claims the extra output is.
+      for (var claim in <List<PoolWithdrawal>>[[], [payout(1, 1)]]) {
+        var forged = round();
+        forged.addOutput(TransactionOutput(BigInt.one, forged.outputs[1].script));
+        expect(() => spendPP1(forged, witnessFor(forged, withdrawals: claim)),
+            throwsA(isA<ScriptException>()),
+            reason: 'claimed as ${claim.length} withdrawal(s)');
+      }
+    });
+
+    test('rejects more records than the unrolled tail has steps', () {
+      // The maxima are not a pushed number anyone checks. They are the point
+      // at which the script runs out of steps, and leftover bytes are the same
+      // thing as a count nobody checked.
+      var w = [for (var i = 0; i < PoolWithdrawal.maxPerRound; i++) payout(i % 251, 100 + i)];
+      var roundTx = round(withdrawals: w);
+      expect(
+          () => spendPP1(roundTx, witnessFor(roundTx, withdrawals: [...w, payout(7, 5)])),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a blob that is not whole records', () {
+      // The builder will not make one, so rewrite the push in the finished
+      // witness. The withdrawals blob is the first push of a round unlock.
+      var roundTx = round(withdrawals: [payout(1, 1000)]);
+      var witness = witnessFor(roundTx, withdrawals: [payout(1, 1000)]);
+      var raw = witness.inputs[1].script!.buffer.toList();
+      expect(raw[0], PoolWithdrawal.recordSize,
+          reason: 'the first push is one 28-byte withdrawal record');
+      raw[0] = PoolWithdrawal.recordSize - 1;
+      raw.removeAt(PoolWithdrawal.recordSize);
+      expect(
+          () => Interpreter().correctlySpends(
+              SVScript.fromByteArray(Uint8List.fromList(raw)),
+              roundTx.outputs[1].script, witness, 1, verifyFlags,
+              Coin.valueOf(BigInt.one)),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('the tool refuses a tail the script has no steps for', () {
+      expect(
+          () => round(withdrawals: [
+                for (var i = 0; i <= PoolWithdrawal.maxPerRound; i++) payout(i % 251, 100)
+              ]),
+          throwsA(isA<ArgumentError>()));
+      expect(
+          () => round(receipts: [
+                for (var i = 0; i <= PoolReceipt.maxPerRound; i++) deposit(i, 100)
+              ]),
+          throwsA(isA<ArgumentError>()));
     });
   });
 }

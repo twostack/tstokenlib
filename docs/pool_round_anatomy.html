@@ -331,7 +331,7 @@
       <div>
         <h3><span class="swatch" style="background:var(--pp1)"></span>PP1_SP</h3>
         <p>Locks round out1. Runs when the witness spends it. Rebuilds its own round byte for
-          byte and certifies the next verifier slot. <span class="mono">3,319 B</span></p>
+          byte and certifies the next verifier slot. <span class="mono">10,310 B</span></p>
       </div>
       <div>
         <h3><span class="swatch" style="background:var(--pp2)"></span>PP2</h3>
@@ -395,7 +395,7 @@
           <div class="row"><span class="ix">1</span>
             <span class="what"><span class="tag t-pp1">PP1_SP</span>header 1
               <small>ownerPKH, tokenId, verifierBodyHash, genesisHeader, header</small></span>
-            <span class="sz">3,319 B · 1 sat</span></div>
+            <span class="sz">10,310 B · 1 sat</span></div>
           <div class="row"><span class="ix">2</span>
             <span class="what"><span class="tag t-pp2">PP2</span>witness bridge</span>
             <span class="sz">1,366 B · 1 sat</span></div>
@@ -602,9 +602,11 @@
         <code>OP_DROP OP_1</code>, 240 bytes. The real one is roughly 1.5 MB and carries the
         hashOutputs rebuild, the proof check and the balance equation. Everything around it is
         real, which is what makes the covenant testable without it.</li>
-      <li><strong>Withdrawals are impossible, not merely ungated.</strong> PP1 still emits a fixed
-        output count of 5, so a round carrying a sixth output cannot produce a valid witness. The
-        variable shape-checked tail is the next piece of work.</li>
+      <li><strong>Withdrawals are ungated, not impossible.</strong> As of 2026-09-21 PP1 emits a
+        variable output tail: receipts then withdrawals, each rebuilt from a fixed template with
+        only its hash, commitment and amount free, with the count divided out of the blob sizes
+        rather than pushed. That is 6,981 of the 10,310 bytes on this page's PP1 boxes. What is
+        still missing is the gate, which is V's balance equation, not the tail.</li>
       <li><strong>Deposits are unbuilt.</strong> The covenant outputs, their SIGHASH_SINGLE receipt
         binding and the refund timelock are designed and not written.</li>
       <li><strong>Everything else verifies.</strong> Genesis, two full rounds, both witnesses and
