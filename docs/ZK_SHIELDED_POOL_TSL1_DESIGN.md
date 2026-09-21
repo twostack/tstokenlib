@@ -60,6 +60,8 @@ The pool is one PP1_SM token. Its tokenId is the funding txid of the genesis rou
 
 Round N+1 is built from the products of round N. Three transactions are involved.
 
+**Naming.** A script is named for the output it locks, and it executes only when a later transaction spends that output. Those are two different positions with two different indices, and this document keeps them apart. PP3_N is the script locking **round N's output 3**; it executes when **round N+1 spends it at input 2**. Writing "PP3_N (input 2)" would merge the two and state the wrong index as the script's identity.
+
 ### 4.1 Slot transaction Y_N
 
 Created before round N by anyone, funded by anyone. Its content is fixed by round N's header, which the coordinator knows once round N's proof exists.
@@ -165,8 +167,8 @@ Tests: `test/sp_token_test.dart`, 45 of them, covering the codec roundtrip inclu
 
 That leaves two scripts, each holding exactly what the other lacks:
 
-- **PP3_{N+1}** is an output of round N+1 and holds the pool balance. It names the outpoint round N+2 must spend at input 3, and that demand is enforced when round N+2 is mined, before any of its money moves. What PP3 cannot do is look at the outpoint it named. It knows the address, not the tenant.
-- **PP1**, running in witness N+1, can look. It is handed Y_{N+1}'s parts, rebuilds the transaction and the script at its output 0, and certifies that the slot holds this pool's verifier carrying header_{N+1}. What it cannot do is arrive in time for its own round.
+- **PP3_{N+1}** locks round N+1's output 3, the one holding the pool balance. It names the outpoint round N+2 must spend at input 3, and that demand is enforced when round N+2 is mined, before any of its money moves. What PP3 cannot do is look at the outpoint it named. It knows the address, not the tenant.
+- **PP1_{N+1}** can look. It executes when witness N+1 spends round N+1's output 1, and it is handed Y_{N+1}'s parts, rebuilds that transaction and the script locking its output 0, and certifies that the slot holds this pool's verifier carrying header_{N+1}. What it cannot do is arrive in time for its own round.
 
 Put together, PP3 supplies the timing and PP1 supplies the sight: round N+2 can only be mined beside a verifier that already knows the state it must check against.
 
@@ -303,11 +305,11 @@ It is easy to read 5.2 and conclude that withdrawals are gated by PP3's forward-
 
 A withdrawal is an unconditional P2PKH output of round N+1. Once that round is accepted the money is spendable by its recipient and nothing later can claw it back. So the gate cannot be anywhere downstream, and it is not: it is **V, in the same transaction as the payout**.
 
-| | runs when | does what |
-|---|---|---|
-| **V_N**, input 3 | round N+1 is mined | verifies the proof, rebuilds the round's outputs against `hashOutputs`, checks the withdrawal list against the proof's publics and the balance equation in 5.5 |
-| **PP3_N**, input 2 | round N+1 is mined | forces input 3 to be the outpoint it named, so V cannot simply be left out |
-| **PP1_N**, in witness N | one round earlier | certified that the outpoint PP3_N names holds this pool's verifier carrying header_N |
+| Script | Locks | Executes when | Does what |
+|---|---|---|---|
+| **V_N** | Y_N out0 | round N+1 spends it at input 3 | verifies the proof, rebuilds round N+1's outputs against `hashOutputs`, checks the withdrawal list against the proof's publics and the balance equation in 5.5 |
+| **PP3_N** | round N out3 | round N+1 spends it at input 2 | requires round N+1's input 3 to be the outpoint it named, so V cannot simply be left out |
+| **PP1_N** | round N out1 | witness N spends it at input 1 | certified, one round earlier, that the outpoint PP3_N names holds this pool's verifier carrying header_N |
 
 V checks, PP3 makes V unskippable, PP1 makes V trustworthy. Remove any one and the other two are worthless. Only PP1's certificate looks forward; the gate on money is contemporaneous with the money, which is the property that makes the wallet story below as short as it is.
 
