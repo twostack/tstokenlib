@@ -74,6 +74,12 @@ class ShieldedPoolTool {
   ///   already holds notes nobody deposited for.
   /// [nextSlot] pins the verifier slot round 1 must spend: the outpoint of the
   ///   slot transaction carrying V for [genesisHeader].
+  /// [slotTx] is that slot transaction, Y_0. The issuance spends its anchor,
+  ///   output 1, at input 1, and it is checked here against what witness 0
+  ///   will check: the genesis header, this pool's verifier body, and
+  ///   [ownerAddress] as V's signer, since that owner signs round 1. Pass
+  ///   [uncheckedSlot] or [spendAnchor] false only to build the issuance
+  ///   witness 0 refuses, which is what the negative tests do.
   Transaction createTokenIssuanceTxn(
       Transaction tokenFundingTx,
       TransactionSigner fundingTxSigner,
@@ -83,9 +89,14 @@ class ShieldedPoolTool {
       PoolHeader genesisHeader,
       List<int> nextSlot,
       List<int> witnessFundingTxId,
-      {int fundingVout = 1,
+      {required Transaction slotTx,
+       int fundingVout = 1,
        int witnessFundingVout = 1,
-       List<int>? metadataBytes}) {
+       List<int>? metadataBytes,
+       TransactionSigner? anchorSigner,
+       SVPublicKey? anchorPubKey,
+       bool uncheckedSlot = false,
+       bool spendAnchor = true}) {
 
     // PP1_SP's create branch requires input 0 to spend (tokenId, 1), which is
     // what makes tokenId unique. Funding from any other index would build an
@@ -95,6 +106,22 @@ class ShieldedPoolTool {
           'PP1_SP issuance must be funded from output 1 of the funding transaction');
     }
 
+    // Witness 0 certifies the genesis slot the way a round's witness certifies
+    // the next one, and a slot it refuses leaves the pool dead at birth. Say
+    // so here, before anything is mined.
+    if (!uncheckedSlot) {
+      checkSlotIsCertifiable(
+          slotTx: slotTx,
+          outpoint: nextSlot,
+          header: genesisHeader,
+          verifierBodyHash: verifierBodyHash,
+          signerPKH: hex.decode(ownerAddress.pubkeyHash160));
+    }
+    if (slotTx.outputs.length < 2) {
+      throw ArgumentError('slotTx has no output 1 for the issuance to spend '
+          'as its anchor.');
+    }
+
     var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey);
     var tokenTxBuilder = TransactionBuilder();
     var tokenId = tokenFundingTx.hash;
@@ -102,6 +129,15 @@ class ShieldedPoolTool {
 
     tokenTxBuilder.spendFromTxnWithSigner(fundingTxSigner, tokenFundingTx, fundingVout,
         TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker);
+    // Input 1 is Y_0's anchor, as input 4 is Y_{N+1}'s in a round: the
+    // issuance cannot be mined without the slot round 1 has to spend.
+    // Nothing enforces that at mining time, since issuance has no PP3 before
+    // it; witness 0 refuses an issuance without it.
+    if (spendAnchor) {
+      tokenTxBuilder.spendFromTxnWithSigner(anchorSigner ?? fundingTxSigner,
+          slotTx, 1, TransactionInput.MAX_SEQ_NUMBER,
+          P2PKHUnlockBuilder(anchorPubKey ?? fundingPubKey));
+    }
     tokenTxBuilder.withFeePerKb(100);
 
     var pp1Locker = PP1SpLockBuilder(

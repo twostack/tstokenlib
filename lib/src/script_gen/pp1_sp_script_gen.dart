@@ -196,7 +196,8 @@ class PP1SpScriptGen {
   // create (selector=0)
   // =========================================================================
 
-  /// Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding]
+  /// Stack: [slotParts, vBody, tokenRawTx, preImage, fundingOutpoint,
+  ///         witnessPadding]
   /// Altstack pop order: ownerPKH, tokenId, verifierBodyHash, genesisHeader, header
   static void _emitCreate(ScriptBuilder b) {
     // Stack indices from the top:
@@ -261,6 +262,8 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_TOALTSTACK);     // tokenId back
     b.opCode(OpCodes.OP_TOALTSTACK);     // ownerPKH back
 
+    _emitCertifyGenesisSlot(b);
+
     // Drop tokenRawTx; the stack is now exactly what the phases below expect.
     OpcodeHelpers.pushInt(b, 3);
     b.opCode(OpCodes.OP_ROLL);
@@ -322,6 +325,87 @@ class PP1SpScriptGen {
     b.opCode(OpCodes.OP_SHA256); b.opCode(OpCodes.OP_SHA256);
     b.opCode(OpCodes.OP_EQUALVERIFY);
     b.opCode(OpCodes.OP_1);
+  }
+
+  /// Phase 0b of create: the genesis slot Y_0 holds this pool's verifier,
+  /// initialised with the genesis header and answering to this owner, and the
+  /// issuance spent its anchor.
+  ///
+  /// The round branch certifies the slot the *next* round spends, so without
+  /// this nothing ever looks at Y_0, the slot round 1 spends. A coordinator
+  /// could pin a Y_0 whose output 0 is anything at all, run round 1 through
+  /// it unverified with a header_1 of their choosing, and every later V would
+  /// then verify faithfully from that header: a commitment tree holding notes
+  /// nobody proved, spendable once depositors have paid in. That is theft,
+  /// not death, and `tool/scratch/genesis_slot_probe.dart` built it.
+  ///
+  /// This runs the round branch's own slot check with the genesis header and
+  /// ownerPKH, and requires the issuance's input 1 to be the slot's anchor.
+  /// Both facts come out of tokenRawTx, which Phase 0 has just proved is the
+  /// transaction this witness spends. Round 1 cannot be mined before this
+  /// witness exists, because PP3_0 requires it, so a pool with a bad Y_0 dies
+  /// at birth holding only its issuance dust. That rests on PP3_0 being the
+  /// canonical program, which is the depositor's check (design 5.4) and which
+  /// no script in issuance can make.
+  ///
+  /// Pre:  [slotParts, vBody, tokenRawTx, preImage, fundingOutpoint, pad]
+  ///       Alt: [header, genesisHeader, verifierBodyHash, tokenId, ownerPKH]
+  /// Post: [tokenRawTx, preImage, fundingOutpoint, pad]   Alt: unchanged
+  static void _emitCertifyGenesisSlot(ScriptBuilder b) {
+    // The issuance's input 1 outpoint, which must be the anchor.
+    OpcodeHelpers.pushInt(b, 3);
+    b.opCode(OpCodes.OP_PICK);           // tokenRawTx
+    PP1FtScriptGen.emitReadOutpoint(b, 1);
+    // The slot PP3_0 pins: output 3's script, bytes [1:37].
+    OpcodeHelpers.pushInt(b, 4);
+    b.opCode(OpCodes.OP_PICK);           // tokenRawTx
+    PP1FtScriptGen.emitSkipInputs(b);
+    PP1FtScriptGen.emitReadVarint(b);
+    b.opCode(OpCodes.OP_SWAP); b.opCode(OpCodes.OP_DROP);   // output count
+    b.opCode(OpCodes.OP_3);
+    PP1FtScriptGen.emitSkipNOutputs(b);
+    PP1FtScriptGen.emitReadOneOutputScript(b);
+    b.opCode(OpCodes.OP_NIP);            // PP3_0's script
+    b.opCode(OpCodes.OP_1);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_NIP);
+    OpcodeHelpers.pushInt(b, 36);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    // [slotParts, vBody, raw, pre, fund, pad, anchorIn, slot]
+
+    // anchorIn == slot.txid ‖ LE32(1)
+    b.opCode(OpCodes.OP_DUP);
+    OpcodeHelpers.pushInt(b, 32);
+    b.opCode(OpCodes.OP_SPLIT); b.opCode(OpCodes.OP_DROP);
+    b.addData(Uint8List.fromList([0x01, 0x00, 0x00, 0x00]));
+    b.opCode(OpCodes.OP_CAT);
+    b.opCode(OpCodes.OP_ROT);
+    b.opCode(OpCodes.OP_EQUALVERIFY);
+    // [slotParts, vBody, raw, pre, fund, pad, slot]
+
+    // Bring slotParts and vBody up, then copy what the slot check needs off
+    // the altstack and put the altstack back as it was.
+    OpcodeHelpers.pushInt(b, 6);
+    b.opCode(OpCodes.OP_ROLL);           // slotParts
+    OpcodeHelpers.pushInt(b, 6);
+    b.opCode(OpCodes.OP_ROLL);           // vBody
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // ownerPKH
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // tokenId
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // verifierBodyHash
+    b.opCode(OpCodes.OP_FROMALTSTACK);   // genesisHeader
+    b.opCode(OpCodes.OP_DUP); b.opCode(OpCodes.OP_TOALTSTACK);
+    b.opCode(OpCodes.OP_SWAP);
+    b.opCode(OpCodes.OP_DUP); b.opCode(OpCodes.OP_TOALTSTACK);
+    b.opCode(OpCodes.OP_ROT); b.opCode(OpCodes.OP_TOALTSTACK);   // tokenId
+    b.opCode(OpCodes.OP_ROT);
+    b.opCode(OpCodes.OP_DUP); b.opCode(OpCodes.OP_TOALTSTACK);   // ownerPKH
+    // [raw, pre, fund, pad, slot, slotParts, vBody, genesis, vbh, ownerPKH]
+    b.opCode(OpCodes.OP_ROT);
+    b.opCode(OpCodes.OP_SWAP);
+    // [..., slotParts, vBody, vbh, genesis, ownerPKH]
+    OpcodeHelpers.pushInt(b, 5);
+    b.opCode(OpCodes.OP_ROLL);           // slot
+    emitVerifySlotIsVerifier(b);
+    // [raw, pre, fund, pad]
   }
 
   // =========================================================================

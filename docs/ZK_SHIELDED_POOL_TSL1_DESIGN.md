@@ -76,7 +76,7 @@ Created before round N by anyone, funded by anyone. Its content is fixed by roun
 
 **Exactly this shape is a requirement, not a convention.** It is what forces V to be output 0: PP1 rebuilds Y from its parts rather than parsing it, so with the counts and the anchor's template fixed a forged Y cannot park the real verifier somewhere inert and put an `OP_TRUE` where the round looks. The coordinator builds Y, so meeting the shape costs nothing. See 11.11 for why the alternative to one slot was dropped.
 
-**The anchor, BUILT 2026-09-21.** Round N pins Y_N:0 in its PP3, and round N+1 spends it. Until the anchor, nothing made round N depend on Y_N itself, so round N could be mined pinning a Y_N that never was: its funding spent elsewhere, a conflicting Y, a policy rejection. Round N+1 then had nothing to spend at input 2, PP3_N could never be spent, and with no burn path the balance was frozen for good. The only guard was a rule, broadcast Y before the round. Now round N spends Y_N's output 1 at input 4, and PP3_{N-1} refuses the round without it (5.4), so a round pinning a Y that is not on chain cannot be mined either. It is not circular, because Y does not depend on the round that spends its anchor. The design that came first, Y spending a covenant output of round N, pointed the dependency the wrong way: it makes Y depend on the round, and the round still does not depend on Y.
+**The anchor, BUILT 2026-09-21.** Round N pins Y_N:0 in its PP3, and round N+1 spends it. Until the anchor, nothing made round N depend on Y_N itself, so round N could be mined pinning a Y_N that never was: its funding spent elsewhere, a conflicting Y, a policy rejection. Round N+1 then had nothing to spend at input 2, PP3_N could never be spent, and with no burn path the balance was frozen for good. The only guard was a rule, broadcast Y before the round. Now round N spends Y_N's output 1 at input 4, and PP3_{N-1} refuses the round without it (5.4), so a round pinning a Y that is not on chain cannot be mined either. The issuance, which has no PP3 before it, spends Y_0's anchor at input 1, and witness 0 refuses an issuance that does not (11.15). It is not circular, because Y does not depend on the round that spends its anchor. The design that came first, Y spending a covenant output of round N, pointed the dependency the wrong way: it makes Y depend on the round, and the round still does not depend on Y.
 
 ### 4.2 Round N+1, the token transaction
 
@@ -165,7 +165,7 @@ Immutable: `tokenId`, carried in PP1 as in every TSL1 token, plus `verifierBodyH
 
 **Two branches, not seven.** `OP_0` create and `OP_1` round. The state machine's enroll, confirm, convert, settle and timeout are escrow lifecycle with no meaning for a pool, and burn is removed for the reason in 5.6; the dispatch fails on any other selector rather than falling through. `PP1SmScriptGen` is untouched, so the state machine archetype still has all of them.
 
-**Measured.** Script 14,715 bytes since V gained its signer (5.5), 14,704 after the anchor (4.1), 14,652 after the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
+**Measured.** Script 15,578 bytes since create certifies the genesis slot (11.15), 14,715 after V gained its signer (5.5), 14,704 after the anchor (4.1), 14,652 after the per-transfer outHash loop (5.5), before it 10,310 bytes: 563 header, 9,747 body, with the verifier checks of 5.2 and the variable output tail of 5.7 included. Before the tail it was 3,319 bytes, so the shape check is two thirds of the program; that is what refusing an opaque length costs. The state machine it came from was 10,537 bytes, of which 10,376 was body.
 
 Tests: `test/sp_token_test.dart`, 58 of them, covering the codec roundtrip including a balance past 32 bits, the byte offsets against the constants, an issuance that opens on a state other than genesis, a round whose witness claims a header the round did not build, a round witness signed by someone other than the owner, a selector that names no branch, and the output tail cases of 5.7.
 
@@ -217,7 +217,7 @@ The txid is what binds every part of the claim. Supplying the genuine body along
 
 Measured: the four checks cost 291 script bytes, 2,465 to 2,756 of body.
 
-Tests in `test/sp_token_test.dart`: the whole lifecycle end to end, plus bundles that do not hash to `outHash`, a slot whose verifier was built for another header, a slot holding a decoy, the verifier falsely claimed for a decoy slot, a round whose PP3 names a slot other than the certified one, and `emitVerifySpentPinnedSlot` driven directly against a hand-built left-hand side.
+Tests in `test/sp_token_test.dart`: the whole lifecycle end to end, plus bundles that do not hash to `outHash`, a slot whose verifier was built for another header, a slot holding a decoy, the verifier falsely claimed for a decoy slot, a round whose PP3 names a slot other than the certified one, and `emitVerifySpentPinnedSlot` driven directly against a hand-built left-hand side. Group "SP create certifies the genesis slot" runs the same slot attacks against witness 0, plus an issuance that skips Y_0's anchor or spends another transaction's output 1; with the certification removed from the generator, all six are accepted.
 
 ### 5.3 PP2
 
@@ -446,6 +446,8 @@ A forger who writes header bytes into an output has produced a transaction with 
 
 V_N is an input of round N+1. PP3_N refuses to be spent without it. PP1_N established in witness N that the outpoint PP3_N names carries V with header_N, and witness N must exist for PP3_N to be spendable. So when round N+1 is validated, the interpreter runs a real verifier against the real previous header and the real new outputs. Withdrawals cannot be paid on a claim that was never checked.
 
+The base case is round 1, which spends Y_0. No round's witness certifies Y_0, so PP1_0's create branch does, in witness 0, with the genesis header and the owner as V's signer, and PP3_0 will not let round 1 be mined before witness 0 exists. Until 2026-09-21 nothing did, and a coordinator could run round 1 unverified through a decoy Y_0 (11.15, vector 5). This rests on PP3_0 being canonical, which is the depositor's check of 5.4: PP1 copies PP3's program from each round to the next, so a canonical PP3 today means a canonical PP3_0.
+
 This is why V cannot run in the witness. If it did, a round could pay out and then simply never be witnessed. Verification must gate the transaction that moves money.
 
 ### 8.3 The failure mode of a dishonest coordinator is death, not theft
@@ -467,7 +469,10 @@ Every check PP1 performs in the witness is on a round already mined. A round tha
 | Set PP3_{N+1}'s value below the header's balance and take the difference as change | V reads the real value from the rebuilt outputs | round invalid |
 | Omit a deposit from the receipts | that covenant's SIGHASH_SINGLE check | round invalid |
 | Add a receipt with no deposit | balance equation plus consensus | coordinator pays |
-| Spend V_N somewhere other than round N+1 | V checks hashPrevouts for (round N, 3) | invalid |
+| Copy round N+1's proof from the mempool and spend V_N in another transaction | V requires the owner's SIGHASH_ALL signature (5.5), which commits to round N+1 alone | invalid |
+| Mine round N while its pinned Y_N never is | round N must spend Y_N's anchor at input 4, which PP3_{N-1} enforces (4.1) | round N invalid |
+| Put a decoy in the genesis slot Y_0 and run round 1 unverified | PP1_0's create branch certifies Y_0 in witness 0, and round 1 needs witness 0 (8.2) | witness 0 impossible, pool dies at birth |
+| Give Y's input a scriptSig length that disagrees with its bytes, so Y parses as a one-output anyone-can-spend | PP1 requires yInput to be exactly as long as its length byte says (5.2) | witness impossible |
 | Two competing rounds N+1 | PP3_N and V_N are each spendable once | one wins |
 | Publish bundles that do not decrypt | nothing; outHash binds bytes, not meaning | griefing, unchanged from today |
 | Withhold witness N+1 | nothing | pool frozen, no theft |
@@ -698,6 +703,23 @@ Nothing in the output tail depended on the answer, because receipts being first 
 What follows is the original note. The bus binds a K1 wire consumed on port A only in limb 0 (`ak1 · a[0]`). The VM's `mul` reads all four limbs of A. So in a product with a K1 operand, three extension limbs of that operand are free to the prover, and the product can be shifted by any combination of i·B, u·B and iu·B. The query-point computation multiplies swap bits this way (`verifier_program.dart`, the `px`/`py` update in `_verifyInner`). Whether that can be turned into a false inner proof has not been tried. The new code of 10.1 and 11.13 avoids the pattern by lifting every bit through `limb(x, 0)` first.
 
 **Find out:** build the forged witness, or close it without trying: three AIR constraints `ak1 · a[k] = 0` for k = 1..3 cost nothing measurable, and the verifier scripts regenerate from the AIR.
+
+### 11.15 Ways the slot transaction Y can be attacked
+
+**Surveyed 2026-09-21, after the anchor.** Y is built by the coordinator, certified by PP1 in the witness of the round that pins it, anchored by that round, and spent by the round after. Six ways in were considered. Every outsider-triggered freeze is now closed; what remains can only be triggered by the coordinator, and freezes rather than steals.
+
+| # | Attack | Who can do it | Status |
+|---|---|---|---|
+| 1 | Copy the next round's proof from the mempool and spend Y_N:0 in another transaction, leaving PP3_N nothing to pin | anyone | **Closed by design**: V requires the owner's signature (5.5). The layout and PP1's binding are built; the check itself is part of V's body, so the `OP_DROP OP_1` stub is still open |
+| 2 | Malleate Y's txid in relay so a different Y is mined | anyone | **Delay only**: the round spends the original Y's anchor, so it cannot be mined without it; rebuild and resubmit |
+| 3 | Double-spend Y's funding, have Y rejected by policy, or withhold the anchor signature | the funder, the network, the anchor key | **Delay only**, for the same reason |
+| 4 | Mine a Y with the wrong content: stale header, wrong body, malformed V | the coordinator | **Accepted**, see below |
+| 5 | Put a decoy in the genesis slot Y_0 and run round 1 unverified | the coordinator | **Closed 2026-09-21**: create certifies Y_0 (8.2). This one was theft, not a freeze |
+| 6 | An extra output, V not at output 0, a length byte that disagrees with the input's bytes | the coordinator | **Closed**: PP1's rebuild of Y (5.2) |
+
+**Vector 5 was theft.** No witness certified Y_0, so round 1 could spend a decoy and carry a header_1 the coordinator wrote, including a commitment tree holding notes nobody proved. Every later V would then verify faithfully from that header, and once depositors had paid in, the made-up notes would withdraw their money. `tool/scratch/genesis_slot_probe.dart` built it end to end and every step was accepted. Now `_emitCertifyGenesisSlot` runs the round branch's slot check on Y_0 in witness 0, and requires the issuance's input 1 to be Y_0's anchor; it reads both out of the issuance bytes the create branch already verifies. PP1 grew from 14,715 to 15,578 bytes, and witness 0 now carries the verifier body once, as every round's witness does.
+
+**Vector 4 is accepted rather than closed.** A round whose Y has the wrong content mines, and then its witness can never be built: the pool freezes, and no money moves. Closing it at mining time means a script in the round rebuilding Y's txid. The ~1.6 MB body sits after Y's variable input and header, so it cannot be pre-hashed once and reused; it would have to be pushed into the round, where bytes are paid three times, about +3 MB against a round of about 5.2 MB. A two-covenant restructure (a seed output of round N-1 that Y must spend, checking Y's shape, and an anchor covenant comparing headers in round N) would cost several hundred KB a round and two new covenants. Against that: only the coordinator can do it, because the coordinator builds both Y and the round and nobody can produce another Y with the same txid; it is the death-not-theft failure of 8.3; and the same coordinator can freeze the pool more cheaply by never spending witness N's output 0. So it stays a build-time guard, `checkSlotIsCertifiable`, which `createRoundTxn` and `createTokenIssuanceTxn` run by default and which applies PP1's own checks in PP1's order.
 
 ## 12. What would settle it
 

@@ -269,10 +269,14 @@ void main() {
           signerPKH: hex.decode(operatorPubkeyHash));
       var issuanceTx = service.createTokenIssuanceTxn(
           fundingTx, operatorSigner, operatorPub, operatorAddress,
-          verifierBodyHash, g, y0.outpoint, getOperatorFundingTx2().hash);
+          verifierBodyHash, g, y0.outpoint, getOperatorFundingTx2().hash,
+          slotTx: y0.tx);
 
       expect(issuanceTx.outputs.length, 5);
-      expect(issuanceTx.inputs.length, 1);
+      expect(issuanceTx.inputs.length, 2,
+          reason: 'the funding that fixes tokenId, and Y_0\'s anchor');
+      expect(issuanceTx.inputs[1].prevTxnId, y0.tx.id);
+      expect(issuanceTx.inputs[1].prevTxnOutputIndex, 1);
       expect(issuanceTx.outputs[0].satoshis > BigInt.zero, true);
       expect(issuanceTx.outputs[1].satoshis, BigInt.one);
       expect(issuanceTx.outputs[2].satoshis, BigInt.one);
@@ -298,7 +302,7 @@ void main() {
               getOperatorFundingTx(),
               DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
               operatorPub, operatorAddress, verifierBodyHash, g, y0.outpoint,
-              getOperatorFundingTx2().hash, fundingVout: 0),
+              getOperatorFundingTx2().hash, fundingVout: 0, slotTx: y0.tx),
           throwsA(isA<ArgumentError>()));
     });
   });
@@ -316,11 +320,12 @@ void main() {
           anchorPKH: hex.decode(operatorPubkeyHash),
           signerPKH: hex.decode(operatorPubkeyHash));
       var issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
-          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash, slotTx: y0.tx);
 
       var witnessTx = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
-          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE,
+          slotParts: y0.parts, verifierBody: verifierBody);
 
       Interpreter().correctlySpends(witnessTx.inputs[1].script!,
           issuanceTx.outputs[1].script, witnessTx, 1, verifyFlags,
@@ -337,9 +342,14 @@ void main() {
       var signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
       var g = genesisHeader();
       var stuffed = nextHeader(g);
+      // A genuine genesis slot and anchor, so the header is the only thing
+      // wrong with this issuance.
+      var y0 = genesisSlot(g);
 
       var issuanceTx = (TransactionBuilder()
             ..spendFromTxnWithSigner(signer, fundA, 1,
+                TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
+            ..spendFromTxnWithSigner(signer, y0.tx, 1,
                 TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(operatorPub))
             ..withFeePerKb(100)
             ..spendToLockBuilder(
@@ -351,20 +361,99 @@ void main() {
                     hex.decode(operatorPubkeyHash), 1, hex.decode(operatorPubkeyHash)),
                 BigInt.one)
             ..spendToLockBuilder(
-                PartialWitnessLockBuilder(hex.decode(operatorPubkeyHash)), BigInt.one)
+                PartialWitnessLockBuilder.forPool(y0.outpoint), BigInt.one)
             ..spendToLockBuilder(MetadataLockBuilder(), BigInt.zero)
             ..sendChangeToPKH(operatorAddress))
           .build(false);
 
       var witnessTx = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
-          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE,
+          slotParts: y0.parts, verifierBody: verifierBody);
 
       expect(
           () => Interpreter().correctlySpends(witnessTx.inputs[1].script!,
               issuanceTx.outputs[1].script, witnessTx, 1, verifyFlags,
               Coin.valueOf(BigInt.one)),
           throwsA(isA<ScriptException>()));
+    });
+  });
+
+  group('SP create certifies the genesis slot', () {
+    // The round branch certifies the slot the next round spends, so before
+    // this nothing ever looked at Y_0, the slot round 1 spends. A decoy Y_0
+    // let round 1 run unverified with a header_1 of the coordinator's
+    // choosing, and every later V would then verify faithfully from it
+    // (tool/scratch/genesis_slot_probe.dart). Each issuance below is built
+    // with the tool's own guard waived, as a coordinator bypassing the tool
+    // would, so the refusal is witness 0's.
+    var service = ShieldedPoolTool();
+    var fundA = getOperatorFundingTx();
+    var fundB = getOperatorFundingTx2();
+    var signer = DefaultTransactionSigner(sigHashAll, operatorPrivateKey);
+    var g = genesisHeader();
+    var owner = hex.decode(operatorPubkeyHash);
+
+    ({Transaction tx, List<int> outpoint, List<int> parts}) slot(
+            {PoolHeader? header, List<int>? body, List<int>? signerPKH, int n = 0x10}) =>
+        service.buildSlotTxn(
+            header: header ?? g, verifierBody: body ?? verifierBody,
+            fundingInput: slotFunding(n), anchorPKH: owner,
+            signerPKH: signerPKH ?? owner);
+
+    void create(({Transaction tx, List<int> outpoint, List<int> parts}) y,
+        {List<int>? body, Transaction? spentAnchorOf, bool spendAnchor = true}) {
+      var issuance = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+          operatorAddress, verifierBodyHash, g, y.outpoint, fundB.hash,
+          slotTx: spentAnchorOf ?? y.tx, uncheckedSlot: true,
+          spendAnchor: spendAnchor);
+      var witness = service.createWitnessTxn(signer, fundB, issuance,
+          hex.decode(fundA.serialize()), operatorPub, operatorPubkeyHash,
+          ShieldedPoolAction.CREATE,
+          slotParts: y.parts, verifierBody: body ?? verifierBody);
+      Interpreter().correctlySpends(witness.inputs[1].script!,
+          issuance.outputs[1].script, witness, 1, verifyFlags,
+          Coin.valueOf(BigInt.one));
+    }
+
+    test('accepts the genuine genesis slot', () {
+      create(slot());
+    });
+
+    test('rejects a genesis slot holding a decoy', () {
+      // Claimed honestly, the decoy fails the body hash.
+      expect(() => create(slot(body: decoyBody), body: decoyBody),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects claiming the verifier is in a genesis slot holding a decoy', () {
+      expect(() => create(slot(body: decoyBody)), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a genesis slot built for another header', () {
+      expect(() => create(slot(header: nextHeader(g))), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects a genesis slot answering to a key other than the owner', () {
+      expect(() => create(slot(signerPKH: hex.decode(counterpartyPubkeyHash))),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects an issuance that does not spend the genesis slot\'s anchor', () {
+      expect(() => create(slot(), spendAnchor: false), throwsA(isA<ScriptException>()));
+    });
+
+    test('rejects an issuance spending another transaction\'s output 1', () {
+      expect(() => create(slot(), spentAnchorOf: slot(n: 0x11).tx),
+          throwsA(isA<ScriptException>()));
+    });
+
+    test('the tool refuses a genesis slot witness 0 would refuse', () {
+      var decoy = slot(body: decoyBody);
+      expect(() => service.createTokenIssuanceTxn(fundA, signer, operatorPub,
+              operatorAddress, verifierBodyHash, g, decoy.outpoint, fundB.hash,
+              slotTx: decoy.tx),
+          throwsA(isA<ArgumentError>()));
     });
   });
 
@@ -403,6 +492,7 @@ void main() {
         getOperatorFundingTx2(), issuance,
         hex.decode(getOperatorFundingTx().serialize()), operatorPub,
         operatorPubkeyHash, ShieldedPoolAction.CREATE,
+        slotParts: genesisSlot(genesisHeader()).parts, verifierBody: verifierBody,
       );
       expect(
           () => Interpreter().correctlySpends(witness.inputs[1].script!,
@@ -457,10 +547,11 @@ void main() {
           signerPKH: hex.decode(operatorPubkeyHash));
 
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
-          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash, slotTx: y0.tx);
       createWitness = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
-          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE,
+          slotParts: y0.parts, verifierBody: verifierBody);
     });
 
     // [unchecked] waives the build-time slot check, which the negative cases
@@ -727,18 +818,20 @@ void main() {
     setUp(() {
       opFunding = getOperatorFundingTx();
       cpFunding = getCounterpartyFundingTx();
-      slotTx = cpFunding; // only its outpoint matters to PP3
+      var y0 = genesisSlot(genesisHeader());
+      slotTx = y0.tx;
       var service = ShieldedPoolTool();
       tokenTx = service.createTokenIssuanceTxn(
         opFunding, DefaultTransactionSigner(sigHashAll, operatorPrivateKey),
         operatorPub, operatorAddress, verifierBodyHash, genesisHeader(),
-        outpoint(slotTx.hash, 0), cpFunding.hash,
+        y0.outpoint, cpFunding.hash, slotTx: y0.tx,
       );
       pp3Script = tokenTx.outputs[3].script;
       witnessTx = service.createWitnessTxn(
         DefaultTransactionSigner(sigHashAll, counterpartyPrivateKey),
         cpFunding, tokenTx, hex.decode(opFunding.serialize()), counterpartyPub,
         counterpartyPubkeyHash, ShieldedPoolAction.CREATE,
+        slotParts: y0.parts, verifierBody: verifierBody,
       );
       var parts = TransactionUtils()
           .computePartialHash(hex.decode(witnessTx.serialize()), 2);
@@ -1394,10 +1487,11 @@ void main() {
           signerPKH: hex.decode(operatorPubkeyHash));
 
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
-          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash, slotTx: y0.tx);
       createWitness = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
-          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE,
+          slotParts: y0.parts, verifierBody: verifierBody);
     });
 
     Transaction round(
@@ -1584,10 +1678,11 @@ void main() {
           anchorPKH: hex.decode(operatorPubkeyHash),
           signerPKH: hex.decode(operatorPubkeyHash));
       issuanceTx = service.createTokenIssuanceTxn(fundA, signer, operatorPub,
-          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash);
+          operatorAddress, verifierBodyHash, g, y0.outpoint, fundB.hash, slotTx: y0.tx);
       createWitness = service.createWitnessTxn(
           signer, fundB, issuanceTx, hex.decode(fundA.serialize()),
-          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE);
+          operatorPub, operatorPubkeyHash, ShieldedPoolAction.CREATE,
+          slotParts: y0.parts, verifierBody: verifierBody);
     });
 
     Transaction round(List<int> slot, {Transaction? slotTx, bool unchecked = false}) =>
@@ -1685,6 +1780,14 @@ void main() {
     });
   });
 }
+
+/// The genesis slot every fixture pool opens with: V for [g], answering to
+/// the operator, with the operator's anchor.
+({Transaction tx, List<int> outpoint, List<int> parts}) genesisSlot(PoolHeader g) =>
+    ShieldedPoolTool().buildSlotTxn(
+        header: g, verifierBody: verifierBody, fundingInput: slotFunding(0x10),
+        anchorPKH: hex.decode(operatorPubkeyHash),
+        signerPKH: hex.decode(operatorPubkeyHash));
 
 bool _same(List<int> a, List<int> b) {
   if (a.length != b.length) return false;

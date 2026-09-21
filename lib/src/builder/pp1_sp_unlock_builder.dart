@@ -116,10 +116,20 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
 
     switch (action!) {
       case ShieldedPoolAction.CREATE:
-        // Stack: [tokenRawTx, preImage, fundingOutpoint, witnessPadding, OP_0]
+        // Stack: [slotParts, vBody, tokenRawTx, preImage, fundingOutpoint,
+        //         witnessPadding, OP_0]
         //
         // tokenRawTx is first so it lands at the bottom, leaving every other
         // stack index unchanged for the phases after the anchor check.
+        // slotParts and vBody describe the genesis slot Y_0, which create
+        // certifies exactly as a round certifies the slot after it; they go
+        // below tokenRawTx for the same reason.
+        if (_slotParts == null || _verifierBody == null) {
+          throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR,
+              "Create needs the genesis slot's parts and the verifier body");
+        }
+        result.addData(Uint8List.fromList(_slotParts!));
+        result.addData(Uint8List.fromList(_verifierBody!));
         result.addData(Uint8List.fromList(_prevTokenTx!));
         result.addData(Uint8List.fromList(_preImage!));
         result.addData(Uint8List.fromList(_fundingOutpoint!));
