@@ -168,7 +168,7 @@ void main() {
     final preRoot1 = PreCommitment.root(air1[0], p1, p2);
     final tree = AggregationTree.uniform(PoolPublicInputs.count, const [],
         [(InnerShape(p1, air1[0]), preRoot1), (InnerShape(p2p, air2), PreCommitment.root(air2, p2p, p2))], 2,
-        ring: AnchorRing.pool, nullifierLevel: 1);
+        ring: AnchorRing.pool, nullifierLevel: 1, receiptSlots: 2);
     final progR = VerifierProgram.compileWide(tree, 15);
     // the round's commitments appended after the notes already in the pool
     // a pool holding one earlier subtree, so the round appends at index 1
@@ -178,10 +178,22 @@ void main() {
       paths.add(cm.subtreePath(j + s));
       cm.appendSubtree([for (final l in tree.subtreeLeavesOf(spendLanes, s)) l ?? MerkleFrontier.emptyLeaf]);
     }
+    // transfer 2 is the round's one deposit: two dummies, 500 sat in
     List<int> wide({List<int>? nfAfter}) => tree.widePublics(spendLanes,
-        rootBefore: before, rootAfter: cm.root, index: j, ring: ring, nfBefore: seg.before, nfAfter: nfAfter ?? seg.after);
-    List<List<int>> rowsR(List<int> w) => progR.witnessAll([proof2],
-        shapes: [InnerShape(p2p, air2)], widePublics: w, spendLanes: spendLanes, subtreePaths: paths, nullifierRoots: [seg.before, seg.after]);
+        rootBefore: before,
+        rootAfter: cm.root,
+        index: j,
+        ring: ring,
+        nfBefore: seg.before,
+        nfAfter: nfAfter ?? seg.after,
+        receiptTransfers: [2]);
+    List<List<int>> rowsR(List<int> w, {List<int> receipts = const [2]}) => progR.witnessAll([proof2],
+        shapes: [InnerShape(p2p, air2)],
+        widePublics: w,
+        spendLanes: spendLanes,
+        subtreePaths: paths,
+        nullifierRoots: [seg.before, seg.after],
+        receiptTransfers: receipts);
     final w = wide();
     expect(w.sublist(tree.nullifierOffset, tree.nullifierOffset + 8), seg.before);
     expect(checkTrace(progR.air(w), rowsR(w), chk), isNull);
@@ -194,6 +206,32 @@ void main() {
     expect(checkTrace(progR.air(other), rowsR(other), chk), isNotNull);
     final otherReal = [...w]..[3] ^= 1; // transfer 0's nf1, lane 3
     expect(checkTrace(progR.air(otherReal), rowsR(otherReal), chk), isNotNull);
+
+    // ---- receipts: each used slot is one deposit's note and amount, with dummy inputs
+    final ro = tree.receiptOffset;
+    expect(w.sublist(ro, ro + 8), spendLanes[2].sublist(PoolPublicInputs.idxCm1, PoolPublicInputs.idxCm1 + 8));
+    expect(w.sublist(ro + 8, ro + 11), [spendLanes[2][PoolPublicInputs.idxPubLo], spendLanes[2][PoolPublicInputs.idxPubHi], 1]);
+    expect(w.sublist(ro + 16, ro + 32), List.filled(16, 0), reason: 'the unused slot is zero');
+    List<int> withSlot(int r, List<int> cm, List<int> v) => [...w]
+      ..setRange(ro + 16 * r, ro + 16 * r + 8, cm)
+      ..setRange(ro + 16 * r + 8, ro + 16 * r + 16, v);
+    List<int> slotOf(int k) => [spendLanes[k][PoolPublicInputs.idxPubLo], spendLanes[k][PoolPublicInputs.idxPubHi], 1, 0, 0, 0, 0, 0];
+    List<int> cmOf(int k) => spendLanes[k].sublist(PoolPublicInputs.idxCm1, PoolPublicInputs.idxCm1 + 8);
+    String? receiptCheck(List<int> ww, List<int> receipts) => checkTrace(progR.air(ww), rowsR(ww, receipts: receipts), chk);
+    // natively, a receipt for a transfer with a real input is refused before proving
+    expect(() => tree.widePublics(spendLanes, rootBefore: before, rootAfter: cm.root, index: j, ring: ring,
+        nfBefore: seg.before, nfAfter: seg.after, receiptTransfers: [0]), throwsArgumentError);
+    // and in circuit: a receipt naming transfer 0, which spends two real notes
+    // (its amount is 0, so only the dummy rule can refuse it)
+    expect(receiptCheck(withSlot(1, cmOf(0), slotOf(0)), [2, 0]), isNotNull, reason: 'real inputs beside a receipt');
+    // a receipt whose commitment is not the deposit's note
+    expect(receiptCheck(withSlot(0, [...cmOf(2)]..[4] ^= 1, slotOf(2)), [2]), isNotNull, reason: 'another commitment');
+    // a receipt for more than the deposit brought in
+    expect(receiptCheck(withSlot(0, cmOf(2), [...slotOf(2)]..[0] += 1), [2]), isNotNull, reason: 'another amount');
+    // an unused slot carrying a commitment
+    expect(receiptCheck(withSlot(1, cmOf(2), [...slotOf(2)]..[2] = 0), [2]), isNotNull, reason: 'an unused slot is empty');
+    // one deposit behind two receipts
+    expect(receiptCheck(withSlot(1, cmOf(2), slotOf(2)), [2, 2]), isNotNull, reason: 'one transfer, one receipt');
 
     final proofR = StarkProver.prove(rootP, progR.air(w), rowsR(w), rng: Random(6), hash: sha);
     expect(StarkVerifierRef(rootP, progR.air(w), hash: sha).verify(proofR), isTrue);

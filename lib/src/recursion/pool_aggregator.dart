@@ -79,6 +79,10 @@ class PoolAggregation {
   /// so they cost no extra node (see [throughput]).
   final int? nullifierLevel;
 
+  /// Deposit receipts a round can carry, proved against their transfers by
+  /// the root (see [AggregationTree.receiptSlots]).
+  final int receiptSlots;
+
   /// Compiles every level's program and the root's. With [dryRun] the
   /// levels' preprocessed roots are zeros instead of real commitments
   /// (gigabytes at production size), which is enough to size the programs
@@ -90,7 +94,8 @@ class PoolAggregation {
       required this.rootLog,
       bool dryRun = false,
       this.anchorCheck = true,
-      this.nullifierLevel}) {
+      this.nullifierLevel,
+      this.receiptSlots = 0}) {
     if (levelSpec.isEmpty || levelSpec.any((l) => l.arity < 1)) throw ArgumentError('at least one level, arities >= 1');
     assert(anchorRing.size == PP1SpLegacyHeader.ringSize, 'the in-circuit ring is the header\'s');
     var shape = InnerShape(spendP, PoolSpendAir.air(PoolPublicInputs.zero()));
@@ -110,7 +115,8 @@ class PoolAggregation {
     tree = AggregationTree(PoolPublicInputs.count, const [], [for (int l = 0; l < levelSpec.length; l++) (levelShapes[l], preRoots[l])],
         [for (final l in levelSpec) l.arity],
         ring: ring,
-        nullifierLevel: nullifierLevel);
+        nullifierLevel: nullifierLevel,
+        receiptSlots: receiptSlots);
     root = VerifierProgram.compileWide(tree, rootLog);
   }
 
@@ -187,13 +193,17 @@ class PoolAggregation {
   /// With [nullifiers] level 2 also inserts the round's nullifiers (the
   /// TSL1 pool's arrangement): 128 walks per node, 57,046 of its 65,536
   /// periods, measured 2026-09-21.
-  static PoolAggregation throughput({bool dryRun = false, bool nullifiers = false}) => PoolAggregation(
+  ///
+  /// [receiptSlots] is the TSL1 pool's deposit limit per round, 8
+  /// (`PoolReceipt.maxPerRound`).
+  static PoolAggregation throughput({bool dryRun = false, bool nullifiers = false, int receiptSlots = 0}) => PoolAggregation(
       spendP: spendThroughputParams,
       levelSpec: throughputLevels,
       rootP: rootParams19,
       rootLog: 19,
       dryRun: dryRun,
-      nullifierLevel: nullifiers ? 1 : null);
+      nullifierLevel: nullifiers ? 1 : null,
+      receiptSlots: receiptSlots);
 
   int get transfers => tree.transfers;
   int get depth => levelSpec.length;
@@ -216,6 +226,9 @@ class PoolAggregation {
   /// ring of roots every real spend's anchor must be in. Returns the root
   /// proof and the wide publics it is bound to.
   ///
+  /// [receiptTransfers] are the round's deposit transfers in receipt order;
+  /// each must take money in, in BSV, with two dummy inputs.
+  ///
   /// With a [nullifierLevel], [nullifiers] is the pool's spent set, which
   /// this ADVANCES by the round's real inputs; pass a copy
   /// ([NullifierTree.copy]) and keep it only once the round is mined.
@@ -235,6 +248,7 @@ class PoolAggregation {
       required List<List<List<int>>> paths,
       required List<List<int>> ring,
       NullifierTree? nullifiers,
+      List<int> receiptTransfers = const [],
       Random? rng,
       NodeProver? level1,
       bool verbose = false}) async {
@@ -247,6 +261,8 @@ class PoolAggregation {
     // the insertions, node by node, in transfer order: each node's segment
     // starts where the previous one ended
     final spendLanes = [for (final p in publics) p.toLanes()];
+    // receipts are refused here, before any proving, not at the root
+    ReceiptSlot.chunks(spendLanes, receiptTransfers, receiptSlots);
     final segments = <NullifierSegment>[];
     if (nullifierLevel != null) {
       final per = _transfersPerNode(nullifierLevel!);
@@ -304,9 +320,20 @@ class PoolAggregation {
     }
     final nfRoots = segments.isEmpty ? null : [segments.first.before, for (final g in segments) g.after];
     final wide = tree.widePublics(spendLanes,
-        rootBefore: rootBefore, rootAfter: rootAfter, index: index, ring: ringOrNull, nfBefore: nfRoots?.first, nfAfter: nfRoots?.last);
+        rootBefore: rootBefore,
+        rootAfter: rootAfter,
+        index: index,
+        ring: ringOrNull,
+        nfBefore: nfRoots?.first,
+        nfAfter: nfRoots?.last,
+        receiptTransfers: receiptTransfers);
     final rows = root.witnessAll(curProofs,
-        shapes: shapes, widePublics: wide, spendLanes: spendLanes, subtreePaths: paths, nullifierRoots: nfRoots);
+        shapes: shapes,
+        widePublics: wide,
+        spendLanes: spendLanes,
+        subtreePaths: paths,
+        nullifierRoots: nfRoots,
+        receiptTransfers: receiptTransfers);
     final proof = StarkProver.prove(rootP, root.air(wide), rows, rng: rng, hash: sha);
     lap('root');
     return (proof, wide);

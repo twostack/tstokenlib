@@ -202,8 +202,19 @@ class AggregationTree {
   /// then pins the set's root before and after the round, and rebuilds that
   /// level's digests from the chunks it already pins (see [NullifierSegment]).
   final int? nullifierLevel;
+
+  /// Deposit receipts the round can carry (0: none). Each slot is two
+  /// pinned chunks, `[cm]` and `[lo, hi, used, 0 x 5]`, and the root proves
+  /// every used slot is exactly one transfer's: its first output
+  /// commitment, its signed amount, the BSV asset and two dummy inputs, no
+  /// transfer backing two slots. The dummies are a privacy rule: a deposit
+  /// is public, and real inputs beside it would put the depositor's name on
+  /// their earlier notes. Slots rather than a public commitment per
+  /// transfer because the root script pays per pinned chunk: all 256
+  /// cmOut1 chunks measured +203 KB of script, 8 slots are 16 chunks.
+  final int receiptSlots;
   AggregationTree(this.spendPublics, this.spendPreRoot, this.levels, this.arities,
-      {this.leafChunks = const [3, 4], this.ring, List<int>? freeChunks, this.nullifierLevel})
+      {this.leafChunks = const [3, 4], this.ring, List<int>? freeChunks, this.nullifierLevel, this.receiptSlots = 0})
       : freeChunks = freeChunks ?? ([if (ring != null) ring.anchorChunk, ...leafChunks]..sort()) {
     if (levels.isEmpty) throw ArgumentError('at least one aggregation level');
     if (arities.length != levels.length || arities.any((a) => a < 1)) throw ArgumentError('one arity per level');
@@ -216,13 +227,17 @@ class AggregationTree {
       if (nl < 0 || nl >= levels.length) throw ArgumentError('no level $nl');
       if (NullifierSegment.chunks.any(this.freeChunks.contains)) throw ArgumentError('the nullifier chunks must be public');
     }
+    if (receiptSlots < 0) throw ArgumentError('receipt slots');
+    if (receiptSlots > 0 && ReceiptSlot.pinnedSources.any(this.freeChunks.contains)) {
+      throw ArgumentError('a receipt reads the amount and flag chunks, which must be public');
+    }
   }
 
   /// The same [arity] at every level.
   AggregationTree.uniform(int spendPublics, List<int> spendPreRoot, List<(InnerShape, List<int>)> levels, int arity,
-      {List<int> leafChunks = const [3, 4], AnchorRing? ring, List<int>? freeChunks, int? nullifierLevel})
+      {List<int> leafChunks = const [3, 4], AnchorRing? ring, List<int>? freeChunks, int? nullifierLevel, int receiptSlots = 0})
       : this(spendPublics, spendPreRoot, levels, List.filled(levels.length, arity),
-            leafChunks: leafChunks, ring: ring, freeChunks: freeChunks, nullifierLevel: nullifierLevel);
+            leafChunks: leafChunks, ring: ring, freeChunks: freeChunks, nullifierLevel: nullifierLevel, receiptSlots: receiptSlots);
 
   /// Transfers under one node of level [l].
   int transfersPerNode(int l) => arities.sublist(0, l + 1).fold(1, (n, a) => n * a);
@@ -265,7 +280,7 @@ class AggregationTree {
   /// [index, 0 x 7] with index the first subtree's position, then the
   /// ring's roots when level 1 checks anchors, then the nullifier set's
   /// root before and after the round when a level inserts them.
-  int get roundChunks => 3 + (ring?.size ?? 0) + (nullifierLevel == null ? 0 : 2);
+  int get roundChunks => 3 + (ring?.size ?? 0) + (nullifierLevel == null ? 0 : 2) + 2 * receiptSlots;
   int get roundOffset => 8 * pinnedChunks * transfers;
 
   /// Where the ring's lanes start in the wide publics.
@@ -273,6 +288,9 @@ class AggregationTree {
 
   /// Where nfBefore's lanes start (nfAfter's follow).
   int get nullifierOffset => ringOffset + 8 * (ring?.size ?? 0);
+
+  /// Where the receipt slots start: slot r is 16 lanes from here + 16 r.
+  int get receiptOffset => nullifierOffset + (nullifierLevel == null ? 0 : 16);
 
   /// The root's wide public inputs: every transfer's reduced lanes
   /// ([reducedLanes]), then the round chunks.
@@ -282,7 +300,8 @@ class AggregationTree {
       required int index,
       List<List<int>>? ring,
       List<int>? nfBefore,
-      List<int>? nfAfter}) {
+      List<int>? nfAfter,
+      List<int> receiptTransfers = const []}) {
     if (spends.length != transfers) throw ArgumentError('$transfers transfers expected');
     if (rootBefore.length != 8 || rootAfter.length != 8) throw ArgumentError('8-lane roots');
     if (index < 0 || index + subtrees > 1 << mainDepth) throw ArgumentError('subtree index');
@@ -303,6 +322,7 @@ class AggregationTree {
         for (final x in ring) ...x,
       ...?nfBefore,
       ...?nfAfter,
+      for (final c in ReceiptSlot.chunks(spends, receiptTransfers, receiptSlots)) ...c,
     ];
   }
 
@@ -316,6 +336,59 @@ class AggregationTree {
             return spends[n].sublist(8 * c, 8 * c + 8);
           }()
       ];
+}
+
+/// A deposit receipt as the root states it (see [AggregationTree.receiptSlots]).
+class ReceiptSlot {
+  static const cmChunk = PoolPublicInputs.idxCm1 ~/ 8;
+  static const amountChunk = PoolPublicInputs.idxPubLo ~/ 8;
+  static const flagChunk = PoolPublicInputs.idxReal1 ~/ 8;
+  static const loLimb = PoolPublicInputs.idxPubLo % 8, hiLimb = PoolPublicInputs.idxPubHi % 8;
+  static const real1Limb = PoolPublicInputs.idxReal1 % 8, real2Limb = PoolPublicInputs.idxReal2 % 8;
+
+  /// The pinned statement chunks a receipt reads (cmOut1 is a witness chunk
+  /// the spend's digest already binds).
+  static const pinnedSources = [amountChunk, flagChunk];
+
+  /// The slot's second chunk: `[lo, hi, used]`.
+  static const loLane = 0, hiLane = 1, usedLane = 2;
+
+  static void _check() {
+    assert(loLimb < 4 && hiLimb < 4 && real1Limb < 4 && real2Limb < 4, 'the limbs sit in the chunks\' first halves');
+    assert(PoolPublicInputs.idxAsset % 8 == 4 && PoolPublicInputs.idxAsset ~/ 8 == flagChunk, 'the asset is the flag chunk\'s second half');
+  }
+
+  /// Whether transfer lanes [l] may back a receipt: money in, BSV, no real input.
+  static String? refusal(List<int> l) {
+    final p = PoolPublicInputs.fromLanes(l);
+    if (p.publicOut >= 0) return 'takes no money in';
+    if (p.real1 || p.real2) return 'spends a real note beside a deposit, which would name the depositor as its owner';
+    for (int i = 0; i < PoolHash.assetLanes; i++) {
+      if (p.asset[i] != PoolHash.bsvAsset[i]) return 'is not in BSV';
+    }
+    return null;
+  }
+
+  /// The slots' chunks for deposits [transfers] (indices into [spends], in
+  /// receipt order), unused slots zero.
+  static List<List<int>> chunks(List<List<int>> spends, List<int> transfers, int slots) {
+    _check();
+    if (transfers.length > slots) throw ArgumentError('${transfers.length} receipts, $slots slots');
+    if (transfers.toSet().length != transfers.length) throw ArgumentError('a transfer backs one receipt');
+    final out = <List<int>>[];
+    for (int r = 0; r < slots; r++) {
+      if (r >= transfers.length) {
+        out.addAll([List.filled(8, 0), List.filled(8, 0)]);
+        continue;
+      }
+      final l = spends[transfers[r]];
+      final why = refusal(l);
+      if (why != null) throw ArgumentError('transfer ${transfers[r]} $why');
+      out.add(l.sublist(PoolPublicInputs.idxCm1, PoolPublicInputs.idxCm1 + 8));
+      out.add([l[PoolPublicInputs.idxPubLo], l[PoolPublicInputs.idxPubHi], 1, 0, 0, 0, 0, 0]);
+    }
+    return out;
+  }
 }
 
 /// The nullifiers a digest-mode node inserts into the pool's
@@ -448,6 +521,7 @@ class VerifierProgram {
       List<List<List<int>>>? subtreePaths,
       NullifierSegment? nullifiers,
       List<List<int>>? nullifierRoots,
+      List<int> receiptTransfers = const [],
       List<List<List<int>>>? forgedAfterPaths}) {
     shapes ??= this.shapes;
     if (proofs.length != shapes.length) throw ArgumentError('${shapes.length} inner proofs expected');
@@ -467,6 +541,7 @@ class VerifierProgram {
         nullifierTransfers: nullifierTransfers,
         nullifiers: nullifiers,
         nullifierRoots: nullifierRoots,
+        receiptTransfers: receiptTransfers,
         forgedAfterPaths: forgedAfterPaths);
     b.build();
     for (int c = 0; c < VerifierProgramColumns.count; c++) {
@@ -535,6 +610,9 @@ class VerifierProgramBuilder {
   /// the inserting level's nodes (nodes + 1 roots, first and last public).
   final List<List<int>>? nullifierRoots;
 
+  /// Wide mode, witness: the transfer behind each used receipt slot.
+  final List<int> receiptTransfers;
+
   /// Tests only, see [VerifierProgram.witnessAll].
   final List<List<List<int>>>? forgedAfterPaths;
   final VerifierProgramColumns columns;
@@ -551,6 +629,7 @@ class VerifierProgramBuilder {
       this.nullifierTransfers = 0,
       this.nullifiers,
       this.nullifierRoots,
+      this.receiptTransfers = const [],
       this.forgedAfterPaths})
       : columns = VerifierProgramColumns(1 << logTrace);
 
@@ -899,6 +978,23 @@ class VerifierProgramBuilder {
   }
 
   /// The two K4 wires of a period's high half (lanes 8..11, 12..15).
+  /// A period's high input half as two K4 wires produced at row 1 (lanes
+  /// 8..11, 12..15), leaving row 0's operands free for a K8 wire of the same
+  /// half (a leaf, or the nullifier chain).
+  (Wire, Wire) _hiHalvesNext(_Period p, String label) {
+    if (p.prodNextA != null) return (p.prodNextA!, p.prodNextB!);
+    List<int> lanes(int from) {
+      _simulate(p);
+      return p._input!.sublist(from, from + 4);
+    }
+
+    final a = Wire(4, '${label}a', () => lanes(8)), b = Wire(4, '${label}b', () => lanes(12));
+    b.tagOffset = VerifierAir.tagP2Offset;
+    p.prodNextA = a;
+    p.prodNextB = b;
+    return (a, b);
+  }
+
   (Wire, Wire) _hiWires(_Period p, String label) {
     final wa = Wire(4, '${label}a', () => p._input!.sublist(8, 12));
     final wb = Wire(4, '${label}b', () => p._input!.sublist(12, 16));
@@ -1169,6 +1265,61 @@ class VerifierProgramBuilder {
     assertEq(sb, f.mul(r, b0));
   }
 
+  /// Every used receipt slot is exactly one transfer's first output
+  /// commitment and signed amount, in BSV, with no real input; no transfer
+  /// backs two. A selector bit per (slot, transfer) from a hint picks it, as
+  /// [_anchorInRing] picks a root: the bits of a slot sum to its used flag,
+  /// and each selected quantity summed equals the slot's.
+  void _receipts(AggregationTree t, List<List<_Period>> stChunks, int firstChunk) {
+    final n = t.transfers;
+    final cmA = <Wire>[], cmB = <Wire>[], lo = <Wire>[], hi = <Wire>[], real = <Wire>[], asset = <Wire>[];
+    for (int k = 0; k < n; k++) {
+      final (ca, cb) = _hiHalvesNext(stChunks[k][ReceiptSlot.cmChunk], 'rc$k');
+      final (aa, _) = _hiHalvesNext(stChunks[k][ReceiptSlot.amountChunk], 'ra$k');
+      final (fa, fb) = _hiHalvesNext(stChunks[k][ReceiptSlot.flagChunk], 'rf$k');
+      cmA.add(ca);
+      cmB.add(cb);
+      lo.add(f.limb(aa, ReceiptSlot.loLimb));
+      hi.add(f.limb(aa, ReceiptSlot.hiLimb));
+      real.add(f.add(f.limb(fa, ReceiptSlot.real1Limb), f.limb(fa, ReceiptSlot.real2Limb)));
+      asset.add(fb);
+    }
+    final bsv = f.constQ(QM31.fromLimbs(PoolHash.bsvAsset[0], PoolHash.bsvAsset[1], PoolHash.bsvAsset[2], PoolHash.bsvAsset[3]));
+    final perTransfer = List<Wire?>.filled(n, null);
+    for (int r = 0; r < t.receiptSlots; r++) {
+      final (sA, sB) = _hiHalvesNext(_pinnedChunk(firstChunk + 2 * r), 'slotCm$r');
+      final (vA, _) = _hiHalvesNext(_pinnedChunk(firstChunk + 2 * r + 1), 'slotV$r');
+      final used = f.limb(vA, ReceiptSlot.usedLane);
+      assertZero(f.sub(f.mul(used, used), used));
+      final rr = r;
+      final sel = [
+        for (int k = 0; k < n; k++)
+          bitHint('rs${r}_$k', () => rr < receiptTransfers.length && receiptTransfers[rr] == k ? 1 : 0)
+      ];
+      Wire sum(Wire Function(int) term) {
+        var acc = term(0);
+        for (int k = 1; k < n; k++) {
+          acc = f.add(acc, term(k));
+        }
+        return acc;
+      }
+
+      assertEq(sum((k) => sel[k]), used);
+      assertEq(sum((k) => f.mul(sel[k], cmA[k])), sA);
+      assertEq(sum((k) => f.mul(sel[k], cmB[k])), sB);
+      assertEq(sum((k) => f.mul(sel[k], lo[k])), f.limb(vA, ReceiptSlot.loLane));
+      assertEq(sum((k) => f.mul(sel[k], hi[k])), f.limb(vA, ReceiptSlot.hiLane));
+      assertZero(sum((k) => f.mul(sel[k], real[k])));
+      assertEq(sum((k) => f.mul(sel[k], asset[k])), f.mul(used, bsv));
+      for (int k = 0; k < n; k++) {
+        perTransfer[k] = perTransfer[k] == null ? sel[k] : f.add(perTransfer[k]!, sel[k]);
+      }
+    }
+    for (final q in perTransfer) {
+      if (t.receiptSlots > 1) assertZero(f.sub(f.mul(q!, q), q));
+    }
+  }
+
   void _buildWide() {
     final t = tree!;
     final digests0 = <Wire>[], leaves = <Wire>[];
@@ -1203,6 +1354,9 @@ class VerifierProgramBuilder {
       }
       nfWires.add(_hi8(_pinnedChunk(c0 + 1), 'nfAfter'));
     }
+    // the receipt slots, pinned after the nullifier roots
+    if (t.receiptSlots > 0) _receipts(t, stChunks, t.receiptOffset ~/ 8);
+
     List<Wire> nullifierTail(int m) {
       final per = t.transfersPerNode(nl!);
       return [

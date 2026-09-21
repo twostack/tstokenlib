@@ -295,8 +295,9 @@ One header push, then the existing verifier program, then a tail that:
 | nfRoot | nfBefore, nfAfter | equal to header_N's and header_{N+1}'s (10.1) |
 | balance | each transfer's signed amount | summed in script, BSV only, then step 4 |
 | outHash | nothing yet | open, see below |
+| (receipts) | receipt slots | per used slot, the receipt output's cm equals the slot's and its value equals minus the slot's amount; unused slots zero (7.1) |
 
-Two gaps remain before V can be written. A receipt's commitment cannot be tied to a deposit transfer, because the commitments are free chunks kept inside the proofs; one of them has to become public, or the circuit has to expose a deposit's. And each transfer's own outHash is still SHA-256 of its extra outputs, payees and the ciphertext OP_RETURN together, which this design moved into the witness; it has to be redefined, likely as the withdrawal record plus a hash of the bundle, which would also give header.outHash a source.
+One gap remains before V can be written. Each transfer's own outHash is still SHA-256 of its extra outputs, payees and the ciphertext OP_RETURN together, which this design moved into the witness; it has to be redefined, likely as the withdrawal record plus a hash of the bundle, which would also give header.outHash a source.
 
 V does not push round N. It knows header_N because it embeds it, and it knows header_N is real because PP1_N checked the embedding in witness N, and PP3_N being spendable proves witness N exists.
 
@@ -357,6 +358,12 @@ Rounds chain at zero confirmations as TSL1 transfers do. Y transactions are cont
 **Withdrawals** are P2PKH outputs of the round. The proof's publics carry the (pkh, amount) list; V rebuilds the outputs and checks the list is present exactly. A coordinator fee can be a withdrawal to the coordinator, proved like any other.
 
 **Deposits** are covenant outputs made by the depositor. The covenant, spent at input i of a round, requires with SIGHASH_SINGLE that output i be the receipt `OP_FALSE OP_RETURN cm_d value_d` for its own commitment and value, and requires hashPrevouts to contain (round N, 3) for the round it targets. An OR branch refunds the depositor after a timelock. Unlocking data is a preimage only.
+
+**The receipt is proved against its note, BUILT 2026-09-21.** The root pins up to eight receipt slots after the nullifier roots, each `[cm]` and `[lo, hi, used]`, and proves every used slot is exactly one transfer's: its first output commitment, its signed amount, the BSV asset, and two dummy inputs, with no transfer behind two slots (`AggregationTree.receiptSlots`, `_receipts` in `verifier_program.dart`). A selector bit per slot and transfer picks it, the technique the anchor ring check uses. So a coordinator cannot take a deposit and mint its note to someone else: the depositor's covenant forces a receipt naming their commitment, and the proof forces that commitment into the tree.
+
+**Deposits spend no real note.** A deposit is public: the depositor's input, the amount and the commitment are all on chain. Real inputs in the same transfer would put the depositor's name on those notes too, and on the earlier history their nullifiers close. The circuit refuses a receipt whose transfer has any real input. Wallets therefore deposit with two dummy inputs and put the new note in the first output. The rule binds exactly the transfers that back receipts, which every user deposit does through its covenant; a coordinator paying in without a receipt is donating, and only exposes itself.
+
+**Why slots and not a public commitment per transfer.** Publishing the commitments costs no privacy, since every commitment is already in plaintext in the note bundles for wallets to build paths from. It costs script: pinning cmOut1 for all 256 transfers measured +203 KB of root verifier, paid twice a round. Eight slots measured +12.7 KB (1,595,294 to 1,607,962 B) and 16 root periods.
 
 V requires the balance to move by exactly the receipt total. If the coordinator omits a deposit from the receipt list, that covenant's SIGHASH_SINGLE check fails and the round is invalid. If the coordinator adds a receipt with no matching deposit input, the balance must still rise by that amount and consensus requires the coordinator's funding input to cover it. The coordinator can donate but not take.
 

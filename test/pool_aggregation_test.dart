@@ -119,6 +119,22 @@ void main() {
     expect(wide.sublist(at + 8, at + 16), working.root, reason: 'nfRoot after is the set with the round\'s spends in it');
     expect(working.size, spent.size + agg.transfers, reason: 'one real input per transfer, dummies not inserted');
     expect(StarkVerifierRef(rootP, agg.rootAir(wide), hash: sha).verify(proof), isTrue);
+    // a receipt for a transfer that spends a real note is refused before any proving
+    final strict = PoolAggregation(
+        spendP: spendP,
+        levelSpec: const [
+          AggregationLevel(params: l1, logTrace: 16, arity: 3),
+          AggregationLevel(params: l2, logTrace: 17, arity: 2),
+        ],
+        rootP: rootP,
+        rootLog: 16,
+        nullifierLevel: 1,
+        receiptSlots: 2);
+    expect(
+        () => strict.aggregate(publics, proofs,
+            rootBefore: rootBefore, rootAfter: cmTree.root, index: j, paths: paths, ring: ring, nullifiers: working.copy(),
+            receiptTransfers: [0], rng: rng),
+        throwsArgumentError);
     // the same round again, against the set that now holds its nullifiers
     expect(
         () => agg.aggregate(publics, proofs,
