@@ -1,30 +1,38 @@
 # pool-coordinator Specification
 
 ## Purpose
-The tool that runs a pool: issues and opens it, collects transfers into rounds, keeps the ledger (tree, nullifier set, vault, header), builds the round transactions, and the reader that rebuilds the same ledger from the chain.
+The coordinator's side of the TSL1_SP pool: issuing and opening a pool, taking accepted transfers and deposit covenants into rounds, proving each round's aggregation, and building and funding the three transactions a round is (the slot transaction Y, the round, and its witness). The ledger a coordinator keeps and the reader a wallet uses are `pool-ledger`; the transfer is `pool-transfer`.
 
 ## Requirements
 
 ### Requirement: Issuance and genesis
-The tool SHALL create the issuance transaction and the genesis transaction (the first state output with an empty tree, empty nullifier set and the initial vault), signed by the operator with the Rabin identity binding of TSL1.
+The tool SHALL create a pool's issuance (the TSL1 token transaction carrying the genesis header, whose PP3 pins Y_0), the slot transaction Y_0 carrying the verifier for the genesis header, and witness 0, which certifies Y_0; and the coordinator SHALL open its ledger from those three, reaching the genesis header with empty trees.
 
 #### Scenario: Fresh pool
-- **WHEN** genesis is created
-- **THEN** the ledger starts with size 0, the empty ring and an empty nullifier set
+- **WHEN** a pool is issued and its coordinator opened
+- **THEN** the coordinator's ledger has size 0, the genesis header, and the issuance, witness 0 and Y_0 as its tip
 
 ### Requirement: Rounds
-Given submitted transfers (publics, proof, extra outputs, optional issuer authorisation) the tool SHALL check each transfer's outHash against its extra outputs, insert the real nullifiers, append the commitments as whole subtrees, compute the vault after the round, prove the aggregation (aggregated mode) and assemble the round transaction with the funding inputs of deposits signed. A running coordinator SHALL have verified every transfer's proof at intake, so the round builder does not verify spend proofs again.
+Given the transfers accepted into a round, the coordinator SHALL fill the round to the plan's size with padding, prove the aggregation with the ledger's trees and ring, and build three transactions in order: the slot transaction Y_{N+1} carrying the new header, round N+1 spending the tip's Y at input 2, its PP3 at input 3, Y_{N+1}'s anchor at input 4 and each deposit covenant after, with the receipts then the withdrawals as its output tail; and witness N+1 carrying the round's bundles. The coordinator SHALL apply the three to its own ledger with the same checks a reader makes and SHALL NOT publish a round its ledger refuses. A running coordinator SHALL have verified every transfer's proof at intake, so the round builder does not verify spend proofs again.
+
+#### Scenario: A round from the test chain's transfers
+- **WHEN** the coordinator closes a round of the fixture's round-1 transfers and deposit
+- **THEN** it builds Y_1, round 1 and witness 1, its ledger reaches header 1, and a reader given the three reaches the same header
 
 #### Scenario: Extra outputs mismatch
-- **WHEN** a transfer's extra outputs do not hash to its outHash
-- **THEN** the round is refused before any proving
+- **WHEN** a transfer's bundle or withdrawal does not hash to its outHash
+- **THEN** the transfer is refused at intake, before any proving
 
 #### Scenario: Verified at intake
 - **WHEN** a transfer reaches the round builder through the coordinator's intake
 - **THEN** its proof was verified once, at intake
 
+#### Scenario: A round the ledger refuses is not published
+- **WHEN** the built round does not apply to the coordinator's ledger
+- **THEN** nothing is published, the ledger is unchanged, and the failure names the check
+
 ### Requirement: Padding supply
-The tool SHALL keep a stock of padding transfers, fill it ahead of time on request, and fill a short aggregated round from it, proving any shortfall on the spot; a short round without a supply SHALL be refused. A running coordinator SHALL refill the stock between rounds. A padding transfer SHALL pay its two zero-value outputs to the one public padding note (zero address and randomness), so its commitments are a constant every reader knows.
+The coordinator SHALL keep a stock of padding transfers, fill it ahead of time on request, and fill a short round from it, proving any shortfall on the spot; a short round without a supply SHALL be refused. A padding transfer SHALL pay its two zero-value outputs to the one public padding note (zero address and randomness) with an empty bundle, so its commitments are a constant every reader knows.
 
 #### Scenario: Stock consumed
 - **WHEN** three padding transfers are needed and two are in stock
@@ -35,23 +43,38 @@ The tool SHALL keep a stock of padding transfers, fill it ahead of time on reque
 - **THEN** the stock is refilled to its configured level
 
 #### Scenario: Padding leaves
-- **WHEN** a reader applies an aggregated round with padding transfers
-- **THEN** it places the padding note's commitment at each of their leaf positions and reaches the round's rootAfter
+- **WHEN** a reader applies a round the coordinator padded
+- **THEN** it places the padding note's commitment at each padding transfer's leaf positions and reaches the round's header
 
-### Requirement: Chain reader
-A reader SHALL rebuild the ledger from the genesis transaction and the round transactions alone (publics from the slot unlocks, cross-checked against the results), reaching the same header, tree root, nullifier root and vault as the coordinator, and flagging padding transfers. In aggregated mode the reader SHALL take the round's commitments from the note-data outputs (each bundle carries its commitment; a transfer's extra outputs are the run of outputs its outHash commits to) rather than from the public lanes, take a padding transfer's two commitments as the padding note's constant, and SHALL check that the tree it rebuilds reaches the round's rootAfter.
+### Requirement: Deposits by covenant
+A deposit SHALL reach a round as a transfer of the deposit shape together with the mined transaction holding the depositor's covenant. The coordinator SHALL accept the deposit only if the covenant names the pool's live PP3 (the tip round's output 3), its receipt equals the transfer's receipt (first commitment and value), and its refund height is at least the configured margin ahead; SHALL refuse it, naming the reason, otherwise; SHALL take at most the plan's receipt slots (8) into a round; and SHALL refuse a deposit whose covenant names a PP3 the pending or an in-flight round spends, telling the wallet to deposit against the new tip.
 
-#### Scenario: Reader agreement
-- **WHEN** a reader applies the rounds the coordinator built
-- **THEN** its ledger's header bytes equal the coordinator's
+#### Scenario: The fixture's deposit
+- **WHEN** the fixture's deposit transfer arrives with its covenant transaction
+- **THEN** it is accepted, and the round carries its receipt at output 5 and the covenant at input 5
 
-#### Scenario: Commitments from bundles
-- **WHEN** an aggregated round's note-data outputs are read
-- **THEN** the commitments they carry, with the padding constant for padding transfers, rebuild the subtree whose root matches the round's rootAfter
+#### Scenario: A deposit for the previous round
+- **WHEN** a covenant naming the PP3 of a round already closed arrives
+- **THEN** it is refused as targeting a spent round
 
-### Requirement: Note data on chain
-Each transfer's extra outputs SHALL begin with its note-data output (the ciphertext bundles of its output notes), so wallets scan rounds for their notes, followed by any payouts.
+#### Scenario: A receipt that is not the transfer's
+- **WHEN** a covenant's commitment differs from the transfer's first output commitment
+- **THEN** it is refused as not matching the transfer
 
-#### Scenario: Wallet scan
-- **WHEN** a wallet scans a round with its incoming viewing key
-- **THEN** it recovers the plaintexts of notes addressed to it and nothing else
+### Requirement: Funding and fees
+Each of Y, the round and the witness SHALL spend one funding output the coordinator is given, and the coordinator SHALL price each from its own size at the configured rate (satoshis per kB) with a floor, ask for an output of at least the value that covers it, and build the transaction again with the exact fee, since the round's size does not depend on its fee. A coordinator without funding SHALL refuse to close a round before proving anything.
+
+#### Scenario: Priced from size
+- **WHEN** a round is built at 1 sat/kB
+- **THEN** each of its three transactions pays at least its size times the rate and at least the floor
+
+#### Scenario: No funding
+- **WHEN** the funding source cannot supply an output
+- **THEN** the round is refused before aggregation, and the pending transfers stay pending
+
+### Requirement: Publishing order
+The coordinator SHALL hand the three transactions to its store before publishing any of them, and SHALL publish Y first, then the round, then the witness, since the round spends Y's anchor and the witness spends the round.
+
+#### Scenario: Stored before published
+- **WHEN** a round is closed
+- **THEN** the store receives Y, the round and the witness before the first publish call, and the publish calls come in that order
