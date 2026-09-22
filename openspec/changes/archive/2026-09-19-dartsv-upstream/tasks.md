@@ -12,4 +12,4 @@
 ## 3. Depend on the published version
 
 - [x] 3.1 Move `pubspec.yaml` to the published `dartsv` version, remove the path override from the workflow and rewrite the README's dartsv section accordingly; verify `dart pub get` resolves the published version with no `pubspec_overrides.yaml` present and the full suite passes.
-- [x] 3.2 Update the dartsv open item in `docs/ZK_SHIELDED_POOL_DESIGN.md` to point at the published version and the tests.
+- [x] 3.2 Update the dartsv open item in `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md` to point at the published version and the tests.

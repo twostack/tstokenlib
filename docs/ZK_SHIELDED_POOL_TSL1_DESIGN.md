@@ -4,7 +4,7 @@ Speculative design for hosting the Circle-STARK shielded pool inside an unmodifi
 
 **Status:** design only. Nothing here is built. Every size is an estimate assembled from measured parts unless the text says it was measured whole. Section 11 lists what is unknown and what would break the design if it turned out the wrong way. Section 12 gives the two tests that would settle it.
 
-Companions: [ARCHITECTURE.md](ARCHITECTURE.md) for TSL1 itself, [ZK_SHIELDED_POOL_DESIGN.md](ZK_SHIELDED_POOL_DESIGN.md) for the pool's circuits, prover, aggregation and the measured history, including the section that records the clone.
+Companions: [ARCHITECTURE.md](ARCHITECTURE.md) for TSL1 itself, [LEGACY_ZK_SHIELDED_POOL_DESIGN.md](LEGACY_ZK_SHIELDED_POOL_DESIGN.md) (the original pool design, which this document supersedes) for the pool's circuits, prover, aggregation and the measured history, including the section that records the clone.
 
 ---
 

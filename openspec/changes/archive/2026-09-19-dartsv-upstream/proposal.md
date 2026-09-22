@@ -28,5 +28,5 @@ Investigation while applying this change found that the set is not the one this 
 
 ## Impact
 
-- `../../dartsv` (commits on `master`, version bump, changelog, publish), `pubspec.yaml` (published version constraint), `README.md` and the dartsv open item in `docs/ZK_SHIELDED_POOL_DESIGN.md`.
+- `../../dartsv` (commits on `master`, version bump, changelog, publish), `pubspec.yaml` (published version constraint), `README.md` and the dartsv open item in `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md`.
 - Numbers: none; the check is that this repository's full suite passes against the published dartsv with no path override.

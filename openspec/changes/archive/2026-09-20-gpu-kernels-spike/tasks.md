@@ -21,10 +21,10 @@
 
 ## 5. Measurement
 
-- [x] 5.1 `tool/scratch/kernel_bench.dart` gains a `gpu` argument: at level-1 size (79 columns, 2^20 coefficients on 2^23, m = 22) record CPU and GPU seconds for evaluate, Poseidon2 commit and interpolate, and peak RSS for each; the six timings and the memory go in the "GPU kernels on Apple Silicon (measured)" section of `docs/ZK_SHIELDED_POOL_DESIGN.md`.
+- [x] 5.1 `tool/scratch/kernel_bench.dart` gains a `gpu` argument: at level-1 size (79 columns, 2^20 coefficients on 2^23, m = 22) record CPU and GPU seconds for evaluate, Poseidon2 commit and interpolate, and peak RSS for each; the six timings and the memory go in the "GPU kernels on Apple Silicon (measured)" section of `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md`.
 - [x] 5.2 `tool/scratch/node_prove.dart` with the switch on: the level-1 node's seconds and the prover's laps for trace interpolation, trace LDE + Merkle and composition LDE + Merkle against the CPU's 10.5 s node (0.8, 1.5, 2.2 s), and peak RSS against 8.7 GB; recorded in the same section, with the verdict against the bar (the three stages under 1.5 s together).
 - [x] 5.3 If the node improves by at least 1.5x: `tool/scratch/round_throughput.dart 16` with the switch on, recording round seconds and the serial tail (levels 2 to 4 plus root, 171 s on the CPU) in the same section.
 
 ## 6. Documentation
 
-- [x] 6.1 Add "GPU kernels on Apple Silicon (measured)" to `docs/ZK_SHIELDED_POOL_DESIGN.md`: what runs on the GPU and how it is switched on, the kernel and node numbers, memory, whether the spike passes its bar or why not, and the follow-on list (composition, DEEP, FRI, LogUp, the SHA256 root; a portable backend).
+- [x] 6.1 Add "GPU kernels on Apple Silicon (measured)" to `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md`: what runs on the GPU and how it is switched on, the kernel and node numbers, memory, whether the spike passes its bar or why not, and the follow-on list (composition, DEEP, FRI, LogUp, the SHA256 root; a portable backend).

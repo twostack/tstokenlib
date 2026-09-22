@@ -18,4 +18,4 @@
 ## 4. Entry point and documentation
 
 - [x] 4.1 Add `bin/pool_coordinator.dart` reading a config file and wiring an in-memory publish callback (real transport later); verify it starts against a test pool and prints its mode and ledger.
-- [x] 4.2 Add the "Coordinator service (built)" section to `docs/ZK_SHIELDED_POOL_DESIGN.md`.
+- [x] 4.2 Add the "Coordinator service (built)" section to `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md`.

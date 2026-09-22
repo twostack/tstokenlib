@@ -16,5 +16,5 @@
 
 ## 4. Documentation
 
-- [x] 4.1 Add the "A prover pool for level 1 (built)" section to `docs/ZK_SHIELDED_POOL_DESIGN.md` and update the pool-aggregation spec's scenarios if the measured numbers differ from the proposal.
+- [x] 4.1 Add the "A prover pool for level 1 (built)" section to `../../../../docs/LEGACY_ZK_SHIELDED_POOL_DESIGN.md` and update the pool-aggregation spec's scenarios if the measured numbers differ from the proposal.
 - [x] 4.2 Reframe from "edge proving by wallets" to the coordinator's own prover pool: rename `edge_proving.dart` to `prover_pool.dart`, `EdgeScheduler` to `ProverPool`, workers to provers and members; reword the doc comments, the design-doc section and this change's artifacts; record why wallets do not fold nodes.
