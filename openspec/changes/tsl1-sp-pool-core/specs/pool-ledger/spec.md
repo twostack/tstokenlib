@@ -46,11 +46,19 @@ A reader SHALL rebuild a ledger from a pool's issuance, witness 0, and every (ro
 - **THEN** the reader applies round 1, refuses round 2, and reports round 1 as its last
 
 ### Requirement: Snapshot
-A ledger SHALL serialise to bytes and restore to an equal ledger (header, both trees, tip), so a coordinator or wallet can restart without re-reading every round. A restored ledger SHALL apply the next round exactly as the original would.
+A ledger SHALL serialise to bytes and restore to an equal ledger (header, both trees, tip), so a coordinator or wallet can restart without re-reading every round. A restored ledger SHALL apply the next round exactly as the original would. The snapshot SHALL begin with a format version and a decoder SHALL refuse a version it does not know. Restoring SHALL check the rebuilt roots against the stored header and refuse a snapshot that does not reach them, so a corrupted or edited file is refused rather than loaded.
 
 #### Scenario: Restart
 - **WHEN** a ledger is serialised after round 1, restored, and given round 2
 - **THEN** it reaches the same header as a ledger that never stopped
+
+#### Scenario: Edited snapshot
+- **WHEN** one leaf in a snapshot is changed
+- **THEN** restoring it is refused, because the rebuilt root is not the header's
+
+#### Scenario: Restore time
+- **WHEN** a snapshot of 1,000 production rounds (512,000 leaves and their nullifiers) is restored
+- **THEN** it takes under 10 s on one core
 
 ### Requirement: Note scanning
 Given an incoming viewing key, a scanner SHALL return, for each round applied, the notes addressed to that key: the plaintext, the commitment, its leaf position, and the round it arrived in. It SHALL only decrypt bundles the ledger accepted (so their hash chain to the header's outHash is checked), SHALL discard a note whose plaintext does not reproduce its commitment, and SHALL return no note for a key the round did not pay. Given the nullifier key as well, it SHALL report a note spent from the round its nullifier enters the tree.
@@ -77,3 +85,39 @@ For any leaf the ledger holds, the ledger SHALL give its Merkle path against the
 #### Scenario: Anchor ageing out
 - **WHEN** a root was current four rounds ago
 - **THEN** the ledger reports it no longer in the ring, so a spend anchored to it would be refused
+
+### Requirement: No keys, no trust
+Reading the chain SHALL need no key of any kind and no statement from the coordinator: given the same mined transactions, any party SHALL reach the same ledger, and a coordinator's claim about the pool's state SHALL be checkable against it. Two ledgers that applied the same rounds SHALL serialise to identical bytes.
+
+#### Scenario: Two independent readers
+- **WHEN** a wallet and a coordinator each read the test chain from the same transactions
+- **THEN** their snapshots are byte-identical
+
+### Requirement: Malformed chain data
+A round, witness or slot transaction given to the ledger SHALL be treated as unverified input, since a wallet may fetch it from any source. Anything malformed (a truncated unlock, a push of the wrong size, a bundle blob whose lengths overrun, a transaction of the wrong shape) SHALL end in a refusal naming what was wrong, never any other failure, and SHALL leave the ledger unchanged.
+
+#### Scenario: Truncated witness
+- **WHEN** witness 1 of the test chain is given with its bundles push cut short
+- **THEN** the round is refused as malformed and the ledger keeps its previous state
+
+#### Scenario: Mutated round
+- **WHEN** 1,000 single-byte mutations of round 1 are each applied to a fresh genesis ledger
+- **THEN** each is refused or, if the mutation leaves the round well formed and consistent, applied, and none raises any other error
+
+### Requirement: Scanning stays local
+Finding, decrypting and tracking a wallet's notes SHALL need nothing beyond round data the wallet already holds and the wallet's own keys, so a wallet can fetch whole rounds, as every wallet does, and reveal to no one which notes, keys or addresses are its own. The scanner SHALL make no request of any party and SHALL return its results only to its caller.
+
+#### Scenario: Offline scan
+- **WHEN** a wallet scans the test chain's rounds read from files, with no network available
+- **THEN** it finds the same notes as when the rounds were fetched
+
+### Requirement: Performance bounds
+On one core of the coordinator's machine: applying one production round (256 transfers) SHALL take under 5 s, excluding fetching; scanning one production round for one diversifier SHALL take under 5 s; checking a transfer's self-consistency is bounded by pool-transfer's Untrusted input requirement. These bounds hold for readers and wallets that apply every round as it is mined, so a round must be applied in well under the time between rounds.
+
+#### Scenario: Reader keeps up
+- **WHEN** a production round from the localnet production chain is applied
+- **THEN** it takes under 5 s on one core
+
+#### Scenario: Scanner keeps up
+- **WHEN** a production round's 512 hybrid bundles are scanned for one diversifier
+- **THEN** it takes under 5 s on one core

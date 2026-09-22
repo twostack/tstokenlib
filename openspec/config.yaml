@@ -23,7 +23,7 @@ context: |
   tool, chain reader), lib/src/builder (lock/unlock builders), templates/sp (exported
   script templates, regenerate with `dart run tool/export_templates.dart` whenever a
   generator changes; test/template_sync_test.dart checks them), docs/
-  ZK_SHIELDED_POOL_DESIGN.md (the running design record: every built or measured
+  ZK_SHIELDED_POOL_TSL1_DESIGN.md (the running design record: every built or measured
   step has a dated section; append, do not rewrite) and docs/SHIELDED_POOL_EXPLAINED.md
   (plain-language explainer). tool/scratch (excluded from git) holds measurement
   scripts; keep new ones there.
@@ -45,12 +45,19 @@ context: |
 
 rules:
   proposal:
-    - Name the measured numbers a change is meant to move (seconds, bytes, ops) and the budget they must stay inside.
+    - Name the measured numbers a change is meant to move (seconds, bytes, ops) and the budget they must stay inside; say which of them the specs make requirements.
   specs:
     - Requirements describe on-chain or prover behaviour a wallet, coordinator or verifier relies on; script layouts, proof formats and parameter sets are behaviour here, class names are not.
+    - Each capability states its non-functional contract as requirements with scenarios, answering in turn untrusted input, secrets and privacy, trust, determinism, compatibility, performance and resources, and failure behaviour; say "not applicable" in the proposal rather than silently omitting one.
+    - A bound another component relies on is a requirement; a threshold that only steers the implementation belongs in design.md.
+    - Scenarios use inputs the test suite can produce today (the fixture, real parameters, real files); extending the fixture is a task, not an assumption.
+    - Numbers in requirements and scenarios are either measured (say where) or bounds a task will check; no comparisons with anything unmeasured.
+  design:
+    - For each bound set before measuring, say what happens if the measurement fails it.
   tasks:
     - Every task that touches a generator ends with re-exporting templates and running test/template_sync_test.dart; every task that touches a kernel ends with the byte-identity tests.
-    - Every measurement task names the scratch script and the number it records in docs/ZK_SHIELDED_POOL_DESIGN.md.
+    - Every measurement task names the scratch script and the number it records in docs/ZK_SHIELDED_POOL_TSL1_DESIGN.md.
+    - Every task states how it is verified; every non-functional requirement has a verification task, robustness ones by mutation testing.
 
 operations:
   apply:
@@ -59,4 +66,4 @@ operations:
       - When a design decision turns out wrong in the code, update design.md and say so rather than silently diverging.
   archive:
     guidance:
-      - Before archiving, confirm the design doc section for the change exists in docs/ZK_SHIELDED_POOL_DESIGN.md.
+      - Before archiving, confirm the design doc section for the change exists in docs/ZK_SHIELDED_POOL_TSL1_DESIGN.md.

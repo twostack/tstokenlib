@@ -13,7 +13,9 @@ The TSL1_SP pool now runs end to end on a regtest node at both scales, but only 
 
 Not in this change: the coordinator port, the wallet-to-coordinator message schema, the coordinator server and the CLI wallet. The legacy `PoolCoordinator`, `PoolChainReader` and `PoolTransfer` stay as they are until the coordinator change replaces them.
 
-Numbers to hold: the reader applies a production round (256 transfers, 512 leaves, up to 512 nullifier insertions, a 277 KB V unlock and a 2.2 MB witness) in under 5 s on one core, measured; a transfer's encoding stays under 100 KB at production parameters.
+Numbers to hold, each a requirement in the specs with a scenario that measures it: a transfer encodes to under 100 KB at production parameters (about 67 KB expected); a hostile or inconsistent transfer is refused in under 5 ms, before any proof verification; the reader applies a production round (256 transfers, 512 leaves, up to 512 nullifier insertions, a 277 KB V unlock and a 2.2 MB witness) in under 5 s on one core; scanning one production round for one diversifier takes under 5 s; restoring a 1,000-round snapshot takes under 10 s.
+
+The specs also carry the change's non-functional contract: decoding treats every transfer as hostile, a transfer holds no secrets, scanning is local, reading needs no keys and is deterministic, and both encodings are versioned.
 
 ## Capabilities
 

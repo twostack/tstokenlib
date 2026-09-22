@@ -55,3 +55,36 @@ A transfer SHALL encode to bytes and decode back to an equal transfer, given onl
 #### Scenario: Production size
 - **WHEN** a production-parameter transfer with two hybrid note bundles is encoded
 - **THEN** the encoding is under 100 KB (measured: 63,512 B proof, 224 B publics, 3,654 B bundle)
+
+### Requirement: Untrusted input
+A transfer decoded from bytes SHALL be treated as hostile: anyone who knows a coordinator's address can send one. Decoding SHALL refuse an encoding over 100 KB before reading it; SHALL check every length against the bytes that remain and against its field's own bound before allocating for it (the proof's length SHALL equal the length the spend parameters fix, the bundle SHALL be at most two note bundles of the largest kind, 6,054 B); and SHALL end in either a transfer or a refusal naming the field, never any other failure. The self-consistency checks SHALL run before the proof is verified and SHALL use only hashing and parsing, no key agreement and no proving arithmetic, so a refused transfer costs its receiver far less than a verification.
+
+#### Scenario: Oversized message
+- **WHEN** a 7 MB byte string arrives as a transfer
+- **THEN** it is refused as too large without being parsed
+
+#### Scenario: Lying length field
+- **WHEN** an encoding declares a bundle of 4 GB
+- **THEN** it is refused on that field without allocating for it
+
+#### Scenario: Random bytes
+- **WHEN** 10,000 random byte strings and 10,000 single-byte mutations of a valid encoding are decoded
+- **THEN** each ends in a transfer or a named refusal, and none raises any other error
+
+#### Scenario: Cheap refusal
+- **WHEN** a production transfer with a mismatched bundle is decoded and checked
+- **THEN** it is refused in under 5 ms, before any proof verification starts
+
+### Requirement: No secrets in a transfer
+A transfer SHALL carry nothing that is not either published by the round that includes it or protected by the spend proof's zero knowledge: no spending, viewing or nullifier key, no note plaintext, no diversifier and no address of the sender. The anchor lane is the one value it carries that the round does not publish; it names a commitment root, which every wallet already sees.
+
+#### Scenario: Encoding holds no key material
+- **WHEN** a wallet's transfer is encoded
+- **THEN** the encoding contains no run of bytes equal to the wallet's spending key, viewing keys, nullifier key, the spent notes' rho or rcm, or the diversifier it used
+
+### Requirement: Format compatibility
+The first byte of a transfer's encoding SHALL be its format version. A decoder SHALL refuse a version it does not know rather than attempt to read it, and a change to the encoding SHALL bump the version, so a coordinator and a wallet built at different times either agree on a transfer's meaning or refuse it.
+
+#### Scenario: Newer version
+- **WHEN** a decoder of version 1 is given an encoding whose first byte is 2
+- **THEN** it refuses it as an unknown version
