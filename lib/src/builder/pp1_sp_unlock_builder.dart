@@ -19,6 +19,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import '../shielded_pool/pool_header.dart';
 import '../shielded_pool/pool_outputs.dart';
+import '../shielded_pool/script_pushes.dart';
 
 /// What a spend of a PP1_SP output is doing.
 enum ShieldedPoolAction {
@@ -202,6 +203,29 @@ class PP1SpUnlockBuilder extends UnlockingScriptBuilder {
     }
 
     return result.build();
+  }
+
+  /// The ROUND unlock's pushes in the order [getScriptSig] writes them,
+  /// ending with the OP_1 selector. A reader finds a witness's bundles
+  /// (and anything else) by name through [readRound], so the index of
+  /// each push is written once, here, beside the code that writes it.
+  static const roundPushes = [
+    'withdrawals', 'receipts', 'preImage', 'pp2Output', 'ownerPubKey', 'changePKH', 'changeAmount', 'sig',
+    'newOwnerPKH', 'newHeader', 'nextSlot', 'slotParts', 'verifierBody', 'bundles', 'tokenLHS', 'prevTokenTx',
+    'padding', 'selector',
+  ];
+
+  /// The pushes of a witness's ROUND unlock by name, read from its raw
+  /// bytes. Throws [FormatException] when the script is not exactly the
+  /// ROUND layout's pushes: a witness fetched from anywhere is read as
+  /// untrusted bytes.
+  static Map<String, List<int>> readRound(List<int> unlock) {
+    final pushes = ScriptPushes.read(unlock);
+    if (pushes.length != roundPushes.length) {
+      throw FormatException('a ROUND unlock has ${roundPushes.length} pushes, this one ${pushes.length}');
+    }
+    if (pushes.last.length != 1 || pushes.last[0] != 1) throw const FormatException('the selector is not OP_1 (round)');
+    return {for (int i = 0; i < pushes.length; i++) roundPushes[i]: pushes[i]};
   }
 
   @override

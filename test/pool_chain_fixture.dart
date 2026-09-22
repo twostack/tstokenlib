@@ -2,8 +2,10 @@ import 'dart:math';
 import 'package:tstokenlib/tstokenlib.dart';
 import 'package:tstokenlib/src/crypto/m31.dart';
 import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
+import 'package:tstokenlib/src/crypto/note_encryption.dart';
 import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
 import 'package:tstokenlib/src/crypto/stark_prover.dart';
+import 'package:tstokenlib/src/crypto/stark_prover_ref.dart' show StarkProof;
 import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/pool_verifier_gen.dart';
@@ -12,6 +14,7 @@ import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_out_hash.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
+import 'package:tstokenlib/src/shielded_pool/shielded_transfer.dart';
 import 'pool_verifier_proof_test.dart' show spendP, p1, p2, rootP;
 
 
@@ -23,6 +26,13 @@ import 'pool_verifier_proof_test.dart' show spendP, p1, p2, rootP;
 /// plan with nullifiers and 8 receipt slots, as the pool runs it. Nothing here is a
 /// transaction; `pool_round_v_test` builds the chain in memory and
 /// `pool_localnet_test` builds it on a node, both from this.
+///
+/// The notes are real: the deposit note and round 2's 200 change note go
+/// to [wallet]'s address [walletD], every other real output to a
+/// stranger's, and each real transfer carries the hybrid bundles of its two
+/// outputs. Padding transfers pay [ShieldedTransfer.paddingNote] with an
+/// empty bundle, as the coordinator's are. So the chain a reader and a
+/// scanner are tested on is the one that is mined.
 class PoolChainFixture {
   final PoolAggregation agg;
   final PoolVerifierGen v;
@@ -33,8 +43,17 @@ class PoolChainFixture {
   final PoolReceipt receipt;
   final PoolWithdrawal withdrawal;
 
+  /// Each round's transfers in round order. Round 1's first is the
+  /// deposit, without the covenant outpoint it backs: that is built later,
+  /// from [receipt].
+  final List<ShieldedTransfer> transfers1, transfers2;
+
+  /// The wallet the deposit and the change are paid to, and the address.
+  final PoolWalletKeys wallet;
+  final List<int> walletD;
+
   PoolChainFixture._(this.agg, this.v, this.body, this.g, this.h1, this.h2, this.proof, this.proof2,
-      this.bundles, this.bundles2, this.receipt, this.withdrawal);
+      this.bundles, this.bundles2, this.receipt, this.withdrawal, this.transfers1, this.transfers2, this.wallet, this.walletD);
 
   static Future<PoolChainFixture> prove({required List<int> withdrawalPKH, bool production = false, bool verbose = false}) async {
     final rng = Random(71);
@@ -63,13 +82,28 @@ class PoolChainFixture {
     final ring = List.filled(4, cmTree.root);
 
     SpendNote dummy() => SpendNote.dummy(sk: lanes(5), rho: lanes(3));
-    OutputNote out(int v) => OutputNote(pkd: lanes(8), value: v, rho: lanes(3), rcm: lanes(4));
-    List<List<int>> bundlesOf(int round) =>
-        [for (int t = 0; t < n; t++) List<int>.generate(40 + t % 64, (i) => (i * 7 + t + 31 * round) & 0xff)];
+    final wallet = PoolWalletKeys(lanes(5)), stranger = PoolWalletKeys(lanes(5));
+    final walletD = PoolHash.diversifier(wallet.ivk, 0);
+    final walletAddr = await NoteAddress.derive(wallet.ivk, walletD);
+    final strangerAddr = await NoteAddress.at(stranger.ivk, 0);
+    NotePlaintext plain(List<int> d, int v) => NotePlaintext(asset: PoolHash.bsvAsset, d: d, value: v, rho: lanes(3), rcm: lanes(4));
+
+    /// A real transfer's two outputs, [v1] to the wallet and [v2] to the
+    /// stranger, and the bundle carrying them, sent under [ovk].
+    Future<(OutputNote, OutputNote, NotePlaintext, List<int>)> outputs(int v1, int v2, List<int> ovk) async {
+      final p1 = plain(walletD, v1), p2 = plain(strangerAddr.d, v2);
+      final bundle = [
+        ...(await NoteEncryption.encrypt(p1, walletAddr, ovk, rng: rng)).bytes,
+        ...(await NoteEncryption.encrypt(p2, strangerAddr, ovk, rng: rng)).bytes,
+      ];
+      return (p1.toOutputNote(walletAddr.pkd), p2.toOutputNote(strangerAddr.pkd), p1, bundle);
+    }
+
+    List<List<int>> bundlesOf(List<int> first) => [first, for (int t = 1; t < n; t++) const <int>[]];
 
     /// Proves one round of [witnesses] against the pool's trees as they
     /// stand, and advances them.
-    Future<(PoolRoundProof, List<PoolPublicInputs>)> prove(
+    Future<(PoolRoundProof, List<PoolPublicInputs>, List<StarkProof>)> prove(
         List<PoolSpendWitness> witnesses, List<List<int>> c, List<List<int>> ring, List<int> receiptTransfers) async {
       final publics = [for (final w in witnesses) w.publics];
       final sw = Stopwatch()..start();
@@ -97,22 +131,19 @@ class PoolChainFixture {
           rng: Random(3),
           verbose: verbose);
       if (verbose) print('  aggregated in ${sw.elapsedMilliseconds} ms');
-      return (PoolRoundProof.root(rootP, agg.rootAir(wide), rootProof, c), publics);
+      return (PoolRoundProof.root(rootP, agg.rootAir(wide), rootProof, c), publics, spendProofs);
     }
 
-    // ---- round 1: a deposit of 500, whose note has a real owner, and three
+    // ---- round 1: a deposit of 500, whose note is the wallet's, and
     // padding transfers
-    final sk = lanes(5), d = lanes(3), rho = lanes(3), rcm = lanes(4);
-    final depositNote = OutputNote(pkd: PoolHash.pkd(sk, d), value: 500, rho: rho, rcm: rcm);
-    final perTransfer = bundlesOf(1);
+    final (depositNote, depositZero, depositPlain, depositBundle) = await outputs(500, 0, stranger.ovk);
+    final perTransfer = bundlesOf(depositBundle);
     final c = [for (final b in perTransfer) PoolOutHash.bundleHash(b)];
     final bundles = PoolOutHash.encodeBundles(perTransfer);
-    final (proof, publics1) = await prove([
-      PoolSpendAir.witness(dummy(), dummy(), depositNote, out(0), -500,
+    final (proof, publics1, spends1) = await prove([
+      PoolSpendAir.witness(dummy(), dummy(), depositNote, depositZero, -500,
           outHash: PoolOutHash.transferLanes(c[0]), anchor: lanes(8)),
-      for (int t = 1; t < n; t++)
-        PoolSpendAir.witness(dummy(), dummy(), out(0), out(0), 0,
-            outHash: PoolOutHash.transferLanes(c[t]), anchor: lanes(8)),
+      for (int t = 1; t < n; t++) ShieldedTransfer.paddingWitness(rng: rng),
     ], c, ring, const [0]);
     final receipt = PoolReceipt(SlotScript.lanesBytes(publics1[0].cmOut1), BigInt.from(500));
     final h1 = g.advance(
@@ -121,24 +152,27 @@ class PoolChainFixture {
         size: stmt.leavesAppended,
         balance: g.balance + BigInt.from(500),
         outHash: PoolOutHash.roundOutHash(c));
+    final transfers1 = [for (int t = 0; t < n; t++) ShieldedTransfer(publics1[t], spends1[t], perTransfer[t])];
 
     // ---- round 2: the deposit's note, the tree's first leaf, spent into a
-    // 200 note and a withdrawal of 300, anchored to header 1's root
-    if (publics1[0].cmOut1.toString() != PoolHash.commit(PoolHash.pkd(sk, d), 500, rho, rcm).$2.toString()) {
+    // 200 change note to the wallet and a withdrawal of 300, anchored to
+    // header 1's root
+    final walletPkd = walletAddr.pkd;
+    if (publics1[0].cmOut1.toString() != depositPlain.cmUnder(walletPkd).toString()) {
       throw StateError('round 1\'s first output is not the deposit note');
     }
     final path = cmTree.path(0);
-    final spent = SpendNote(sk: sk, d: d, value: 500, rho: rho, rcm: rcm, siblings: path.siblings, position: path.position);
+    final spent = SpendNote(
+        sk: wallet.sk, d: walletD, value: 500, rho: depositPlain.rho, rcm: depositPlain.rcm, siblings: path.siblings, position: path.position);
     final withdrawal = PoolWithdrawal(withdrawalPKH, BigInt.from(300));
-    final perTransfer2 = bundlesOf(2);
+    final (changeNote, changeZero, _, changeBundle) = await outputs(200, 0, wallet.ovk);
+    final perTransfer2 = bundlesOf(changeBundle);
     final c2 = [for (final b in perTransfer2) PoolOutHash.bundleHash(b)];
     final bundles2 = PoolOutHash.encodeBundles(perTransfer2);
-    final (proof2, _) = await prove([
-      PoolSpendAir.witness(spent, dummy(), out(200), out(0), 300,
+    final (proof2, publics2, spends2) = await prove([
+      PoolSpendAir.witness(spent, dummy(), changeNote, changeZero, 300,
           outHash: PoolOutHash.transferLanes(c2[0], withdrawal: withdrawal)),
-      for (int t = 1; t < n; t++)
-        PoolSpendAir.witness(dummy(), dummy(), out(0), out(0), 0,
-            outHash: PoolOutHash.transferLanes(c2[t]), anchor: lanes(8)),
+      for (int t = 1; t < n; t++) ShieldedTransfer.paddingWitness(rng: rng),
     ], c2, [for (final r in h1.ring) _lanesOf(r)], const []);
     final h2 = h1.advance(
         cmRoot: SlotScript.lanesBytes(cmTree.root),
@@ -149,7 +183,15 @@ class PoolChainFixture {
     if (h2.nfRoot.toString() == h1.nfRoot.toString()) {
       throw StateError('round 2 spends a real note, so its nullifier goes in');
     }
-    return PoolChainFixture._(agg, v, v.body(), g, h1, h2, proof, proof2, bundles, bundles2, receipt, withdrawal);
+    final transfers2 = [
+      for (int t = 0; t < n; t++) ShieldedTransfer(publics2[t], spends2[t], perTransfer2[t], withdrawal: t == 0 ? withdrawal : null)
+    ];
+    for (final t in [...transfers1, ...transfers2]) {
+      final why = t.refusal();
+      if (why != null) throw StateError('the fixture built a transfer that refuses itself: $why');
+    }
+    return PoolChainFixture._(agg, v, v.body(), g, h1, h2, proof, proof2, bundles, bundles2, receipt, withdrawal, transfers1, transfers2,
+        wallet, walletD);
   }
 }
 

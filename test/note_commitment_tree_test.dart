@@ -138,4 +138,27 @@ void main() {
     t.append(lanes(8));
     expect(() => PoolSpendAir.witness(stale, withPath(b0), oa, ob, 10), throwsA(isA<ArgumentError>()));
   });
+
+  test('a copy advances independently of its original', () {
+    final rng = Random(4);
+    List<int> leaf() => List.generate(8, (_) => rng.nextInt(M31.p));
+    final t = NoteCommitmentTree();
+    t.appendSubtree([for (int i = 0; i < 5; i++) leaf()]);
+    final root = t.root;
+    final c = t.copy();
+    expect(c.root, root);
+    expect(c.size, 32);
+    c.appendSubtree([leaf(), leaf()]);
+    expect(c.size, 64);
+    expect(t.root, root, reason: 'appending to the copy leaves the original alone');
+    expect(t.size, 32);
+    expect(t.frontier.root, root);
+    t.append(leaf());
+    expect(c.size, 64, reason: 'and appending to the original leaves the copy alone');
+    expect(c.frontier.root, c.root, reason: 'the copy\'s frontier and store stay in step');
+    expect(t.frontier.root, t.root);
+    expect(c.root, isNot(t.root));
+    expect(c.path(0).rootFor(c.nodeAt(0, 0)), c.root);
+    expect(t.path(32).rootFor(t.nodeAt(0, 32)), t.root);
+  });
 }

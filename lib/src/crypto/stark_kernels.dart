@@ -566,6 +566,8 @@ typedef _CommitP2D = int Function(ffi.Pointer<ffi.Uint32>, int, int, int, ffi.Po
 typedef _MerklePairsP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Uint32, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _MerklePairsP2D = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _PermuteP2C = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _CompressPairsC = ffi.Void Function(ffi.Pointer<ffi.Uint32>, ffi.Size, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
+typedef _CompressPairsD = void Function(ffi.Pointer<ffi.Uint32>, int, ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _PermuteP2D = void Function(ffi.Pointer<ffi.Uint32>, ffi.Pointer<ffi.Uint32>);
 typedef _ShaC = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Size, ffi.Pointer<ffi.Uint8>);
 typedef _ShaD = void Function(ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>);
@@ -594,7 +596,7 @@ typedef _KemDecapsD = void Function(ffi.Pointer<ffi.Uint8>, ffi.Pointer<ffi.Uint
 /// opening steps. Every kernel is exact, so [tryLoad] returning null
 /// (library not built) only costs speed.
 class StarkKernels implements ProverKernels {
-  static const abiVersion = 6;
+  static const abiVersion = 7;
   static const envVar = 'STARK_KERNELS_LIB';
 
   /// Set this to 1 (or true) to run the kernels that have a GPU path on the
@@ -619,6 +621,7 @@ class StarkKernels implements ProverKernels {
   late final _CommitP2D _commitP2 = _lib.lookupFunction<_CommitP2C, _CommitP2D>('sk_commit_columns_p2');
   late final _MerklePairsP2D _merklePairsP2 = _lib.lookupFunction<_MerklePairsP2C, _MerklePairsP2D>('sk_merkle_pairs_p2');
   late final _PermuteP2D _permuteP2 = _lib.lookupFunction<_PermuteP2C, _PermuteP2D>('sk_poseidon2_permute');
+  late final _CompressPairsD _compressPairs = _lib.lookupFunction<_CompressPairsC, _CompressPairsD>('sk_p2_compress_pairs');
   late final _CompD _comp = _lib.lookupFunction<_CompC, _CompD>('sk_composition');
   late final _EvalAtD _evalAt = _lib.lookupFunction<_EvalAtC, _EvalAtD>('sk_eval_at');
   late final _LogUpD _logUp = _lib.lookupFunction<_LogUpC, _LogUpD>('sk_logup_columns');
@@ -1026,6 +1029,22 @@ class StarkKernels implements ProverKernels {
       return _download(out, k, n);
     } finally {
       calloc.free(inp);
+      calloc.free(out);
+    }
+  }
+
+  /// Two-to-one Poseidon2 compressions of [pairs] (16 lanes each) on the
+  /// calling thread: node i is the first 8 lanes of pair i permuted.
+  Uint32List compressPairs(Uint32List pairs) {
+    if (pairs.length % 16 != 0) throw ArgumentError('16 lanes a pair');
+    final n = pairs.length ~/ 16;
+    final pp = _upload1(pairs), rc = _upload1(_rc), out = calloc<ffi.Uint32>(8 * n + 1);
+    try {
+      _compressPairs(pp, n, rc, out);
+      return _download1(out, 8 * n);
+    } finally {
+      calloc.free(pp);
+      calloc.free(rc);
       calloc.free(out);
     }
   }

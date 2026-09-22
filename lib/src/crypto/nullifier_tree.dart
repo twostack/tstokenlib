@@ -14,7 +14,10 @@
    limitations under the License.
 */
 
+import 'dart:typed_data';
+
 import '../script_gen/pool_spend_air.dart' show PoolHash;
+import 'poseidon2_batch.dart';
 import 'm31.dart';
 
 /// The pool's set of spent nullifiers as a sparse Poseidon2 Merkle tree,
@@ -70,6 +73,65 @@ class NullifierTree {
   /// is mined, so a coordinator inserts into a copy and keeps it only once
   /// the round is.
   NullifierTree copy() => NullifierTree._([for (final m in _nodes) Map<int, List<int>>.of(m)]);
+
+  /// The tree holding [nullifiers], built a level at a time from the leaves
+  /// up. Inserting them one by one hashes a 62-node path each; here a node
+  /// is hashed once, and below about level log2(n) nearly every node has
+  /// one key under it, so that is still about 62 - log2(n) hashes a key,
+  /// but in batches the native kernel runs. Throws when two share a slot,
+  /// as [insert] would. Restoring a snapshot goes through here.
+  static NullifierTree fromNullifiers(List<List<int>> nullifiers) {
+    final t = NullifierTree();
+    final n = nullifiers.length;
+    if (n == 0) return t;
+    final keys = [for (final nf in nullifiers) key(nf)];
+    final order = List<int>.generate(n, (i) => i)..sort((a, b) => keys[a].compareTo(keys[b]));
+    // the leaf nodes H(0 || nf), in key order
+    final pairs = Uint32List(16 * n);
+    var ks = List<int>.filled(n, 0);
+    for (int j = 0; j < n; j++) {
+      final i = order[j];
+      if (j > 0 && keys[i] == ks[j - 1]) throw StateError('nullifier already spent');
+      ks[j] = keys[i];
+      pairs.setRange(16 * j + 8, 16 * j + 16, nullifiers[i]);
+    }
+    var cur = Poseidon2Batch.compress(pairs);
+    for (int j = 0; j < n; j++) {
+      t._nodes[0][ks[j]] = Uint32List.sublistView(cur, 8 * j, 8 * j + 8);
+    }
+    for (int h = 0; h < depth; h++) {
+      // siblings are adjacent in key order; a lone child pairs with the
+      // empty subtree of its height
+      final parentKeys = <int>[];
+      final pp = Uint32List(16 * ks.length);
+      var j = 0, m = 0;
+      while (j < ks.length) {
+        final parent = ks[j] >> 1;
+        final right = ks[j] & 1 == 1;
+        if (!right && j + 1 < ks.length && ks[j + 1] == ks[j] + 1) {
+          pp.setRange(16 * m, 16 * m + 16, cur, 8 * j);
+          j += 2;
+        } else if (right) {
+          pp.setRange(16 * m, 16 * m + 8, empty[h]);
+          pp.setRange(16 * m + 8, 16 * m + 16, cur, 8 * j);
+          j += 1;
+        } else {
+          pp.setRange(16 * m, 16 * m + 8, cur, 8 * j);
+          pp.setRange(16 * m + 8, 16 * m + 16, empty[h]);
+          j += 1;
+        }
+        parentKeys.add(parent);
+        m++;
+      }
+      cur = Poseidon2Batch.compress(Uint32List.sublistView(pp, 0, 16 * m));
+      final level = t._nodes[h + 1];
+      for (int p = 0; p < m; p++) {
+        level[parentKeys[p]] = Uint32List.sublistView(cur, 8 * p, 8 * p + 8);
+      }
+      ks = parentKeys;
+    }
+    return t;
+  }
 
   /// Spent nullifiers recorded.
   int get size => _nodes[0].length;

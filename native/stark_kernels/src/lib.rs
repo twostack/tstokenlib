@@ -869,7 +869,7 @@ pub unsafe extern "C" fn sk_store_read(id: u64, col: usize, start: usize, count:
 /// ABI version; the Dart side refuses a mismatch.
 #[no_mangle]
 pub extern "C" fn sk_version() -> u32 {
-    6
+    7
 }
 
 // ------------------------------------------------------------------ GPU backend
@@ -988,6 +988,26 @@ pub unsafe extern "C" fn sk_commit_columns_p2(
     }
     merkle_above_p2(tree, big_m, rc);
     store_put(k, n, ev)
+}
+
+/// `n` two-to-one Poseidon2 compressions: pair i is the 16 lanes at
+/// `pairs[16 i..16 i + 16]`, and its node, the first 8 lanes of the permuted
+/// state, goes to `out[8 i..8 i + 8]`. The pool's trees hash a node this way
+/// (`PoolHash.node`), so a reader rebuilding them from their leaves hands
+/// each level's pairs here. It runs on the calling thread: the reader's
+/// bounds are per core.
+#[no_mangle]
+pub unsafe extern "C" fn sk_p2_compress_pairs(pairs: *const u32, n: usize, rc: *const u32, out: *mut u32) {
+    let pairs = std::slice::from_raw_parts(pairs, 16 * n);
+    let rc = std::slice::from_raw_parts(rc, P2_RC_LEN);
+    let out = std::slice::from_raw_parts_mut(out, 8 * n);
+    let full = n - n % P2_N;
+    for b in 0..full / P2_N {
+        v_compress::<P2_N>(&pairs[16 * P2_N * b..16 * P2_N * (b + 1)], rc, &mut out[8 * P2_N * b..8 * P2_N * (b + 1)]);
+    }
+    for i in full..n {
+        v_compress::<1>(&pairs[16 * i..16 * i + 16], rc, &mut out[8 * i..8 * i + 8]);
+    }
 }
 
 /// [sk_merkle_pairs] with Poseidon2; `out_tree` holds `(2h - 1) * 8` lanes.
@@ -1976,6 +1996,22 @@ mod p2_tests {
         let mut node = [0u32; 8];
         v_compress::<1>(&tree[..16], &rc, &mut node);
         assert_eq!(tree[16 * 8..16 * 8 + 8], node[..]);
+    }
+
+    #[test]
+    fn compress_pairs_matches_the_permutation() {
+        let rc = rc();
+        for n in [0usize, 1, P2_N - 1, P2_N, 3 * P2_N + 5] {
+            let pairs: Vec<u32> = (0..16 * n).map(|i| ((i as u32 + 1) * 2_654_435_761u32) & P).collect();
+            let mut out = vec![0u32; 8 * n];
+            unsafe { sk_p2_compress_pairs(pairs.as_ptr(), n, rc.as_ptr(), out.as_mut_ptr()) };
+            for i in 0..n {
+                let mut st = [0u32; 16];
+                st.copy_from_slice(&pairs[16 * i..16 * i + 16]);
+                p2_permute(&mut st, &rc);
+                assert_eq!(out[8 * i..8 * i + 8], st[..8], "n {n} pair {i}");
+            }
+        }
     }
 
     #[test]

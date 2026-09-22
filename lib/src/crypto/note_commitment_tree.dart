@@ -14,7 +14,10 @@
    limitations under the License.
 */
 
+import 'dart:typed_data';
+
 import '../script_gen/pool_spend_air.dart' show PoolHash, PoolSpendAir;
+import 'poseidon2_batch.dart';
 
 /// A Merkle path from a leaf to the root, in the shape [PoolHash.root] and
 /// [SpendNote] consume: siblings leaf level first, and the leaf's position,
@@ -34,6 +37,11 @@ class MerkleStore {
   final int depth;
   final List<Map<int, List<int>>> _nodes;
   MerkleStore(this.depth) : _nodes = List.generate(depth + 1, (_) => <int, List<int>>{});
+  MerkleStore._(this.depth, this._nodes);
+
+  /// An independent copy. A node is replaced, never changed in place, so
+  /// the copy shares them.
+  MerkleStore copy() => MerkleStore._(depth, [for (final m in _nodes) Map<int, List<int>>.of(m)]);
 
   List<int> nodeAt(int level, int index) => _nodes[level][index] ?? MerkleFrontier.emptyRoots[level];
 
@@ -77,6 +85,13 @@ class MerkleFrontier {
   int _size = 0;
   final List<List<int>?> _peaks = List.filled(depth, null);
 
+  MerkleFrontier();
+  MerkleFrontier._(this._size, List<List<int>?> peaks) {
+    _peaks.setAll(0, peaks);
+  }
+
+  MerkleFrontier copy() => MerkleFrontier._(_size, _peaks);
+
   int get size => _size;
 
   /// peaks[l] is present exactly when bit l of [size] is set.
@@ -113,8 +128,58 @@ class MerkleFrontier {
 class NoteCommitmentTree {
   static const depth = MerkleFrontier.depth;
 
-  final MerkleFrontier frontier = MerkleFrontier();
-  final MerkleStore _store = MerkleStore(depth);
+  final MerkleFrontier frontier;
+  final MerkleStore _store;
+
+  NoteCommitmentTree()
+      : frontier = MerkleFrontier(),
+        _store = MerkleStore(depth);
+  NoteCommitmentTree._(this.frontier, this._store);
+
+  /// An independent copy: a reader applies a round to a copy and keeps it
+  /// only if the round checks out, so a refused round needs no undo.
+  NoteCommitmentTree copy() => NoteCommitmentTree._(frontier.copy(), _store.copy());
+
+  /// The tree holding [leaves] in order, built a level at a time from the
+  /// leaves up, so each node is hashed once (about as many hashes as
+  /// leaves) where appending them one by one rewrites a 32-node path for
+  /// each. The nodes are the ones [append] would have written, and the
+  /// frontier is read off them. Restoring a snapshot goes through here.
+  static NoteCommitmentTree fromLeaves(List<List<int>> leaves) {
+    final n = leaves.length;
+    if (n > MerkleFrontier.capacity) throw ArgumentError('at most ${MerkleFrontier.capacity} leaves');
+    final t = NoteCommitmentTree();
+    if (n == 0) return t;
+    var cur = Uint32List(8 * n);
+    for (int i = 0; i < n; i++) {
+      final l = leaves[i];
+      if (l.length != PoolHash.digestLanes) throw ArgumentError('leaf must be ${PoolHash.digestLanes} lanes');
+      cur.setRange(8 * i, 8 * i + 8, l);
+      t._store._nodes[0][i] = List.unmodifiable(l);
+    }
+    var count = n;
+    for (int l = 0; l < depth; l++) {
+      final parents = (count + 1) >> 1;
+      final pairs = Uint32List(16 * parents);
+      pairs.setRange(0, 16 * (count >> 1), cur);
+      if (count.isOdd) {
+        pairs.setRange(16 * (parents - 1), 16 * (parents - 1) + 8, cur, 8 * (count - 1));
+        pairs.setRange(16 * (parents - 1) + 8, 16 * parents, MerkleFrontier.emptyRoots[l]);
+      }
+      final next = Poseidon2Batch.compress(pairs);
+      final level = t._store._nodes[l + 1];
+      for (int p = 0; p < parents; p++) {
+        level[p] = Uint32List.sublistView(next, 8 * p, 8 * p + 8);
+      }
+      cur = next;
+      count = parents;
+    }
+    t.frontier._size = n;
+    for (int l = 0; l < depth; l++) {
+      if ((n >> l) & 1 == 1) t.frontier._peaks[l] = t._store.nodeAt(l, (n >> l) - 1);
+    }
+    return t;
+  }
 
   int get size => frontier.size;
 

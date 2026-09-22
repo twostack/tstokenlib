@@ -47,3 +47,17 @@ export 'src/transaction/signing_callback.dart';
 export 'src/transaction/signer_adapter.dart';
 export 'src/transaction/provisioned_funding_tx.dart';
 export 'src/transaction/funding_provision_builder.dart';
+
+// The TSL1_SP pool as a wallet or coordinator uses it: the transfer a
+// wallet submits, the ledger either side rebuilds from the chain, and the
+// scanner that finds a wallet's notes. The legacy pool's types stay
+// internal until the coordinator change retires them.
+export 'src/shielded_pool/shielded_transfer.dart' show ShieldedTransfer, TransferRefusal;
+export 'src/shielded_pool/shielded_ledger.dart' show ShieldedLedger, ShieldedPoolLayout, ShieldedRound, LedgerRefusal;
+export 'src/shielded_pool/shielded_chain_reader.dart' show ShieldedChainReader, ShieldedRoundTxs;
+export 'src/shielded_pool/shielded_note_scanner.dart' show ShieldedNoteScanner, ScannedNote;
+export 'src/shielded_pool/pool_header.dart' show PoolHeader;
+export 'src/shielded_pool/pool_outputs.dart' show PoolWithdrawal, PoolReceipt;
+export 'src/crypto/note_encryption.dart' show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption;
+export 'src/crypto/note_commitment_tree.dart' show MerklePath;
+export 'src/crypto/stark_prover_ref.dart' show StarkParams;
