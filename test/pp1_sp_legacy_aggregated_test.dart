@@ -13,7 +13,6 @@ import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
 import 'package:tstokenlib/src/script_gen/pp1_sp_legacy_script_gen.dart';
 import 'package:tstokenlib/src/script_gen/verifier_slot_gen.dart';
-import 'package:tstokenlib/src/transaction/pool_chain_reader.dart';
 import 'package:tstokenlib/src/transaction/shielded_pool_legacy_tool.dart';
 
 final verifyFlags = {VerifyFlag.SIGHASH_FORKID, VerifyFlag.LOW_S, VerifyFlag.UTXO_AFTER_GENESIS};
@@ -26,8 +25,6 @@ void verifyAll(Transaction tx, List<TransactionOutput> spent, {String? label}) {
   }
   if (label != null) print('  $label: ${tx.inputs.length} inputs verified in ${sw.elapsedMilliseconds} ms, tx ${tx.serialize().length ~/ 2} B');
 }
-
-bool _same(List<int> a, List<int> b) => a.length == b.length && [for (int i = 0; i < a.length; i++) a[i] == b[i]].every((x) => x);
 
 /// The pool in aggregated mode: one verifier slot per round checking the
 /// root of a two-level aggregation of four spend proofs, no append slot.
@@ -112,7 +109,7 @@ void main() {
     verifyAll(genesisTx, [fundingTx.outputs[0], issuanceTx.outputs[0]], label: 'genesis');
   }, timeout: const Timeout(Duration(minutes: 5)));
 
-  test('a round of four deposits through one aggregated slot; the chain reader agrees', () async {
+  test('a round of four deposits through one aggregated slot', () async {
     final depositFunding = coinbaseLike(depositorAddress, [400000]);
     final amounts = [100000, 50000, 25000, 12500];
     final change = ShieldedPoolLegacyTool.payout(depositorAddress, 400000 - amounts.reduce((a, b) => a + b) - 800);
@@ -136,16 +133,6 @@ void main() {
     expect(roundTx.inputs.length, 3);
     verifyAll(roundTx, [...spent, depositFunding.outputs[0]], label: 'aggregated round');
     expect(PP1SpLegacyLockBuilder.fromScript(roundTx.outputs[0].script).header.bytes(), ledger.header.bytes());
-
-    // a reader rebuilds the same ledger from the two transactions
-    final reader = PoolChainReader.fromGenesis(gen, genesisTx);
-    final round = reader.apply(roundTx);
-    expect(round.transfers.length, 4);
-    expect(round.subtreeIndex, 0);
-    expect(reader.ledger.header.bytes(), ledger.header.bytes());
-    expect(reader.ledger.vault, ledger.vault);
-    expect(reader.ledger.tree.root, ledger.tree.root);
-    expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);
   }, timeout: const Timeout(Duration(minutes: 20)));
 
   test('a short round: one deposit and three padding transfers, two of them from stock', () async {
@@ -176,16 +163,5 @@ void main() {
     expect(ledger.tree.size, sizeBefore + 32);
     expect(ledger.nullifiers.root, nfBefore); // dummies insert nothing
     verifyAll(tx, [...spent, depositFunding.outputs[0]], label: 'padded round');
-
-    final reader = PoolChainReader.fromGenesis(gen, genesisTx);
-    reader.apply(roundTx);
-    final round = reader.apply(tx);
-    expect(round.transfers.length, 4);
-    expect(round.transfers.where((t) => t!.isPadding).length, 3);
-    expect(round.transfers[0]!.cmOut1, oa.cm, reason: 'the reader took the commitments from the note data');
-    expect(round.commitments.where((c) => _same(c, PoolTransfer.paddingCm)).length, 6, reason: 'and the padding constant');
-    expect(reader.ledger.header.bytes(), ledger.header.bytes());
-    expect(reader.ledger.tree.root, ledger.tree.root);
-    expect(reader.ledger.nullifiers.root, ledger.nullifiers.root);
   }, timeout: const Timeout(Duration(minutes: 20)));
 }

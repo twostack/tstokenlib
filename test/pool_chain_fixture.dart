@@ -55,21 +55,33 @@ class PoolChainFixture {
   PoolChainFixture._(this.agg, this.v, this.body, this.g, this.h1, this.h2, this.proof, this.proof2,
       this.bundles, this.bundles2, this.receipt, this.withdrawal, this.transfers1, this.transfers2, this.wallet, this.walletD);
 
-  static Future<PoolChainFixture> prove({required List<int> withdrawalPKH, bool production = false, bool verbose = false}) async {
+  /// The plan the fixture proves under: the 256-transfer throughput plan
+  /// with nullifiers and 8 receipt slots at [production], else a 4-transfer
+  /// plan at test parameters with 2 receipt slots. A coordinator run on the
+  /// fixture's chain is configured with the same.
+  static PoolAggregation plan({bool production = false}) => production
+      ? PoolAggregation.throughput(nullifiers: true, receiptSlots: PoolReceipt.maxPerRound)
+      : PoolAggregation(
+          spendP: spendP,
+          levelSpec: const [
+            AggregationLevel(params: p1, logTrace: 15, arity: 2),
+            AggregationLevel(params: p2, logTrace: 17, arity: 2),
+          ],
+          rootP: rootP,
+          rootLog: 15,
+          nullifierLevel: 1,
+          receiptSlots: 2);
+
+  /// With [aggregate] false the spend proofs are made and the trees
+  /// advanced, but no round is aggregated: [proof] and [proof2] are bare
+  /// and [transfers1] and [transfers2] are what a coordinator, which
+  /// aggregates itself, takes in. That saves the two aggregations (about
+  /// 12 minutes at production) when only the transfers are wanted.
+  static Future<PoolChainFixture> prove(
+      {required List<int> withdrawalPKH, bool production = false, bool verbose = false, bool aggregate = true}) async {
     final rng = Random(71);
     List<int> lanes(int n) => List.generate(n, (_) => rng.nextInt(M31.p));
-    final agg = production
-        ? PoolAggregation.throughput(nullifiers: true, receiptSlots: PoolReceipt.maxPerRound)
-        : PoolAggregation(
-        spendP: spendP,
-        levelSpec: const [
-          AggregationLevel(params: p1, logTrace: 15, arity: 2),
-          AggregationLevel(params: p2, logTrace: 17, arity: 2),
-        ],
-        rootP: rootP,
-        rootLog: 15,
-        nullifierLevel: 1,
-        receiptSlots: 2);
+    final agg = plan(production: production);
     final n = agg.transfers;
     final stmt = PoolStatement.of(agg.tree);
     final v = ShieldedPoolTool.poolVerifier(stmt,
@@ -120,6 +132,14 @@ class PoolChainFixture {
         paths.add(cmTree.subtreePath(j + s));
         cmTree.appendSubtree([for (final l in agg.tree.subtreeLeavesOf(spendLanes, s)) l ?? MerkleFrontier.emptyLeaf]);
       }
+      if (!aggregate) {
+        // the aggregation is what inserts the nullifiers; do that by hand
+        for (final p in publics) {
+          if (p.real1) nullifiers.insert(p.nf1);
+          if (p.real2) nullifiers.insert(p.nf2);
+        }
+        return (PoolRoundProof.bare(List.filled(stmt.numPublics, 0), c), publics, spendProofs);
+      }
       final (rootProof, wide) = await agg.aggregate(publics, spendProofs,
           rootBefore: rootBefore,
           rootAfter: cmTree.root,
@@ -131,7 +151,7 @@ class PoolChainFixture {
           rng: Random(3),
           verbose: verbose);
       if (verbose) print('  aggregated in ${sw.elapsedMilliseconds} ms');
-      return (PoolRoundProof.root(rootP, agg.rootAir(wide), rootProof, c), publics, spendProofs);
+      return (PoolRoundProof.root(agg.rootP, agg.rootAir(wide), rootProof, c), publics, spendProofs);
     }
 
     // ---- round 1: a deposit of 500, whose note is the wallet's, and

@@ -96,7 +96,7 @@ Roughly half a day for the six archetypes, given PP1_SP as a worked reference: t
 
 ## 2. Remove the direct-slot branch from the coordinator
 
-**Severity:** low, dead code. **Status:** not started. **Decided:** 2026-09-21, aggregated mode only.
+**Severity:** low, dead code. **Status:** DONE 2026-09-22 by deletion: `tsl1-sp-coordinator` removed the legacy coordinator, its chain reader, `bin/pool_coordinator.dart` and their tests, and the TSL1_SP coordinator has one round shape. **Decided:** 2026-09-21, aggregated mode only.
 
 ### What is wrong
 

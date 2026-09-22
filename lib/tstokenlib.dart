@@ -49,13 +49,43 @@ export 'src/transaction/provisioned_funding_tx.dart';
 export 'src/transaction/funding_provision_builder.dart';
 
 // The TSL1_SP pool as a wallet or coordinator uses it: the transfer a
-// wallet submits, the ledger either side rebuilds from the chain, and the
-// scanner that finds a wallet's notes. The legacy pool's types stay
-// internal until the coordinator change retires them.
+// wallet submits, the ledger either side rebuilds from the chain, the
+// scanner that finds a wallet's notes, the coordinator that runs the pool
+// and the messages the two sides exchange. The legacy pool's tool and
+// types stay internal.
 export 'src/shielded_pool/shielded_transfer.dart' show ShieldedTransfer, TransferRefusal;
 export 'src/shielded_pool/shielded_ledger.dart' show ShieldedLedger, ShieldedPoolLayout, ShieldedRound, LedgerRefusal;
 export 'src/shielded_pool/shielded_chain_reader.dart' show ShieldedChainReader, ShieldedRoundTxs;
 export 'src/shielded_pool/shielded_note_scanner.dart' show ShieldedNoteScanner, ScannedNote;
+export 'src/shielded_pool/shielded_coordinator.dart'
+    show
+        ShieldedCoordinator,
+        CoordinatorConfig,
+        CoordinatorFunding,
+        FundingOutput,
+        CoordinatorStore,
+        CoordinatorClock,
+        CoordinatorAlarm,
+        SystemClock,
+        FakeClock,
+        CoordinatorStatus,
+        RoundFailure,
+        RoundTiming,
+        RecoveryRefusal,
+        ShieldedPaddingSupply;
+export 'src/shielded_pool/pool_protocol.dart'
+    show
+        PoolMessage,
+        PoolMessageKind,
+        PoolSubmission,
+        PoolReply,
+        ReplyOutcome,
+        RefusalReason,
+        PoolDescriptor,
+        PoolAnnouncement,
+        ProtocolRefusal;
+export 'src/recursion/pool_aggregator.dart' show PoolAggregation, AggregationLevel;
+export 'src/recursion/prover_pool.dart' show NodeProver, NodeJob, LocalNodeProver, ProverPool, NodeOutcome;
 export 'src/shielded_pool/pool_header.dart' show PoolHeader;
 export 'src/shielded_pool/pool_outputs.dart' show PoolWithdrawal, PoolReceipt;
 export 'src/crypto/note_encryption.dart' show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption;

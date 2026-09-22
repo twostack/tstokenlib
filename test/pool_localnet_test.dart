@@ -3,15 +3,20 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
+import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
 import 'package:tstokenlib/src/script_gen/pool_verifier_gen.dart';
-import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
-import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
+import 'package:tstokenlib/src/script_gen/slot_script_common.dart';
+import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
+import 'package:tstokenlib/src/shielded_pool/pool_protocol.dart';
+import 'package:tstokenlib/src/shielded_pool/shielded_coordinator.dart';
 import 'pool_chain_fixture.dart';
 
 /// The pool's first two rounds, as `pool_round_v_test` builds them, mined on
@@ -40,6 +45,11 @@ import 'pool_chain_fixture.dart';
 /// POOL_FEE_RATE is satoshis per kB, default 1 (the node's minminingtxfee).
 /// POOL_CHAIN_DUMP writes the mined chain as JSON, for
 /// tool/scratch/two_round_probe.dart.
+/// POOL_COORDINATOR=1 runs the second test instead: the coordinator, with a
+/// node-backed funding source and the node as its publisher, takes the
+/// fixture's transfers and the deposit and mines both rounds itself. Its
+/// transfers are kept in POOL_PROOF_CACHE.transfers.json, since only the
+/// spend proofs are needed and the coordinator aggregates.
 final opKey = SVPrivateKey.fromWIF('cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
 final strangerKey = SVPrivateKey.fromWIF('cRHYFwjjw2Xn2gjxdGw6RRgKJZqipZx7j8i64NdwzxcD6SezEZV5');
 final sigHashAll = SighashType.SIGHASH_FORKID.value | SighashType.SIGHASH_ALL.value;
@@ -205,8 +215,234 @@ void main() {
         'fundingB': split.serialize(),
       }));
     }
-  }, skip: env['POOL_LOCALNET'] == null ? 'needs ../localnet up; set POOL_LOCALNET=1' : false,
+  }, skip: env['POOL_LOCALNET'] == null
+          ? 'needs ../localnet up; set POOL_LOCALNET=1'
+          : env['POOL_COORDINATOR'] != null
+              ? 'POOL_COORDINATOR=1 runs the coordinator path instead'
+              : false,
       timeout: const Timeout(Duration(minutes: 120)));
+
+  test('two pool rounds through the coordinator, mined on localnet', () async {
+    final net = Localnet(viaRpc: env['POOL_BROADCAST'] == 'rpc');
+    final svc = ShieldedPoolTool();
+    final signer = DefaultTransactionSigner(sigHashAll, opKey);
+    final opPub = opKey.publicKey;
+    final opAddr = Address.fromPublicKey(opPub, NetworkType.TEST);
+    final opPKH = hex.decode(opAddr.pubkeyHash160);
+    final stranger = strangerKey.publicKey.toAddress(NetworkType.TEST);
+
+    await net.ready();
+    final production = env['POOL_PRODUCTION'] == '1';
+    final plan = PoolChainFixture.plan(production: production);
+    final t = await _Transfers.load(env['POOL_PROOF_CACHE'], production, plan.spendP,
+        () => PoolChainFixture.prove(
+            withdrawalPKH: hex.decode(stranger.pubkeyHash160), production: production, verbose: production, aggregate: false));
+    final stmt = PoolStatement.of(plan.tree);
+    final body = ShieldedPoolTool.poolVerifier(stmt,
+            verifier: StarkVerifierGen(plan.rootP, plan.rootAir(List.filled(stmt.numPublics, 0))))
+        .body();
+    final g = PoolHeader.genesis(
+        emptyCmRoot: SlotScript.lanesBytes(NoteCommitmentTree().root), emptyNfRoot: SlotScript.lanesBytes(NullifierTree().root));
+
+    // ---- coins: the node funds the coordinator's key once; every
+    // transaction after that is paid from a fresh output of exactly the
+    // value asked, mined before it is spent, as a wallet would do it
+    final coins = await net.fund(opAddr, BigInt.from(100000000));
+    final funding = _NodeFunding(net, coins, coins.outputs.indexWhere((o) => _pays(o, opPKH)), signer, opPub, opAddr);
+
+    // ---- genesis by hand: Y0, the issuance spending its anchor, witness 0
+    final ySats = BigInt.from(((body.length + 1000) * feeRate + 999) ~/ 1000 + 2);
+    final wSats = BigInt.from(((3 * body.length + 1000000) * feeRate + 999) ~/ 1000 + 1);
+    final fY0 = (await funding.output(ySats))!;
+    final y0 = svc.buildSlotTxn(header: g, verifierBody: body,
+        fundingTx: fY0.tx, fundingVout: fY0.vout, fundingSigner: signer, fundingPubKey: opPub, anchorPKH: opPKH, signerPKH: opPKH);
+    await net.submit('Y0', y0.tx);
+    final fI = (await funding.output(BigInt.from(1000000)))!;
+    final fW0 = (await funding.output(wSats))!;
+    final r0 = svc.createTokenIssuanceTxn(fI.tx, signer, opPub, opAddr, crypto.sha256.convert(body).bytes, g, y0.outpoint, fW0.tx.hash,
+        slotTx: y0.tx, fundingVout: fI.vout, witnessFundingVout: fW0.vout);
+    await net.submit('R0', r0);
+    final w0 = svc.createWitnessTxn(signer, fW0.tx, r0, hex.decode(fI.tx.serialize()), opPub, opAddr.pubkeyHash160,
+        ShieldedPoolAction.CREATE,
+        fundingVout: fW0.vout, slotParts: y0.parts, verifierBody: body);
+    await net.submit('W0', w0);
+
+    // ---- the depositor pays into a covenant naming PP3_0
+    final depositCoins = await funding.pay(stranger, BigInt.from(100000));
+    final height = await net.height();
+    final depositTx = svc.createDepositTxn(
+        fundingTx: depositCoins,
+        fundingVout: 1,
+        fundingSigner: DefaultTransactionSigner(sigHashAll, strangerKey),
+        fundingPubKey: strangerKey.publicKey,
+        changeAddress: stranger,
+        commitment: t.receipt.commitment,
+        satoshis: t.receipt.satoshis,
+        pp3Outpoint: svc.getOutpoint(r0.hash, outputIndex: 3),
+        refundPKH: hex.decode(stranger.pubkeyHash160),
+        refundAfter: height + 100);
+    await net.submit('D', depositTx);
+    final depositOutpoint = svc.getOutpoint(depositTx.hash, outputIndex: ShieldedPoolTool.depositVout);
+
+    // ---- the coordinator, publishing through the node
+    final store = _ChainStore();
+    final co = ShieldedCoordinator.open(
+        config: CoordinatorConfig(plan: plan, feeRate: feeRate, depositMargin: 100),
+        tool: svc,
+        issuance: r0,
+        witness0: w0,
+        slot0: y0.tx,
+        funding: funding,
+        store: store,
+        publish: (tx) => net.submit(store.nameOf(tx), tx),
+        owner: signer,
+        ownerPub: opPub)
+      ..chainHeight = height;
+    final rng = Random(5);
+    List<int> id() => List.generate(16, (_) => rng.nextInt(256));
+
+    Future<PoolAnnouncement> round(List<ShieldedTransfer> transfers) async {
+      final sw = Stopwatch()..start();
+      for (final x in transfers) {
+        final r = co.intake(id(), x, depositTx: x.depositOutpoint == null ? null : depositTx);
+        expect(r.isAccepted, isTrue, reason: '$r');
+      }
+      print('${transfers.length} transfers taken in in ${sw.elapsedMilliseconds} ms');
+      sw.reset();
+      final a = await co.building!;
+      expect(a, isNotNull, reason: '${co.lastFailure}');
+      print('round ${a!.round} closed to mined in ${sw.elapsedMilliseconds} ms: ${co.lastTiming}');
+      return a;
+    }
+
+    // ---- round 1 takes the deposit in
+    final d = t.transfers1[0];
+    final a1 = await round([ShieldedTransfer(d.publics, d.proof, d.bundle, depositOutpoint: depositOutpoint), ...t.transfers1.sublist(1)]);
+    expect(a1.round, 1);
+    expect(co.ledger.tipRound.outputs[3].satoshis, BigInt.from(501));
+
+    // ---- round 2 spends the deposited note and withdraws 300
+    final a2 = await round(t.transfers2);
+    expect(a2.round, 2);
+    final r2 = co.ledger.tipRound;
+    expect(r2.outputs[3].satoshis, BigInt.from(201));
+
+    // ---- the withdrawal is a plain P2PKH the payee can spend
+    final paid = r2.outputs.indexWhere((o) => _pays(o, hex.decode(stranger.pubkeyHash160)));
+    expect(r2.outputs[paid].satoshis, BigInt.from(300));
+    final spendPaid = (TransactionBuilder()
+          ..spendFromTxnWithSigner(DefaultTransactionSigner(sigHashAll, strangerKey), r2, paid,
+              TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(strangerKey.publicKey))
+          ..spendToPKH(stranger, BigInt.from(299)))
+        .build(false);
+    await net.submit('payee', spendPaid);
+
+    // ---- a reader given the chain reaches the coordinator's ledger
+    final reader = ShieldedChainReader.open(ShieldedPoolLayout.of(plan.tree), r0, w0, y0.tx);
+    reader.read(store.triples);
+    expect(reader.stopped, isFalse, reason: '${reader.refusal}');
+    expect(reader.ledger.header.encode(), co.ledger.header.encode());
+    expect(reader.ledger.snapshot(), co.ledger.snapshot());
+
+    final dump = env['POOL_CHAIN_DUMP'];
+    if (dump != null) {
+      final r = store.rounds;
+      File(dump).writeAsStringSync(jsonEncode({
+        for (final (n, tx) in [('Y0', y0.tx), ('Y1', r[0].y), ('Y2', r[1].y), ('R0', r0), ('W0', w0),
+          ('D', depositTx), ('R1', r[0].round), ('W1', r[0].witness), ('R2', r[1].round), ('W2', r[1].witness)])
+          n: tx.serialize(),
+        for (final (i, f) in funding.given.indexed) 'F$i': f.serialize(),
+      }));
+    }
+  }, skip: env['POOL_LOCALNET'] == null || env['POOL_COORDINATOR'] == null
+          ? 'needs ../localnet up; set POOL_LOCALNET=1 POOL_COORDINATOR=1'
+          : false,
+      timeout: const Timeout(Duration(minutes: 120)));
+}
+
+/// The fixture's transfers, which can be kept in a file between runs: a
+/// coordinator run needs the spend proofs and nothing the fixture
+/// aggregates.
+class _Transfers {
+  final List<ShieldedTransfer> transfers1, transfers2;
+  final PoolReceipt receipt;
+  final PoolWithdrawal withdrawal;
+  _Transfers(this.transfers1, this.transfers2, this.receipt, this.withdrawal);
+
+  static Future<_Transfers> load(String? path, bool production, StarkParams spendP, Future<PoolChainFixture> Function() prove) async {
+    final file = path == null ? null : File('$path.transfers.json');
+    if (file != null && file.existsSync()) {
+      final j = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      if (j['production'] != production) throw StateError('$file holds ${j['production'] ? '' : 'non-'}production transfers');
+      List<ShieldedTransfer> ts(String k) => [for (final h in j[k] as List) ShieldedTransfer.decode(hex.decode(h as String), spendP)];
+      print('transfers read from ${file.path}');
+      return _Transfers(ts('transfers1'), ts('transfers2'), PoolReceipt(hex.decode(j['cm'] as String), BigInt.parse(j['cmSats'] as String)),
+          PoolWithdrawal(hex.decode(j['wPKH'] as String), BigInt.parse(j['wSats'] as String)));
+    }
+    final sw = Stopwatch()..start();
+    final f = await prove();
+    print('proved the transfers of rounds 1 and 2 in ${sw.elapsedMilliseconds} ms');
+    file?.writeAsStringSync(jsonEncode({
+      'production': production,
+      'transfers1': [for (final t in f.transfers1) hex.encode(t.encode(spendP))],
+      'transfers2': [for (final t in f.transfers2) hex.encode(t.encode(spendP))],
+      'cm': hex.encode(f.receipt.commitment),
+      'cmSats': f.receipt.satoshis.toString(),
+      'wPKH': hex.encode(f.withdrawal.pubkeyHash),
+      'wSats': f.withdrawal.satoshis.toString(),
+    }));
+    return _Transfers(f.transfers1, f.transfers2, f.receipt, f.withdrawal);
+  }
+}
+
+/// A funding source on the node: each request spends the coordinator's
+/// current change, pays exactly what was asked to the coordinator's key at
+/// output 1 with the change at output 0, and mines it.
+class _NodeFunding implements CoordinatorFunding {
+  final Localnet net;
+  final TransactionSigner signer;
+  final SVPublicKey pubKey;
+  final Address to;
+  final List<Transaction> given = [];
+  Transaction _coin;
+  int _vout;
+  _NodeFunding(this.net, this._coin, this._vout, this.signer, this.pubKey, this.to);
+
+  Future<Transaction> pay(Address a, BigInt sats) async {
+    final tx = (TransactionBuilder()
+          ..spendFromTxnWithSigner(signer, _coin, _vout, TransactionInput.MAX_SEQ_NUMBER, P2PKHUnlockBuilder(pubKey))
+          ..spendToPKH(a, sats)
+          ..sendChangeToPKH(to)
+          ..withFeePerKb(feeRate * 10))
+        .build(false);
+    if (tx.outputs[1].satoshis != sats) throw StateError('the builder did not put the payment at output 1');
+    await net.submit('fund', tx);
+    given.add(tx);
+    _coin = tx;
+    _vout = 0;
+    return tx;
+  }
+
+  @override
+  Future<FundingOutput?> output(BigInt minValue) async => FundingOutput(await pay(to, minValue), 1, signer, pubKey);
+}
+
+/// Keeps every built round and names its transactions for the log.
+class _ChainStore implements CoordinatorStore {
+  final rounds = <({int number, Transaction y, Transaction round, Transaction witness})>[];
+  final _names = <String, String>{};
+
+  @override
+  Future<void> roundBuilt(int number, Transaction y, Transaction round, Transaction witness, Uint8List snapshot) async {
+    rounds.add((number: number, y: y, round: round, witness: witness));
+    _names[y.id] = 'Y$number';
+    _names[round.id] = 'R$number';
+    _names[witness.id] = 'W$number';
+  }
+
+  String nameOf(Transaction tx) => _names[tx.id] ?? 'tx';
+
+  List<ShieldedRoundTxs> get triples => [for (final r in rounds) (round: r.round, witness: r.witness, nextSlot: r.y)];
 }
 
 /// What the chain needs from [PoolChainFixture], which can be kept in a

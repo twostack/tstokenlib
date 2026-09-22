@@ -201,12 +201,17 @@ class ShieldedPoolTool {
       List<PoolReceipt>? receipts,
       int? nLockTime,
       int pp1OutputIndex = 1,
-      int pp2OutputIndex = 2}) {
+      int pp2OutputIndex = 2,
+      TransactionSigner? fundingSigner,
+      SVPublicKey? fundingPubKey}) {
 
     var signerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var pp2Unlocker = PP2UnlockBuilder(tokenTx.hash);
     var witnessLocker = ModP2PKHLockBuilder.fromAddress(signerAddress);
-    var fundingUnlocker = P2PKHUnlockBuilder(ownerPubkey);
+    // The funding output may belong to a key other than the owner's; PP1
+    // reads only the funding outpoint, never who signs it.
+    var fundingTxSigner = fundingSigner ?? signer;
+    var fundingUnlocker = P2PKHUnlockBuilder(fundingPubKey ?? ownerPubkey);
     var emptyUnlocker = DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
 
     var seqNum = nLockTime != null
@@ -214,7 +219,7 @@ class ShieldedPoolTool {
         : TransactionInput.MAX_SEQ_NUMBER;
 
     var preImageBuilder = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, seqNum, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, seqNum, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, emptyUnlocker)
         .spendFromTxn(tokenTx, pp2OutputIndex, seqNum, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one)
@@ -255,7 +260,7 @@ class ShieldedPoolTool {
     // boundary depends on the witness's own size, so the witness is built once
     // to measure it and once for real.
     var witnessBuilder1 = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, seqNum, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, seqNum, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, unlockerFor(paddingBytes))
         .spendFromTxn(tokenTx, pp2OutputIndex, seqNum, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one);
@@ -265,7 +270,7 @@ class ShieldedPoolTool {
     paddingBytes = Uint8List.fromList(tsl1.calculatePaddingBytes(witnessTx));
 
     var witnessBuilder2 = TransactionBuilder()
-        .spendFromTxnWithSigner(signer, fundingTx, fundingVout, seqNum, fundingUnlocker)
+        .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, seqNum, fundingUnlocker)
         .spendFromTxnWithSigner(signer, tokenTx, pp1OutputIndex, seqNum, unlockerFor(paddingBytes))
         .spendFromTxn(tokenTx, pp2OutputIndex, seqNum, pp2Unlocker)
         .spendToLockBuilder(witnessLocker, BigInt.one);
@@ -357,10 +362,15 @@ class ShieldedPoolTool {
        TransactionSigner? anchorSigner,
        SVPublicKey? anchorPubKey,
        bool spendAnchor = true,
-       BigInt? fee}) {
+       BigInt? fee,
+       TransactionSigner? ownerSigner}) {
 
     var ownerAddress = Address.fromPublicKey(ownerPubkey, networkType);
     var roundFee = fee ?? defaultFee;
+    // The owner's key signs the previous witness's output, V and the anchor;
+    // the funding output may belong to another key (a coordinator's wallet),
+    // so [ownerSigner] separates the two. Left out, one key does both.
+    var owner = ownerSigner ?? fundingTxSigner;
     var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
 
     // PP3_N pins the slot this round must spend at input 2. Without a slot in
@@ -479,7 +489,7 @@ class ShieldedPoolTool {
     if (roundProof != null && slotUnlocker != null) {
       throw ArgumentError('Pass roundProof or slotUnlocker, not both.');
     }
-    var vSigner = slotSigner ?? fundingTxSigner;
+    var vSigner = slotSigner ?? owner;
     if (roundProof != null && vSigner.sigHashType != PoolVerifierGen.sighashType) {
       throw ArgumentError('V takes a SIGHASH_ALL | FORKID signature from its signer, '
           'which is what lets it read hashOutputs; the slot signer signs '
@@ -488,11 +498,11 @@ class ShieldedPoolTool {
     var slotUnlock = slotUnlocker ??
         DefaultUnlockBuilder.fromScript(ScriptBuilder.createEmpty());
     var anchorUnlocker = P2PKHUnlockBuilder(anchorPubKey ?? ownerPubkey);
-    var anchorTxSigner = anchorSigner ?? fundingTxSigner;
+    var anchorTxSigner = anchorSigner ?? owner;
 
     var childPreImageBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
+        .spendFromTxnWithSigner(owner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, emptyUnlocker);
     if (spendAnchor) {
@@ -584,7 +594,7 @@ class ShieldedPoolTool {
 
     var childBuilder = TransactionBuilder()
         .spendFromTxnWithSigner(fundingTxSigner, fundingTx, fundingVout, TransactionInput.MAX_SEQ_NUMBER, fundingUnlocker)
-        .spendFromTxnWithSigner(fundingTxSigner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
+        .spendFromTxnWithSigner(owner, prevWitnessTx, 0, TransactionInput.MAX_SEQ_NUMBER, prevWitnessUnlocker)
         .spendFromTxn(prevSlotTx, 0, TransactionInput.MAX_SEQ_NUMBER, slotUnlock)
         .spendFromTxn(prevTokenTx, 3, TransactionInput.MAX_SEQ_NUMBER, sha256Unlocker);
     if (spendAnchor) {
