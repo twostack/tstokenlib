@@ -90,7 +90,10 @@ export 'src/recursion/prover_pool.dart' show NodeProver, NodeJob, LocalNodeProve
 export 'src/shielded_pool/pool_header.dart' show PoolHeader;
 export 'src/shielded_pool/pool_evidence.dart' show PoolEvidence, ProvenRound, ProvenNote, PP1Fields, EvidenceRefusal;
 export 'src/shielded_pool/pool_outputs.dart' show PoolWithdrawal, PoolReceipt;
-export 'src/crypto/note_encryption.dart' show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption;
+export 'src/crypto/note_encryption.dart'
+    show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption, lanesToBytes, bytesToLanes;
+export 'src/crypto/note_kem.dart' show NoteKem;
+export 'src/crypto/m31.dart' show M31;
 export 'src/crypto/note_commitment_tree.dart' show MerklePath, BlockFold, FoldedPath, FoldRefusal;
 export 'src/script_gen/pool_spend_air.dart' show PoolHash, PoolSpendAir, PoolPublicInputs, SpendNote, OutputNote, PoolSpendWitness;
 export 'src/crypto/stark_prover_ref.dart' show StarkParams;
