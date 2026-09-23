@@ -13,14 +13,17 @@ import 'package:tstokenlib/src/script_gen/stark_verifier_gen.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_header.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_out_hash.dart';
 import 'package:tstokenlib/src/shielded_pool/pool_outputs.dart';
+import 'package:tstokenlib/testing.dart' show PoolTestParams;
+
 import 'pool_verifier_test.dart' show VRound, ownerKey, strangerKey, pkhOf, refused;
 
-// Test-size parameters, as the nullifier aggregation test proves at.
-const spendP = StarkParams(
-    logTrace: PoolSpendAir.logTrace, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1, zkRandomizers: 16);
-const p1 = StarkParams(logTrace: 15, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
-const p2 = StarkParams(logTrace: 17, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
-const rootP = StarkParams(logTrace: 15, logBlowup: 2, logExpand: 3, logFinal: 3, numQueries: 2, grindBytes: 1);
+// Test-size parameters, as the nullifier aggregation test proves at. They
+// live in the library now, beside the fixture that proves at them, so a
+// package built on tstokenlib can use the same chain.
+const spendP = PoolTestParams.spend;
+const p1 = PoolTestParams.level1;
+const p2 = PoolTestParams.level2;
+const rootP = PoolTestParams.root;
 
 /// A round V checks against a real root proof: the same transaction harness
 /// as [VRound], with the proof's unlock under the tail instead of bare lanes.

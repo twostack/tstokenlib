@@ -84,6 +84,21 @@ class PP1SpLockBuilder extends LockingScriptBuilder {
     );
   }
 
+  /// Reads the five fields at their fixed offsets.
+  ///
+  /// **This is not a security boundary.** It checks the pushes it needs in
+  /// order to read, and nothing about the script body — so it reads a script
+  /// carrying a PP1's first [PP1SpScriptGen.scriptBodyStart] bytes over a body
+  /// that spends on a signature exactly as it reads a real PP1_SP, and returns
+  /// the forger's chosen tokenId, owner and header as though the chain had
+  /// enforced them. The whole induction lives in the body.
+  ///
+  /// Use it to build, or on a script this side wrote. **A reader of chain data
+  /// must go through [PoolEvidence.readPP1]**, which regenerates the script
+  /// from the fields it parsed and requires every byte to match. A forged
+  /// round built this way was broadcast and mined on localnet for the price of
+  /// two ordinary transactions; see the design record, "The one-hop lineage
+  /// claim, attacked".
   @override
   void parse(SVScript script) {
     var buf = script.buffer;

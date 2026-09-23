@@ -231,6 +231,14 @@ class AggregationTree {
     if (receiptSlots > 0 && ReceiptSlot.pinnedSources.any(this.freeChunks.contains)) {
       throw ArgumentError('a receipt reads the amount and flag chunks, which must be public');
     }
+    final appended = leavesAppended;
+    if (appended <= 0 || appended & (appended - 1) != 0) {
+      throw ArgumentError('a round must append a power of two leaves, not $appended '
+          '($transfers transfers x ${leafChunks.length} = $leaves leaves, '
+          '$subtrees subtrees of $subtreeLeaves); round N owns the aligned subtree at '
+          'level log2(leaves a round) only while that count is a power of two, and a '
+          'note keeps its path current from one block root a round only because it does');
+    }
   }
 
   /// The same [arity] at every level.

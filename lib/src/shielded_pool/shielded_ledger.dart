@@ -18,7 +18,6 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
-import '../builder/pp1_sp_lock_builder.dart';
 import '../builder/pp1_sp_unlock_builder.dart';
 import '../crypto/m31.dart';
 import '../crypto/note_commitment_tree.dart';
@@ -29,6 +28,7 @@ import '../script_gen/pool_spend_air.dart';
 import '../script_gen/pool_verifier_gen.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/slot_script_common.dart';
+import 'pool_evidence.dart';
 import 'pool_header.dart';
 import 'pool_out_hash.dart';
 import 'pool_outputs.dart';
@@ -84,6 +84,16 @@ class ShieldedPoolLayout {
       receiptSlots: PoolReceipt.maxPerRound);
 
   int get transfers => tree.transfers;
+
+  /// Leaves a round appends: a fixed power of two for the pool's life
+  /// (512 at production parameters, 32 at test), asserted where the plan
+  /// is built.
+  int get leavesPerRound => tree.leavesAppended;
+
+  /// log2 of [leavesPerRound]: the tree level whose nodes are whole
+  /// rounds. Round N owns the node at this level, index N - 1, and that
+  /// node is its block root.
+  int get blockLevel => leavesPerRound.bitLength - 1;
 
   /// The statement V's unlock begins with: [PoolStatement.numPublics]
   /// pushes, each a minimal script number below p. Returns the lanes.
@@ -155,8 +165,14 @@ class ShieldedRound {
   final List<PoolWithdrawal> withdrawals;
   final List<PoolReceipt> receipts;
 
+  /// The round's block root: the tree node at the block level, index
+  /// `number - 1`, in 32 bytes. This is the whole of what a party needs a
+  /// round to publish in order to keep its own paths current, whatever the
+  /// round's size (see [BlockFold]).
+  final List<int> blockRoot;
+
   ShieldedRound._(this.number, this.header, this.transfers, this.bundles, this.positions, this.nullifiers, this.withdrawals,
-      this.receipts);
+      this.receipts, this.blockRoot);
 
   List<bool> get padding => [for (final t in transfers) t.isPadding];
 }
@@ -186,8 +202,45 @@ class ShieldedLedger {
 
   PoolHeader get header => _header;
   NoteCommitmentTree get tree => _tree;
+
+  /// The block root of the round the ledger stands at: the node at the
+  /// layout's block level, index `round - 1`, as [SlotScript.lanesBytes]
+  /// writes it. Refuses at the genesis, which appended no block.
+  List<int> get blockRoot {
+    if (_number == 0) throw StateError('the genesis appends no leaves, so there is no block root before round 1');
+    return SlotScript.lanesBytes(_tree.nodeAt(layout.blockLevel, _number - 1));
+  }
   NullifierTree get nullifiers => _nullifiers;
   int get size => _tree.size;
+
+  /// The block root of round [n], for any round the ledger has applied.
+  List<int> blockRootOf(int n) {
+    if (n < 1 || n > _number) throw RangeError.range(n, 1, _number, 'round');
+    return SlotScript.lanesBytes(_tree.nodeAt(layout.blockLevel, n - 1));
+  }
+
+  /// What a new follower is given to join the pool where the ledger stands:
+  /// the round, that round's block root, and the complete left subtrees
+  /// above the block level, in level order (at most 23 nodes at production
+  /// parameters, 736 bytes, whatever the pool's age).
+  ///
+  /// A follower built from this folds every later round exactly as one that
+  /// had folded every round since the genesis. It is not trusted: the
+  /// follower's root after restoring must be the `cmRoot` of a round the
+  /// wallet has proved off the chain.
+  ({int round, List<int> blockRoot, List<List<int>> left}) frontier() {
+    if (_number == 0) throw StateError('the genesis appends no leaves, so there is no frontier before round 1');
+    final m = _number - 1;
+    final level = layout.blockLevel;
+    return (
+      round: _number,
+      blockRoot: blockRoot,
+      left: [
+        for (int l = 0; l < NoteCommitmentTree.depth - level; l++)
+          if ((m >> l) & 1 == 1) SlotScript.lanesBytes(_tree.nodeAt(level + l, (m >> l) ^ 1))
+      ],
+    );
+  }
 
   /// Rounds applied since the issuance.
   int get round => _number;
@@ -201,10 +254,24 @@ class ShieldedLedger {
 
   /// A ledger opened from a pool's [issuance], its [witness] (witness 0)
   /// and [slot] Y_0: the genesis header, empty trees, and that tip.
-  static ShieldedLedger open(ShieldedPoolLayout layout, Transaction issuance, Transaction witness, Transaction slot) {
+  ///
+  /// [tokenId] and [genesisHeader] say **which pool** the triple is supposed
+  /// to be, and come from the descriptor, out of band. They are required
+  /// because without them opening checks only that the three transactions
+  /// point at each other, which anyone can arrange for a pool of their own:
+  /// a forger builds an issuance, a witness and a slot, mines them for the
+  /// price of three transactions, and every round applied on top inherits the
+  /// mistake. Only the caller knows which pool it meant.
+  static ShieldedLedger open(ShieldedPoolLayout layout, Transaction issuance, Transaction witness, Transaction slot,
+      {required List<int> tokenId, required List<int> genesisHeader}) {
     final empty = NoteCommitmentTree(), none = NullifierTree();
     final header = _guard('genesis', () {
-      final h = _pp1Header(issuance);
+      final fields = _pp1(issuance);
+      final h = fields.header;
+      _need(_eq(fields.tokenId, tokenId), 'genesis',
+          'the issuance carries tokenId ${hex.encode(fields.tokenId)}, this pool is ${hex.encode(tokenId)}');
+      _need(_eq(fields.genesisHeader, genesisHeader), 'genesis',
+          'the issuance opened on a different state from the one this pool published');
       final slotId = slot.id, issuanceId = issuance.id;
       _need(_spends(issuance, 1, slotId, 1), 'genesis', 'the issuance does not spend Y_0\'s anchor at input 1');
       _need(_names(issuance, slot.hash), 'genesis', 'the issuance\'s PP3 does not name Y_0');
@@ -386,7 +453,7 @@ class ShieldedLedger {
     _roundId = roundId;
     _witnessId = null;
     _number++;
-    return ShieldedRound._(_number, h, full, bundles, positions, inserted, withdrawals, receipts);
+    return ShieldedRound._(_number, h, full, bundles, positions, inserted, withdrawals, receipts, blockRoot);
   }
 
   // ---- spending from the ledger ----
@@ -516,12 +583,21 @@ class ShieldedLedger {
     if (!ok) throw LedgerRefusal(check, reason);
   }
 
-  static PoolHeader _pp1Header(Transaction tx) {
+  /// The PP1_SP fields of [tx], read through the body check.
+  ///
+  /// Never by offset. A script carrying a PP1's first
+  /// [PP1SpScriptGen.scriptBodyStart] bytes over a body that spends on a
+  /// signature parses field for field and enforces nothing; only regenerating
+  /// the script and comparing every byte tells the two apart. See
+  /// [PoolEvidence.readPP1].
+  static PP1Fields _pp1(Transaction tx) {
     _need(tx.outputs.length >= 5, 'header', 'a pool transaction has five outputs or more');
-    final h = PP1SpLockBuilder.fromScript(tx.outputs[1].script).header;
-    if (h == null) throw const LedgerRefusal('header', 'output 1 is not a PP1_SP');
-    return h;
+    final (fields, why) = PoolEvidence.readPP1Of(tx, PoolEvidence.pp1Vout);
+    if (fields == null) throw LedgerRefusal('header', 'output 1 is not a PP1_SP (${why!.reason})');
+    return fields;
   }
+
+  static PoolHeader _pp1Header(Transaction tx) => _pp1(tx).header;
 
   static bool _spends(Transaction tx, int input, String txid, int vout) =>
       tx.inputs.length > input && tx.inputs[input].prevTxnId == txid && tx.inputs[input].prevTxnOutputIndex == vout;

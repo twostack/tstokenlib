@@ -21,7 +21,7 @@ void main() {
     layout = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
   });
 
-  ShieldedChainReader reader() => ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx);
+  ShieldedChainReader reader() => ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
   List<ShieldedRoundTxs> mined() => [
         (round: c.r1, witness: c.w1, nextSlot: c.y1.tx),
         (round: c.r2, witness: c.w2, nextSlot: c.y2.tx),
@@ -130,7 +130,8 @@ void main() {
           File('${dir.path}/${e.key}.tx').writeAsBytesSync(hex.decode(e.value.serialize()));
         }
         Transaction load(String n) => ShieldedLedger.parse(File('${dir.path}/$n.tx').readAsBytesSync());
-        final offline = ShieldedChainReader.open(layout, load('R0'), load('W0'), load('Y0'))
+        final offline =
+            ShieldedChainReader.open(layout, load('R0'), load('W0'), load('Y0'), tokenId: c.tokenId, genesisHeader: c.genesisHeader)
           ..read([
             for (final k in [1, 2]) (round: load('R$k'), witness: load('W$k'), nextSlot: load('Y$k'))
           ]);

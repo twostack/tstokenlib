@@ -31,6 +31,7 @@ import '../script_gen/pool_deposit_gen.dart';
 import '../script_gen/pool_verifier_gen.dart';
 import '../script_gen/pp1_sp_script_gen.dart';
 import '../script_gen/stark_verifier_gen.dart';
+import '../shielded_pool/pool_evidence.dart';
 import '../shielded_pool/pool_header.dart';
 import '../shielded_pool/pool_outputs.dart';
 import 'utils.dart';
@@ -371,7 +372,13 @@ class ShieldedPoolTool {
     // the funding output may belong to another key (a coordinator's wallet),
     // so [ownerSigner] separates the two. Left out, one key does both.
     var owner = ownerSigner ?? fundingTxSigner;
-    var prevPP1 = PP1SpLockBuilder.fromScript(prevTokenTx.outputs[1].script);
+    // Through the body check, never by offset: a script carrying a PP1's
+    // first 563 bytes over a body that spends on a signature parses field for
+    // field and enforces nothing (see [PoolEvidence.readPP1]).
+    final (prevPP1, whyPP1) = PoolEvidence.readPP1Of(prevTokenTx, PoolEvidence.pp1Vout);
+    if (prevPP1 == null) {
+      throw ArgumentError('the parent carries no PP1_SP at output ${PoolEvidence.pp1Vout} ($whyPP1)');
+    }
 
     // PP3_N pins the slot this round must spend at input 2. Without a slot in
     // the parent there is nothing to spend and the round can never be mined, so
@@ -401,22 +408,22 @@ class ShieldedPoolTool {
           slotTx: nextSlotTx,
           outpoint: nextSlot,
           header: newHeader,
-          verifierBodyHash: prevPP1.verifierBodyHash!,
-          signerPKH: newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160));
+          verifierBodyHash: prevPP1.verifierBodyHash,
+          signerPKH: newOwnerPKH ?? prevPP1.ownerPKH);
     }
     if (nextSlotTx.outputs.length < 2) {
       throw ArgumentError('nextSlotTx has no output 1 for the round to spend '
           'as its anchor.');
     }
 
-    var nextOwnerPKH = newOwnerPKH ?? hex.decode(prevPP1.ownerAddress!.pubkeyHash160);
+    var nextOwnerPKH = newOwnerPKH ?? prevPP1.ownerPKH;
     var nextOwnerAddress =
         Address.fromPubkeyHash(hex.encode(nextOwnerPKH), networkType);
 
     // The genesis header and the verifier body hash are immutable, so they come
     // straight off the parent.
-    var pp1Locker = PP1SpLockBuilder(nextOwnerAddress, prevPP1.tokenId!,
-        prevPP1.verifierBodyHash!, newHeader, prevPP1.genesisHeader!);
+    var pp1Locker = PP1SpLockBuilder(nextOwnerAddress, prevPP1.tokenId,
+        prevPP1.verifierBodyHash, newHeader, prevPP1.genesisHeader);
 
     // PP1 rebuilds the next script as parent[0:1] + newPKH + parent[21:294] +
     // newHeader + parent[530:], so anything the generator would change outside

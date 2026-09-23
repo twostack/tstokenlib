@@ -41,6 +41,7 @@ export 'src/builder/pp1_sm_lock_builder.dart';
 export 'src/builder/pp1_sm_unlock_builder.dart';
 export 'src/transaction/state_machine_tool.dart';
 export 'src/builder/pp1_sp_lock_builder.dart';
+export 'src/script_gen/pp1_sp_script_gen.dart' show PP1SpScriptGen;
 export 'src/builder/pp1_sp_unlock_builder.dart';
 export 'src/transaction/shielded_pool_tool.dart';
 export 'src/transaction/signing_callback.dart';
@@ -87,7 +88,9 @@ export 'src/shielded_pool/pool_protocol.dart'
 export 'src/recursion/pool_aggregator.dart' show PoolAggregation, AggregationLevel;
 export 'src/recursion/prover_pool.dart' show NodeProver, NodeJob, LocalNodeProver, ProverPool, NodeOutcome;
 export 'src/shielded_pool/pool_header.dart' show PoolHeader;
+export 'src/shielded_pool/pool_evidence.dart' show PoolEvidence, ProvenRound, ProvenNote, PP1Fields, EvidenceRefusal;
 export 'src/shielded_pool/pool_outputs.dart' show PoolWithdrawal, PoolReceipt;
 export 'src/crypto/note_encryption.dart' show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption;
-export 'src/crypto/note_commitment_tree.dart' show MerklePath;
+export 'src/crypto/note_commitment_tree.dart' show MerklePath, BlockFold, FoldedPath, FoldRefusal;
+export 'src/script_gen/pool_spend_air.dart' show PoolHash, PoolSpendAir, PoolPublicInputs, SpendNote, OutputNote, PoolSpendWitness;
 export 'src/crypto/stark_prover_ref.dart' show StarkParams;

@@ -21,7 +21,6 @@ import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 
-import '../builder/pp1_sp_lock_builder.dart';
 import '../builder/pp1_sp_unlock_builder.dart' show ShieldedPoolAction;
 import '../crypto/note_commitment_tree.dart';
 import '../crypto/stark_prover.dart' show PreCommitment;
@@ -33,6 +32,7 @@ import '../script_gen/pool_verifier_gen.dart';
 import '../script_gen/slot_script_common.dart';
 import '../script_gen/stark_verifier_gen.dart';
 import '../transaction/shielded_pool_tool.dart';
+import 'pool_evidence.dart';
 import 'pool_header.dart';
 import 'pool_out_hash.dart';
 import 'pool_protocol.dart';
@@ -427,7 +427,7 @@ class ShieldedCoordinator {
       ShieldedCoordinator(
           config: config,
           tool: tool,
-          ledger: ShieldedLedger.open(ShieldedPoolLayout.of(config.plan.tree), issuance, witness0, slot0),
+          ledger: _openOwn(ShieldedPoolLayout.of(config.plan.tree), issuance, witness0, slot0),
           funding: funding,
           store: store,
           publish: publish,
@@ -438,6 +438,23 @@ class ShieldedCoordinator {
           rng: rng);
 
   static void _ignore(PoolReply _) {}
+
+  /// The ledger of a pool the operator is opening or restoring themselves.
+  ///
+  /// [ShieldedLedger.open] asks which pool the triple is supposed to be,
+  /// because for a wallet that answer comes from a descriptor obtained out of
+  /// band and nothing in the triple can supply it. Here it is not circular:
+  /// the operator built this issuance with their own tool, so the issuance is
+  /// the definition of their pool, and the identity is read off it through
+  /// the body check rather than by offset.
+  static ShieldedLedger _openOwn(
+      ShieldedPoolLayout layout, Transaction issuance, Transaction witness0, Transaction slot0,
+      {List<int>? tokenId, List<int>? genesisHeader}) {
+    final (fields, why) = PoolEvidence.readPP1Of(issuance, PoolEvidence.pp1Vout);
+    if (fields == null) throw StateError('the issuance carries no PP1_SP at output ${PoolEvidence.pp1Vout} ($why)');
+    return ShieldedLedger.open(layout, issuance, witness0, slot0,
+        tokenId: tokenId ?? fields.tokenId, genesisHeader: genesisHeader ?? fields.genesisHeader);
+  }
 
   /// The pool this coordinator is pointed at must be the one its plan
   /// builds and its key owns. The plan's verifier body must hash to what
@@ -450,16 +467,19 @@ class ShieldedCoordinator {
     if (plan.transfers != ledger.layout.transfers) {
       throw StateError('the plan folds ${plan.transfers} transfers, the ledger\'s layout ${ledger.layout.transfers}');
     }
+    final off = _offBlock(ledger.layout, ledger);
+    if (off != null) throw StateError(off);
     final stmt = ledger.layout.statement;
     _body = ShieldedPoolTool.poolVerifier(stmt, verifier: StarkVerifierGen(plan.rootP, plan.rootAir(List.filled(stmt.numPublics, 0)))).body();
-    final pp1 = PP1SpLockBuilder.fromScript(ledger.tipRound.outputs[1].script);
+    final (pp1, whyPP1) = PoolEvidence.readPP1Of(ledger.tipRound, PoolEvidence.pp1Vout);
+    if (pp1 == null) throw StateError('the pool\'s tip carries no PP1_SP at output ${PoolEvidence.pp1Vout} ($whyPP1)');
     final bodyHash = crypto.sha256.convert(_body).bytes;
-    if (!_eq(pp1.verifierBodyHash ?? const [], bodyHash)) {
+    if (!_eq(pp1.verifierBodyHash, bodyHash)) {
       throw StateError('the plan builds a verifier the pool does not certify: the PP1 names body hash '
-          '${hex.encode(pp1.verifierBodyHash ?? const [])}, the plan\'s hashes to ${hex.encode(bodyHash)}');
+          '${hex.encode(pp1.verifierBodyHash)}, the plan\'s hashes to ${hex.encode(bodyHash)}');
     }
     _ownerPKH = hex.decode(Address.fromPublicKey(ownerPub, tool.networkType).pubkeyHash160);
-    final pkh = hex.decode(pp1.ownerAddress!.pubkeyHash160);
+    final pkh = pp1.ownerPKH;
     if (!_eq(pkh, _ownerPKH)) {
       throw StateError('the pool is owned by ${hex.encode(pkh)}, the coordinator\'s key is ${hex.encode(_ownerPKH)}');
     }
@@ -737,7 +757,8 @@ class ShieldedCoordinator {
       timing.lap(stage);
 
       stage = 'publish';
-      final a = PoolAnnouncement.of(applied.number, applied.header, built.round, built.witness, built.y.tx);
+      final a = PoolAnnouncement.of(applied.number, applied.header, built.round, built.witness, built.y.tx,
+          blockRoot: applied.blockRoot);
       _announcements.add(a);
       await publish(built.y.tx);
       await publish(built.round);
@@ -940,15 +961,19 @@ class ShieldedCoordinator {
     Transaction? slot0,
     required Iterable<ShieldedRoundTxs> triples,
     int? lastRound,
+    List<int>? tokenId,
+    List<int>? genesisHeader,
   }) {
     final ShieldedLedger ledger;
     if (snapshot != null) {
       ledger = ShieldedLedger.restore(layout, snapshot);
     } else if (issuance != null && witness0 != null && slot0 != null) {
-      ledger = ShieldedLedger.open(layout, issuance, witness0, slot0);
+      ledger = _openOwn(layout, issuance, witness0, slot0, tokenId: tokenId, genesisHeader: genesisHeader);
     } else {
       throw ArgumentError('recover from a snapshot, or from the issuance, witness 0 and Y_0');
     }
+    final off = _offBlock(layout, ledger);
+    if (off != null) throw RecoveryRefusal(off);
     final reader = ShieldedChainReader(ledger);
     final list = triples.toList();
     reader.read(list);
@@ -967,6 +992,20 @@ class ShieldedCoordinator {
   }
 
   // ---- helpers ----
+
+  /// A sentence when [ledger]'s tree was not built under [layout]'s plan,
+  /// null when it was. A round appends the plan's fixed power-of-two block
+  /// of leaves, so after round N the tree holds exactly N blocks; a tree
+  /// that does not is a tree some other plan grew, and appending to it
+  /// would leave every later round straddling a block boundary, which no
+  /// wallet could then follow from one block root a round.
+  static String? _offBlock(ShieldedPoolLayout layout, ShieldedLedger ledger) {
+    final block = layout.tree.leavesAppended;
+    final want = ledger.round * block;
+    if (ledger.size == want) return null;
+    return 'the plan appends $block leaves a round, so at round ${ledger.round} the tree should hold $want rows; '
+        'this one holds ${ledger.size}, so it was built under another plan';
+  }
 
   static List<int> _lanesOf(List<int> bytes) =>
       [for (int i = 0; i < bytes.length; i += 4) bytes[i] | (bytes[i + 1] << 8) | (bytes[i + 2] << 16) | (bytes[i + 3] << 24)];

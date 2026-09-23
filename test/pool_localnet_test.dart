@@ -10,6 +10,7 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart';
 import 'package:test/test.dart';
 import 'package:tstokenlib/tstokenlib.dart';
+import 'package:tstokenlib/src/shielded_pool/pool_evidence.dart';
 import 'package:tstokenlib/src/crypto/note_commitment_tree.dart';
 import 'package:tstokenlib/src/crypto/nullifier_tree.dart';
 import 'package:tstokenlib/src/script_gen/pool_verifier_gen.dart';
@@ -338,7 +339,10 @@ void main() {
     await net.submit('payee', spendPaid);
 
     // ---- a reader given the chain reaches the coordinator's ledger
-    final reader = ShieldedChainReader.open(ShieldedPoolLayout.of(plan.tree), r0, w0, y0.tx);
+    final (identity, whyIdentity) = PoolEvidence.readPP1Of(r0, PoolEvidence.pp1Vout);
+    expect(identity, isNotNull, reason: '$whyIdentity');
+    final reader = ShieldedChainReader.open(ShieldedPoolLayout.of(plan.tree), r0, w0, y0.tx,
+        tokenId: identity!.tokenId, genesisHeader: identity.genesisHeader);
     reader.read(store.triples);
     expect(reader.stopped, isFalse, reason: '${reader.refusal}');
     expect(reader.ledger.header.encode(), co.ledger.header.encode());

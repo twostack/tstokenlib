@@ -45,8 +45,10 @@ class ShieldedChainReader {
   ShieldedChainReader(this.ledger);
 
   /// A reader at the pool's genesis.
-  factory ShieldedChainReader.open(ShieldedPoolLayout layout, Transaction issuance, Transaction witness0, Transaction slot0) =>
-      ShieldedChainReader(ShieldedLedger.open(layout, issuance, witness0, slot0));
+  factory ShieldedChainReader.open(ShieldedPoolLayout layout, Transaction issuance, Transaction witness0, Transaction slot0,
+          {required List<int> tokenId, required List<int> genesisHeader}) =>
+      ShieldedChainReader(
+          ShieldedLedger.open(layout, issuance, witness0, slot0, tokenId: tokenId, genesisHeader: genesisHeader));
 
   /// The last round applied: 0 at genesis.
   int get lastRound => ledger.round;

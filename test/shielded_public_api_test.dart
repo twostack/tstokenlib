@@ -20,7 +20,7 @@ void main() {
     expect(() => ShieldedTransfer.decode(bytes.sublist(1), p), throwsA(isA<TransferRefusal>()));
 
     final layout = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
-    final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx)
+    final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader)
       ..read([
         (round: c.r1, witness: c.w1, nextSlot: c.y1.tx),
         (round: c.r2, witness: c.w2, nextSlot: c.y2.tx),

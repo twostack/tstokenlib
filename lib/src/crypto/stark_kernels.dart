@@ -15,6 +15,7 @@
 */
 
 import 'dart:ffi' as ffi;
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
@@ -712,6 +713,33 @@ class StarkKernels implements ProverKernels {
   static StarkKernels? _loaded;
   static bool _tried = false;
 
+  /// Where this package is on disk, from the running program's package
+  /// config, or null when there is none (an AOT binary, a Flutter bundle).
+  /// A package that depends on tstokenlib runs from its own directory, so
+  /// the crate is not under its current directory or any parent of it.
+  static String? _packageRoot() {
+    var dir = Directory.current;
+    for (int up = 0; up < 6; up++) {
+      final f = File('${dir.path}/.dart_tool/package_config.json');
+      if (f.existsSync()) {
+        try {
+          final config = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+          for (final p in (config['packages'] as List).cast<Map<String, dynamic>>()) {
+            if (p['name'] != 'tstokenlib') continue;
+            final root = Uri.parse(p['rootUri'] as String);
+            final resolved = root.hasScheme ? root : f.parent.uri.resolveUri(root);
+            return resolved.toFilePath().replaceAll(RegExp(r'/$'), '');
+          }
+        } catch (_) {
+          return null;
+        }
+        return null;
+      }
+      dir = dir.parent;
+    }
+    return null;
+  }
+
   /// The library file name for this platform.
   static String get fileName => Platform.isMacOS
       ? 'libstark_kernels.dylib'
@@ -733,6 +761,10 @@ class StarkKernels implements ProverKernels {
       candidates.add('${dir.path}/native/stark_kernels/target/release/$fileName');
       dir = dir.parent;
     }
+    // and beside tstokenlib itself, for a package that depends on it: the
+    // crate lives in this repo, not in the caller's
+    final own = _packageRoot();
+    if (own != null) candidates.add('$own/native/stark_kernels/target/release/$fileName');
     StarkKernels? found;
     for (final c in candidates) {
       if (!File(c).existsSync()) continue;

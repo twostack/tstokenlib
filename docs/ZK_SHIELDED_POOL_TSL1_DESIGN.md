@@ -829,3 +829,239 @@ All on the coordinator's machine (Apple M3 Pro, 12 cores), one core unless state
 **The coordinator's bounds**, `tool/scratch/coordinator_cost_probe.dart`, offline on the dump of that chain. Intake of a production transfer: mean 18.1 ms, median 17.8 ms, worst 36 ms over the 256 of round 1, the deposit transfer with its covenant 17.5 ms, against the 50 ms bound; the proof verification is nearly all of it. The round from close to witness built: 254 s with the GPU and 341 s without, against the 10 minute bound, of which the aggregation is 245 s and 332 s and everything the coordinator adds about 9 s either way (trees 0.15 s, Y 0.6 s, dry builds 3.3 s, round 2.8 s, witness 0.6 s, apply 0.7 s). Opening a production coordinator costs 16 s once (generating the 1.78 MB verifier body and sizing Y) after 8 s to compile the plan. Recovery: restoring the 1,000-round synthetic snapshot took 9.7 s and recovering the two production rounds from genesis through the chain reader 1.7 s, 11.4 s together against the 30 s bound.
 
 **Not measured: a prover farm.** Level 1 is the only level the pool spreads, so eight provers would cut a production round to about 150 s, the serial tail after level 1 having measured about 126 s before; levels 2 and up would have to become jobs too, and round N+1's lower levels could start while round N's tail proves, since the ring and roots it needs are known before round N's aggregation starts. Neither is built.
+
+## 16. The one-hop lineage claim, attacked (2026-09-23)
+
+Every payment proof a wallet can build rests on one claim: that a mined witness
+spending a round's PP1 and PP2, with the pool's tokenId in that PP1, places the
+round in this pool's chain, one hop back to genesis. Nothing had ever attacked
+it. This section is the attack and what it found.
+
+**The claim is sound in script, and was broken in the reader.**
+
+What makes it sound is that PP1's round branch is the induction. It rebuilds the
+round it lives in from its parent's bytes and refuses one the parent did not
+produce, terminating at a create branch that anchors `tokenId` to an outpoint
+spendable once. `tokenId` sits in the immutable region the rebuild copies
+across untouched, so it cannot be changed at a round; it can only be set at
+create, against an outpoint the real pool already spent. A witness that was
+mined therefore had that argument run over it by the miners, and a payee does
+not have to repeat it.
+
+What breaks is that **a payee runs no script. It reads bytes.**
+`PP1SpLockBuilder.parse` reads `ownerPKH`, `tokenId`, `verifierBodyHash`,
+`genesisHeader` and `header` at fixed offsets and never looks at the script
+body. So the forgery is:
+
+```
+[the real PP1's first 563 bytes]  OP_DROP x5  <P2PKH to the forger>
+```
+
+Its head is byte-identical to a genuine PP1 for the target pool, so every field
+a reader looks up is the pool's own, including a `header` whose `cmRoot` the
+forger chose. Its body spends on a signature. `test/pool_lineage_attack_test.dart`
+shows all of it:
+
+- the library's own parser reads the forgery as this pool, with the forger's
+  chosen pool state;
+- the forgery spends on a signature alone under the interpreter, where a real
+  PP1 given the same unlock fails at the branch selector, which is the induction
+  refusing;
+- on localnet the forged round and its witness were broadcast and mined by the
+  regtest node, at ordinary transaction cost, and reached a depth of one block.
+  So this is not a thought experiment: a payee really can be handed it.
+
+**The fix is in the reader, and it is one comparison.** `PoolEvidence.provenRound`
+parses the five fields by offset, regenerates the script with
+`PP1SpScriptGen.generate`, and requires the result to be byte-identical to the
+script it was given. A lookalike differs in the body and is refused at the step
+named `PP1 is this pool's script`. Everything after that comparison reads fields
+off a script whose body is the one the chain enforced. Removing that single
+comparison makes the test report the forged round as **proven**, which is the
+regression it exists to catch.
+
+**What the check does and does not establish.** It establishes that a
+transaction carrying this pool's PP1 script, with this pool's tokenId, verifier
+body hash and genesis header, was accepted by the chain, one hop back from a
+mined witness. It does not establish the round's number: a pool header carries
+no round number, so the caller takes that from the announcement or its own count
+and this check does not vouch for it. It also does not inspect PP2 beyond the
+witness spending it, deliberately: PP1's body is what carries the induction, and
+PP2 adds nothing to a payee's argument.
+
+**Verdict: the claim holds, and the change proceeds.** No multi-round proof is
+needed in a payment proof. The cost of the fix is one script regeneration per
+round checked.
+
+## 17. Block roots: following a pool for 32 bytes a round (2026-09-23)
+
+Measured and built on 2026-09-23 while applying `sp-block-roots`. This section
+grows as the change is applied; the numbers in it are from this machine, an
+Apple M3 Pro, single core, Dart AOT off (`dart test`).
+
+### The geometry
+
+A round appends a fixed power-of-two block of leaves, so round N owns exactly
+the aligned subtree at the block level, **index N − 1** (round 1 owns block 0;
+the genesis appends nothing). A note's siblings below that level are frozen the
+moment its own round is mined, and the siblings above it follow from one 32-byte
+block root a round.
+
+| | leaves a round | block level | levels above it | per round a follower reads |
+|---|---|---|---|---|
+| test parameters (4 transfers) | 32 | 5 | 27 | 32 B |
+| production (256 transfers) | 512 | 9 | 23 | 32 B |
+| what following every commitment would cost (production) | 512 | — | — | 16,384 B |
+
+The tree is depth 32 throughout; nothing about proving changes, because the
+spend AIR walks a flat 32-step chain taking siblings as witness and the round
+proof already appends aligned subtrees at a known index.
+
+### The invariant, and the three places that hold it
+
+The block size must be a power of two and must not change for a pool's life.
+At 608 leaves a round (300 transfers, 19 subtrees) the blocks still sit at
+multiples of 512 and the rounds do not, so a note's lower siblings stop being
+determined by its own round.
+
+1. `AggregationTree`'s constructor throws on a leaf count that is not a power of
+   two, naming the count and the transfers and subtrees it came from. A plan
+   that would break the property fails in a unit test.
+2. The coordinator refuses to stand on a tree some other plan grew:
+   `ShieldedCoordinator.recover` and the constructor both require
+   `tree.size == round × leaves a round`, naming both numbers. This also closes
+   a smaller hole: `ShieldedLedger.restore` checks a snapshot's leaves against
+   its header but never against its round number, so a snapshot claiming round 2
+   over one round's leaves used to restore quietly.
+3. The descriptor carries the count (task 4.1), so a wallet can tell that the
+   pool it is talking to has the shape its stored state was built under.
+
+### The fold
+
+`BlockFold` holds the aligned pair of nodes at each level above the block level
+— at most 2 × 24 nodes at production, whatever the number of rounds — and
+`FoldedPath` holds one leaf's 32 siblings. Folding round N's block root rewrites
+exactly those siblings the new block sits under, which is at most one per path
+per round, and returns the commitment root the fold now describes. Given the
+round's `cmRoot`, from a header proved off the chain, the fold is checked and a
+block root that does not reproduce it is refused naming the round, leaving the
+follower exactly where it was. That check is what makes a block root safe to
+take from anyone: it is the same broadcast for every wallet, it names nobody,
+and a wrong one cannot be used.
+
+**Measured, 1,000 blocks of 512 leaves (production geometry):** building the
+tree of 512,000 leaves directly takes 264 ms; folding the same 1,000 block roots
+takes 203.3 ms, **204.2 µs a fold** with one path kept current, against the
+1 ms bound. The folded path for a leaf in block 3, after 997 further blocks, is
+byte-identical to `NoteCommitmentTree.path` for that position on the directly
+built tree, and reproduces its root.
+
+### The protocol at version 2
+
+Version 2 adds, and refuses a version 1 message rather than reading it, because
+every field it adds is one a wallet needs in order to act without looking
+anything up.
+
+| message | added | measured |
+|---|---|---|
+| descriptor | leaves a round (4), catch-up range (4), tokenId (32), genesis header (236) | **391 B** for the production plan, against the 512 B bound |
+| announcement | the round's block root (32) | 370 B, from 338 |
+| catch-up request | new: block roots over a run, the frontier, or the head | 11 B |
+| catch-up reply | new: roots in round order / a frontier / a head proof | head proof **792,245 B** at test parameters |
+
+The descriptor reads its tokenId and genesis header off the issuance's own PP1
+**through the body check**, so a descriptor cannot send the wallets reading it to
+check rounds against fields no chain ever enforced.
+
+A frontier is the round, that round's block root, and the complete left subtrees
+above the block level — one per level where the block index has a bit set, so at
+most 23 nodes and 736 bytes at production parameters, whatever the pool's age. A
+wallet with no notes joins on that plus a head proof and reads no history at
+all; a wallet holding notes must fold every block root from its note's round
+onward, because a frontier cannot bring a particular leaf's siblings up to date.
+
+A block-root request names one of the aligned runs the descriptor publishes
+(1,024 rounds by default) and nothing else. A range of the wallet's own
+choosing — the round it was last current at — is a fingerprint across repeated
+catch-ups; a published set makes every wallet's request one of a handful.
+`PoolDescriptor.requireRange` refuses anything else, naming the range.
+
+**Bounds, checked before allocation:** 65,536 block roots a reply (about 2 MB,
+more than a year of a pool closing a round every ten minutes); a frontier at the
+tree's depth; and each of a head proof's two transactions at the chain's own
+10 MB per-transaction limit, since a larger transaction cannot be mined and so
+cannot be part of a head proof. 10,000 mutated catch-up messages end in a
+message or a named refusal, never an unnamed error.
+
+### Every PP1 read goes through the body check now
+
+Section 16 found the hole and fixed it in one reader. This change closes the
+rest of them, because a check a caller can forget is a check that will be
+forgotten.
+
+- `PoolEvidence.readPP1` / `readPP1Of` is the single reader: it parses the five
+  fields by offset, regenerates the script with `PP1SpScriptGen.generate`, and
+  requires all 16,924 bytes to match before returning anything.
+- `ShieldedLedger._pp1Header` (so `apply`, `open` and `restore`), the tool's
+  parent read in `createRoundTxn`, and the coordinator's tip read in
+  `_checkPool` all go through it.
+- `PP1SpLockBuilder.parse` carries a doc comment saying it is **not** a security
+  boundary: it reads by offset, it reads a forgery exactly as it reads a real
+  PP1, and a reader of chain data must go through `PoolEvidence`.
+- `ShieldedLedger.open` now **requires** the pool's tokenId and genesis header.
+  Without them, opening checks only that the three transactions point at each
+  other, which a forger can arrange for a pool of their own; every round applied
+  on top then inherits the mistake. Only the caller knows which pool it meant,
+  so the caller has to say. A coordinator opening or recovering its *own* pool
+  reads the identity off its own issuance, which is not circular: the operator
+  built that issuance with their own tool.
+
+`apply` was never exposed to the forgery — it requires the round to spend the
+tip's PP3, the tip's Y and the previous witness's output 0, which a forger
+cannot do, and the test asserts that too. `open` was exposed, and is not now.
+
+### The payee's two checks, measured
+
+`PoolEvidence.provenNote` joins `provenRound`: given a proven round, a note's
+opening, the holder's `pk_d`, a position and a path, it recomputes the
+commitment and walks the path to the round's commitment root. No key, no
+request, no STARK.
+
+`provenNote` has a sibling, `noteUnderRoot`, taking the commitment root
+directly: a party following the pool folds a block root a round and checks the
+result against the `cmRoot` of a round it proved off the chain, so the root it
+holds is as good as the round's own. That is what a short payment proof rests
+on — the opening, the position and the path, about a kilobyte, against a root
+the payee already has. A root that arrived *inside* a proof is not such a root,
+and the doc comment says so.
+
+**Measured at test parameters:** a proven round and a proven note together take
+**12.52 ms** (11.6 to 15.1 ms across runs), against the 20 ms bound. 10,000 mutated rounds, witnesses,
+openings, positions and paths end in a named refusal or a correct verdict, never
+an unnamed error and never a forgery reported proven. Both checks run unchanged
+inside `HttpOverrides`/`IOOverrides` that throw on any socket, file or request.
+
+### The fixture is a library entry point
+
+`package:tstokenlib/testing.dart` exports `PoolChainFixture` and
+`PoolTestParams`, so a wallet or a server built on tstokenlib proves the same
+two-round chain the library's own suite runs on rather than inventing one. The
+fixture moved out of `test/`, which no other package can import. While checking
+this from a scratch package outside the repo, the native-kernel loader turned
+out to search only the current directory and its parents — a dependent package
+runs from its own directory — so it now also resolves tstokenlib's own root from
+the running program's `package_config.json` and looks for the crate there.
+
+### The suite after the change
+
+`dart analyze lib test`: **0 errors** (53 warnings and 379 infos, all
+pre-existing, in the older token builders and tools). `dart test`: **828 passed,
+8 skipped, 0 failed** in 6 minutes 7 seconds, the skips being the localnet and
+production-parameter runs that need a node or a GPU. The lineage attack test
+passes its six in-process cases and skips the localnet one unless
+`POOL_LOCALNET=1`.
+
+One consumer is knowingly broken by this change and is owed an update:
+`../pool-coordinator` calls `PoolAnnouncement.of` without a block root and
+`ShieldedLedger.open` without a pool identity, and speaks protocol version 1.
+That update belongs with its SPV rewrite.

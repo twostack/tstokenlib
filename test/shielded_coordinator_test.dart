@@ -38,7 +38,7 @@ void main() {
     layout = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
   });
 
-  ShieldedLedger genesis() => ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx);
+  ShieldedLedger genesis() => ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
   ShieldedLedger atRound1() => genesis()..apply(c.r1, c.w1, c.y1.tx);
 
   /// Round 1's deposit transfer, backed by the covenant the test chain built.
@@ -281,7 +281,7 @@ void main() {
       expect(a2.header.encode(), c.f.h2.encode());
       expect(co.ledger.header.balance, BigInt.from(201));
 
-      final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx);
+      final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
       reader.read([tripleOf(store, 1), tripleOf(store, 2)]);
       expect(reader.stopped, isFalse, reason: '${reader.refusal}');
       expect(reader.ledger.header.encode(), c.f.h2.encode());
@@ -305,7 +305,7 @@ void main() {
       final a = await co.building!;
       expect(a, isNotNull, reason: '${co.lastFailure}');
       expect(a!.round, 1);
-      final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx);
+      final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
       final applied = reader.read([tripleOf(store, 1)]).single;
       expect(applied.padding, [false, true, true, true]);
       for (int t = 1; t < 4; t++) {
@@ -531,13 +531,50 @@ void main() {
           throwsA(isA<RecoveryRefusal>().having((e) => e.reason, 'reason', contains('ends at round 1'))));
     }, timeout: const Timeout(Duration(minutes: 5)));
 
+    test('a tree built under another plan is refused, naming both counts', () async {
+      final log = _Log();
+      final store = _Store(log);
+      final co = make(store: store, log: log);
+      await close(co, [deposit(), ...c.f.transfers1.sublist(1)], depositTx: c.depositTx);
+      final snapshot = store.rounds[0].snapshot;
+
+      // the same snapshot under a plan that appends 128 leaves a round:
+      // round 1 should then hold 128 rows and this tree holds 32
+      final other = ShieldedPoolLayout.forArities([16, 4], nullifierLevel: 1, receiptSlots: 2);
+      expect(other.tree.leavesAppended, 128);
+      expect(
+          () => ShieldedCoordinator.recover(other, snapshot: snapshot, triples: const []),
+          throwsA(isA<RecoveryRefusal>()
+              .having((e) => e.reason, 'reason', contains('128 leaves a round'))
+              .having((e) => e.reason, 'reason', contains('this one holds 32'))));
+
+      // and a snapshot whose round number does not match its tree: the
+      // restore rebuilds the roots and is satisfied, the block count is not
+      final edited = Uint8List.fromList(snapshot)..[1 + PoolHeader.byteSize] = 2;
+      expect(
+          () => ShieldedCoordinator.recover(layout, snapshot: edited, triples: const []),
+          throwsA(isA<RecoveryRefusal>()
+              .having((e) => e.reason, 'reason', contains('at round 2 the tree should hold 64 rows'))
+              .having((e) => e.reason, 'reason', contains('this one holds 32'))));
+
+      // the coordinator will not open on it either
+      final off = ShieldedLedger.restore(layout, edited);
+      expect(off.round, 2);
+      expect(off.size, 32);
+      expect(
+          () => make(ledger: off),
+          throwsA(isA<StateError>()
+              .having((e) => e.message, 'message', contains('32 leaves a round'))
+              .having((e) => e.message, 'message', contains('this one holds 32'))));
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
     test('the announcement of round 1 carries the number, the header and three txids, and nothing else', () async {
       final log = _Log();
       final store = _Store(log);
       final co = make(store: store, log: log);
       final a = await close(co, [deposit(), ...c.f.transfers1.sublist(1)], depositTx: c.depositTx);
       final bytes = a.encode();
-      expect(bytes.length, 2 + 4 + 236 + 96);
+      expect(bytes.length, 2 + 4 + 236 + 96 + 32);
       expect(bytes.length, lessThan(PoolMessage.maxOther));
       final back = PoolAnnouncement.decode(bytes);
       expect(back.round, 1);

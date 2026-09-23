@@ -40,7 +40,7 @@ void main() {
     layout = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
   });
 
-  ShieldedLedger genesis() => ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx);
+  ShieldedLedger genesis() => ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
 
   /// [f] is refused on [check], and the ledger it ran against is as it was.
   void refused(ShieldedLedger l, void Function() f, String check, [String? reason]) {
@@ -76,7 +76,7 @@ void main() {
       // refused by the parser itself.
       final u = c.vUnlock(c.r1);
       final first = encodeLanes([layout.readStatement(u).first]).length;
-      final l = ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx);
+      final l = ShieldedLedger.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
       final r = c.round1(slotUnlocker: DefaultUnlockBuilder.fromScript(SVScript.fromByteArray(Uint8List.fromList(u.sublist(first)))));
       expect(() => l.apply(r, c.witness1(r), c.y1.tx), throwsA(isA<LedgerRefusal>()));
       expect(l.round, 0);
@@ -111,8 +111,8 @@ void main() {
     });
 
     test('an issuance whose witness is another\'s is refused', () {
-      expect(() => ShieldedLedger.open(layout, c.r0, c.w1, c.y0.tx), throwsA(isA<LedgerRefusal>().having((r) => r.check, 'check', 'genesis')));
-      expect(() => ShieldedLedger.open(layout, c.r0, c.w0, c.y1.tx), throwsA(isA<LedgerRefusal>()));
+      expect(() => ShieldedLedger.open(layout, c.r0, c.w1, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader), throwsA(isA<LedgerRefusal>().having((r) => r.check, 'check', 'genesis')));
+      expect(() => ShieldedLedger.open(layout, c.r0, c.w0, c.y1.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader), throwsA(isA<LedgerRefusal>()));
     });
 
     test('an honest chain: rounds 1 and 2 reach the headers the builder advanced to', () {
@@ -278,7 +278,7 @@ void main() {
 
     test('two ledgers built separately from the same transactions write byte-identical snapshots', () {
       final a = genesis(), b = ShieldedLedger.open(layout, Transaction.fromHex(c.r0.serialize()), Transaction.fromHex(c.w0.serialize()),
-          Transaction.fromHex(c.y0.tx.serialize()));
+          Transaction.fromHex(c.y0.tx.serialize()), tokenId: c.tokenId, genesisHeader: c.genesisHeader);
       for (final (r, w, y) in [(c.r1, c.w1, c.y1.tx), (c.r2, c.w2, c.y2.tx)]) {
         a.apply(r, w, y);
         b.applyBytes(hex.decode(r.serialize()), hex.decode(w.serialize()), hex.decode(y.serialize()));

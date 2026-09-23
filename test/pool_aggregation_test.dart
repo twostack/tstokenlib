@@ -11,6 +11,7 @@ import 'package:tstokenlib/src/crypto/stark_verifier_ref.dart';
 import 'package:tstokenlib/src/recursion/prover_pool.dart';
 import 'package:tstokenlib/src/recursion/pool_aggregator.dart';
 import 'package:tstokenlib/src/script_gen/pool_spend_air.dart';
+import 'package:tstokenlib/src/shielded_pool/shielded_ledger.dart';
 
 /// The aggregation with one arity and one parameter set per level: a
 /// 3 × 2 tree at small parameters proved end to end, the same round with
@@ -206,6 +207,54 @@ void main() {
     expect(badWide, inlineWide);
     expect(badProof.traceRoot, inlineProof.traceRoot);
   }, timeout: const Timeout(Duration(minutes: 20)));
+
+  // ---- the block invariant: a round appends a power of two leaves ----
+
+  group('a round\'s leaf count', () {
+    test('the plans in use are powers of two', () {
+      final production = ShieldedPoolLayout.production;
+      expect(production.transfers, 256);
+      expect(production.tree.leavesAppended, 512);
+      final test = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
+      expect(test.transfers, 4);
+      expect(test.tree.leavesAppended, 32);
+      for (final n in [production.tree.leavesAppended, test.tree.leavesAppended]) {
+        expect(n & (n - 1), 0, reason: '$n is not a power of two');
+      }
+    });
+
+    test('a plan that would straddle a block boundary is refused', () {
+      // 300 transfers is 600 leaves, which is 19 subtrees of 32: 608 rows a
+      // round, so round N would not own an aligned subtree and a note's
+      // upper siblings could not be folded from one root a round.
+      expect(
+          () => ShieldedPoolLayout.forArities([15, 5, 4], nullifierLevel: 1, receiptSlots: 8),
+          throwsA(isA<ArgumentError>().having((e) => e.message.toString(), 'message', contains('608'))));
+    });
+
+    test('a round always appends its whole block, padding and all', () {
+      final L = ShieldedPoolLayout.forArities([2, 2], nullifierLevel: 1, receiptSlots: 2);
+      // one real transfer and three padding: the leaves the round carries
+      // differ, the rows it appends do not
+      final real = PoolPublicInputs.zero().toLanes();
+      final spends = [real, for (int t = 1; t < L.transfers; t++) real];
+      final tree = NoteCommitmentTree();
+      final before = tree.size;
+      for (int s = 0; s < L.tree.subtrees; s++) {
+        tree.appendSubtree([for (final l in L.tree.subtreeLeavesOf(spends, s)) l ?? MerkleFrontier.emptyLeaf]);
+      }
+      // 8 leaves carried, 32 rows appended: the rest are empty leaves
+      expect(L.tree.leaves, 8);
+      expect(tree.size - before, 32);
+      expect(tree.size - before, L.tree.leavesAppended);
+      // and the tree stands on a block boundary, so the next round's block
+      // starts where this one ended
+      expect(tree.nextSubtree * NoteCommitmentTree.subtreeLeaves, tree.size);
+      // the header check the ledger makes is this constant, not a count of
+      // real transfers
+      expect(L.statement.leavesAppended, 32);
+    });
+  });
 
   test('the throughput plan compiles: 256 transfers, every level fits', () {
     final sw = Stopwatch()..start();
