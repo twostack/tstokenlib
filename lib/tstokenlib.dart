@@ -98,3 +98,9 @@ export 'src/crypto/note_commitment_tree.dart'
     show MerklePath, MerkleFrontier, NoteCommitmentTree, BlockFold, FoldedPath, FoldRefusal;
 export 'src/script_gen/pool_spend_air.dart' show PoolHash, PoolSpendAir, PoolPublicInputs, SpendNote, OutputNote, PoolSpendWitness;
 export 'src/crypto/stark_prover_ref.dart' show StarkParams;
+// A wallet builds its own spend proof, so it needs the prover, the
+// transcript hash the pool's AIR is proved under, and the out-hash the
+// proof commits its bundle with.
+export 'src/crypto/stark_prover.dart' show StarkProver;
+export 'src/crypto/proof_hash.dart' show ProofHash, Poseidon2ProofHash;
+export 'src/shielded_pool/pool_out_hash.dart' show PoolOutHash;
