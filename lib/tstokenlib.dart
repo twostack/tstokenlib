@@ -94,6 +94,7 @@ export 'src/crypto/note_encryption.dart'
     show PoolWalletKeys, NoteAddress, NotePlaintext, NoteBundle, NoteEncryption, lanesToBytes, bytesToLanes;
 export 'src/crypto/note_kem.dart' show NoteKem;
 export 'src/crypto/m31.dart' show M31;
-export 'src/crypto/note_commitment_tree.dart' show MerklePath, BlockFold, FoldedPath, FoldRefusal;
+export 'src/crypto/note_commitment_tree.dart'
+    show MerklePath, MerkleFrontier, NoteCommitmentTree, BlockFold, FoldedPath, FoldRefusal;
 export 'src/script_gen/pool_spend_air.dart' show PoolHash, PoolSpendAir, PoolPublicInputs, SpendNote, OutputNote, PoolSpendWitness;
 export 'src/crypto/stark_prover_ref.dart' show StarkParams;
