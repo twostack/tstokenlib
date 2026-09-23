@@ -84,6 +84,9 @@ export 'src/shielded_pool/pool_protocol.dart'
         RefusalReason,
         PoolDescriptor,
         PoolAnnouncement,
+        PoolCatchUpRequest,
+        PoolCatchUpReply,
+        CatchUpKind,
         ProtocolRefusal;
 export 'src/recursion/pool_aggregator.dart' show PoolAggregation, AggregationLevel;
 export 'src/recursion/prover_pool.dart' show NodeProver, NodeJob, LocalNodeProver, ProverPool, NodeOutcome;
