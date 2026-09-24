@@ -57,7 +57,8 @@ class NoteKem {
   static final _x = X25519();
 
   static StarkKernels get native =>
-      StarkKernels.tryLoad() ?? (throw StateError('ML-KEM needs the native crate: cargo build --release --manifest-path native/stark_kernels/Cargo.toml'));
+      StarkKernels.tryLoad() ?? (throw StateError('ML-KEM needs the native STARK kernels, which the build hook bundles unless stark_kernels: skip is set; '
+          'set ${StarkKernels.envVar} to point at a library built elsewhere'));
 
   static Uint8List _random32(Random rng) => Uint8List.fromList(List.generate(32, (_) => rng.nextInt(256)));
 

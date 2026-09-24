@@ -20,6 +20,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:ffi/ffi.dart';
+import 'bundled_kernels.dart';
 import 'circle_fft.dart';
 import 'm31.dart';
 import 'proof_hash.dart';
@@ -756,15 +757,16 @@ class StarkKernels implements ProverKernels {
     return ['$bin/$fileName', '${File(bin).parent.path}/lib/$fileName'];
   }
 
-  /// Loads the library from [path], `$STARK_KERNELS_LIB`, beside the running
-  /// executable, or the crate's release directory under the current directory
-  /// or its parents. Returns null when none is found or the ABI version
-  /// differs. Cached.
+  /// Loads the library from [path], `$STARK_KERNELS_LIB`, the copy the build
+  /// hook bundled, beside the running executable, or the crate's release
+  /// directory under the current directory or its parents. Returns null when
+  /// none is found or the ABI version differs. Cached.
   static StarkKernels? tryLoad({String? path}) {
     if (path == null && _tried) return _loaded;
     final candidates = <String>[
       if (path != null) path,
       if (Platform.environment[envVar] != null) Platform.environment[envVar]!,
+      if (bundledKernelsPath() case final bundled?) bundled,
       ..._besideExecutable(),
     ];
     var dir = Directory.current;
