@@ -1,5 +1,54 @@
 {
-  "source_sha256": "",
-  "base_url": "",
-  "assets": {}
+  "source_sha256": "f982d2a95acfcfb2954bcb9fd77e094ee5c0ea46c9ecaf2611e89afb4562e7a7",
+  "base_url": "https://github.com/twostack/tstokenlib/releases/download/stark-kernels-f982d2a95acfcfb2/",
+  "assets": {
+    "android_arm": {
+      "file": "libstark_kernels-android_arm.so",
+      "sha256": "01b69dec7e9e8e570a28f9dfeaa2b9c3f6d14640729cb6e732ede6dae07855fc"
+    },
+    "android_arm64": {
+      "file": "libstark_kernels-android_arm64.so",
+      "sha256": "301dcf70f9ebb4795f1737d128ea0cccc29e528ac0f0ba4afa33d483f070b012"
+    },
+    "android_x64": {
+      "file": "libstark_kernels-android_x64.so",
+      "sha256": "ce10d6b63e2d1fbbf59b150a35ab794eba63aecb6b4fa69dddd16d57011397b5"
+    },
+    "ios_arm64": {
+      "file": "libstark_kernels-ios_arm64.dylib",
+      "sha256": "0e29295eb45231fa03cbc62603e8c4b195507a74bc0aa884318272acb40dc68d"
+    },
+    "ios_arm64_simulator": {
+      "file": "libstark_kernels-ios_arm64_simulator.dylib",
+      "sha256": "7d32ac3ca72c367cc6340b1518b340e9d044e4eb8e61cd4ea41a393ebf0c0666"
+    },
+    "ios_x64": {
+      "file": "libstark_kernels-ios_x64.dylib",
+      "sha256": "cda8c3ba1bf7e03209aba3f0228ea8999d1d55c7d279449386a98fd71dabb0a6"
+    },
+    "linux_arm64": {
+      "file": "libstark_kernels-linux_arm64.so",
+      "sha256": "4943224ab6c6abe7130d06a9161d4921559391481295a5d0d5e255eb2a72e877"
+    },
+    "linux_x64": {
+      "file": "libstark_kernels-linux_x64.so",
+      "sha256": "92e2b140634a34bdb7ef1628d97ecfaa72623a569ae2e496f93d59a41efa91cb"
+    },
+    "macos_arm64": {
+      "file": "libstark_kernels-macos_arm64.dylib",
+      "sha256": "b28050266c7538ef64d697ac5d2241aa3be811bf633802ee07aafb9642a28fcf"
+    },
+    "macos_x64": {
+      "file": "libstark_kernels-macos_x64.dylib",
+      "sha256": "2ae98d933f2760203eafc737bf6bd480cb85f891a3d5ddb0ca5355f6072f1228"
+    },
+    "windows_arm64": {
+      "file": "stark_kernels-windows_arm64.dll",
+      "sha256": "ff40e9267df523bdf3cbb2e795faf065669cc9952df3d33269914894c4e0fa10"
+    },
+    "windows_x64": {
+      "file": "stark_kernels-windows_x64.dll",
+      "sha256": "57f61e6e8c30a3d537555fdbe36915a0aacf24024773e897078c3ba9c375b2ca"
+    }
+  }
 }
