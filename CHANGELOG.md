@@ -1,3 +1,7 @@
+## 2.0.1
+
+- **The native kernels are found beside an installed program.** `StarkKernels.tryLoad` now also looks in the running executable's directory and in `../lib` from it, after `STARK_KERNELS_LIB` and before the source-tree search. A program compiled with `dart compile exe` has no source tree to search, so a package or tarball that ships `libstark_kernels` next to its binary (or in a `lib/` beside its `bin/`) now loads it with no environment variable. `STARK_KERNELS_LIB` still wins.
+
 ## 2.0.0
 
 The TSL1_SP shielded pool, a seventh archetype, plus fixes to the existing six.

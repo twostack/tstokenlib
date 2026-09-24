@@ -747,14 +747,25 @@ class StarkKernels implements ProverKernels {
           ? 'stark_kernels.dll'
           : 'libstark_kernels.so';
 
-  /// Loads the library from [path], `$STARK_KERNELS_LIB`, or the crate's
-  /// release directory under the current directory or its parents. Returns
-  /// null when none is found or the ABI version differs. Cached.
+  /// Where an installed program keeps the library: beside its executable,
+  /// or in `../lib` from it. A compiled program has no source tree to search,
+  /// so a package or tarball that ships the library puts it in one of these.
+  /// Under `dart run` the executable is the Dart VM, and neither exists.
+  static List<String> _besideExecutable() {
+    final bin = File(Platform.resolvedExecutable).parent.path;
+    return ['$bin/$fileName', '${File(bin).parent.path}/lib/$fileName'];
+  }
+
+  /// Loads the library from [path], `$STARK_KERNELS_LIB`, beside the running
+  /// executable, or the crate's release directory under the current directory
+  /// or its parents. Returns null when none is found or the ABI version
+  /// differs. Cached.
   static StarkKernels? tryLoad({String? path}) {
     if (path == null && _tried) return _loaded;
     final candidates = <String>[
       if (path != null) path,
       if (Platform.environment[envVar] != null) Platform.environment[envVar]!,
+      ..._besideExecutable(),
     ];
     var dir = Directory.current;
     for (int up = 0; up < 4; up++) {

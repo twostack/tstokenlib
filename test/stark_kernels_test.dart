@@ -268,4 +268,69 @@ void main() {
       expect(onGpu.nonce, other.nonce, reason: 'grinding nonce against $what');
     }
   }, skip: gpuSkip, timeout: const Timeout(Duration(minutes: 5)));
+
+  // An installed program is a compiled executable with the library beside it
+  // (a .deb's /opt/<app>/bin) or in ../lib (a tarball), run from anywhere,
+  // with no source tree for the other candidates to find.
+  group('beside the executable', () {
+    late Directory tmp;
+    late String probe;
+    setUpAll(() async {
+      if (native == null) return;
+      tmp = Directory.systemTemp.createTempSync('kernels_probe');
+      Directory('${tmp.path}/bin').createSync();
+      probe = '${tmp.path}/bin/probe';
+      final r = await Process.run(Platform.resolvedExecutable,
+          ['compile', 'exe', 'test/support/kernels_probe.dart', '-o', probe]);
+      if (r.exitCode != 0) throw StateError('compile failed: ${r.stderr}');
+    });
+    tearDownAll(() {
+      if (native != null) tmp.deleteSync(recursive: true);
+    });
+
+    // Runs the probe from the temporary directory, where the working
+    // directory search and the package config find nothing.
+    Future<String> run({String? envLib}) async {
+      final env = Map.of(Platform.environment)..remove(StarkKernels.envVar);
+      if (envLib != null) env[StarkKernels.envVar] = envLib;
+      final r = await Process.run(probe, const [],
+          workingDirectory: tmp.path, environment: env, includeParentEnvironment: false);
+      return (r.stdout as String).trim();
+    }
+
+    void place(String dir) {
+      Directory(dir).createSync(recursive: true);
+      File(native!.path).copySync('$dir/${StarkKernels.fileName}');
+    }
+
+    void clear() {
+      for (final d in ['bin', 'lib']) {
+        final f = File('${tmp.path}/$d/${StarkKernels.fileName}');
+        if (f.existsSync()) f.deleteSync();
+      }
+    }
+
+    test('finds nothing when no library is installed', () async {
+      clear();
+      expect(await run(), 'none');
+    }, skip: skip, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('finds the library in the executable\'s directory', () async {
+      clear();
+      place('${tmp.path}/bin');
+      expect(await run(), File('${tmp.path}/bin/${StarkKernels.fileName}').resolveSymbolicLinksSync());
+    }, skip: skip, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('finds the library in ../lib from the executable', () async {
+      clear();
+      place('${tmp.path}/lib');
+      expect(await run(), endsWith('/lib/${StarkKernels.fileName}'));
+    }, skip: skip, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('an explicit STARK_KERNELS_LIB still wins', () async {
+      clear();
+      place('${tmp.path}/bin');
+      expect(await run(envLib: native!.path), native.path);
+    }, skip: skip, timeout: const Timeout(Duration(minutes: 2)));
+  });
 }
