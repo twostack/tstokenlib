@@ -55,7 +55,7 @@ export 'src/transaction/funding_provision_builder.dart';
 // and the messages the two sides exchange. The legacy pool's tool and
 // types stay internal.
 export 'src/shielded_pool/shielded_transfer.dart' show ShieldedTransfer, TransferRefusal;
-export 'src/shielded_pool/shielded_ledger.dart' show ShieldedLedger, ShieldedPoolLayout, ShieldedRound, LedgerRefusal;
+export 'src/shielded_pool/shielded_ledger.dart' show ShieldedLedger, ShieldedPoolLayout, ShieldedRound, RoundLeaves, LedgerRefusal;
 export 'src/shielded_pool/shielded_chain_reader.dart' show ShieldedChainReader, ShieldedRoundTxs;
 export 'src/shielded_pool/shielded_note_scanner.dart' show ShieldedNoteScanner, ScannedNote;
 export 'src/shielded_pool/shielded_coordinator.dart'
@@ -86,8 +86,11 @@ export 'src/shielded_pool/pool_protocol.dart'
         PoolAnnouncement,
         PoolCatchUpRequest,
         PoolCatchUpReply,
+        PoolRoundMined,
         CatchUpKind,
+        CatchUpRefusal,
         ProtocolRefusal;
+export 'src/shielded_pool/pool_catch_up.dart' show PoolCatchUpResponder, CatchUpSource, MinedRound, RoundPlace;
 export 'src/recursion/pool_aggregator.dart' show PoolAggregation, AggregationLevel;
 export 'src/recursion/prover_pool.dart' show NodeProver, NodeJob, LocalNodeProver, ProverPool, NodeOutcome;
 export 'src/shielded_pool/pool_header.dart' show PoolHeader;

@@ -72,6 +72,31 @@ class PoolTestChain {
     return PoolTestChain._(f).._build();
   }
 
+  /// The pool's descriptor, as its coordinator puts it first on the feed.
+  PoolDescriptor descriptor({int catchUpRange = 1024}) => PoolDescriptor.forPool(
+      network: NetworkType.TEST, issuance: r0, witness0: w0, slot0: y0.tx, plan: f.agg, catchUpRange: catchUpRange);
+
+  /// The chain as a pool answers catch-up from it, with rounds up to
+  /// [minedTip] (0 to 2) mined, so a wallet's fake pool answers exactly as a
+  /// coordinator does ([responder]).
+  ///
+  /// The fixture has no blocks, so where a witness sits is [placement]'s to
+  /// say. Without one, each witness is alone in a block: index 0, an empty
+  /// branch, and a merkle root equal to its txid, which stands in for the
+  /// block hash; a test that checks the branch against headers of its own
+  /// passes a placement naming them.
+  CatchUpSource catchUpSource({int minedTip = 2, TestPlacement? placement}) {
+    if (minedTip < 0 || minedTip > 2) throw RangeError.range(minedTip, 0, 2, 'minedTip');
+    return _TestChainSource(this, minedTip, placement ?? _alone);
+  }
+
+  /// [catchUpSource] behind the pool's own rules for answering.
+  PoolCatchUpResponder responder({int minedTip = 2, TestPlacement? placement, int catchUpRange = 1024}) =>
+      PoolCatchUpResponder(descriptor(catchUpRange: catchUpRange), catchUpSource(minedTip: minedTip, placement: placement));
+
+  static ({List<int> blockHash, int txIndex, List<List<int>> branch}) _alone(int round, Transaction witness) =>
+      (blockHash: hex.decode(witness.id), txIndex: 0, branch: const <List<int>>[]);
+
   ({Transaction tx, List<int> outpoint, List<int> parts}) slot(PoolHeader h, int n) => svc.buildSlotTxn(
       header: h, verifierBody: f.body, fundingInput: slotFunding(n), anchorPKH: hex.decode(opPKH), signerPKH: hex.decode(opPKH));
 
@@ -153,4 +178,67 @@ class PoolTestChain {
 
   /// The unlock V's slot takes in round 1 or 2 as the tool built it.
   List<int> vUnlock(Transaction round) => round.inputs[2].script!.buffer;
+}
+
+/// Where the test chain's round [round] has its [witness] mined: the block,
+/// the witness's index in it and its merkle branch.
+typedef TestPlacement = ({List<int> blockHash, int txIndex, List<List<int>> branch}) Function(int round, Transaction witness);
+
+class _TestChainSource implements CatchUpSource {
+  final PoolTestChain c;
+  @override
+  final int minedTip;
+  final TestPlacement placement;
+  final ShieldedLedger ledger;
+
+  _TestChainSource(this.c, this.minedTip, this.placement)
+      : ledger = ShieldedLedger.open(ShieldedPoolLayout.of(c.f.agg.tree), c.r0, c.w0, c.y0.tx,
+            tokenId: c.tokenId, genesisHeader: c.genesisHeader) {
+    ledger.apply(c.r1, c.w1, c.y1.tx);
+    ledger.apply(c.r2, c.w2, c.y2.tx);
+  }
+
+  void _check(int round) {
+    if (round < 1 || round > minedTip) throw RangeError.range(round, 1, minedTip, 'round');
+  }
+
+  @override
+  List<int> blockRootOf(int round) {
+    _check(round);
+    return ledger.blockRootOf(round);
+  }
+
+  @override
+  ({int round, List<int> blockRoot, List<List<int>> left}) frontierAt(int round) {
+    _check(round);
+    return ledger.frontierAt(round);
+  }
+
+  @override
+  Future<MinedRound?> mined(int round) async {
+    _check(round);
+    final (r, w) = round == 1 ? (c.r1, c.w1) : (c.r2, c.w2);
+    final at = placement(round, w);
+    return MinedRound(
+        number: round,
+        roundTx: hex.decode(r.serialize()),
+        witnessTx: hex.decode(w.serialize()),
+        blockHash: at.blockHash,
+        txIndex: at.txIndex,
+        branch: at.branch);
+  }
+
+  @override
+  Future<RoundPlace?> placed(int round) async {
+    _check(round);
+    final (r, w) = round == 1 ? (c.r1, c.w1) : (c.r2, c.w2);
+    final at = placement(round, w);
+    return RoundPlace(
+        number: round,
+        roundTxId: hex.decode(r.id),
+        witnessTxId: hex.decode(w.id),
+        blockHash: at.blockHash,
+        txIndex: at.txIndex,
+        branch: at.branch);
+  }
 }

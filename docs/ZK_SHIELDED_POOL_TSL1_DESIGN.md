@@ -1065,3 +1065,31 @@ One consumer is knowingly broken by this change and is owed an update:
 `../pool-coordinator` calls `PoolAnnouncement.of` without a block root and
 `ShieldedLedger.open` without a pool identity, and speaks protocol version 1.
 That update belongs with its SPV rewrite.
+
+## 18. Rounds for wallets: protocol version 3 (2026-09-24)
+
+The cloak wallet asked for five things so that a wallet can join a running pool, prove a payment it made, and take on its change and deposits against a real coordinator (change `wallet-rounds`). Four of them are protocol, and one turned out to need no protocol at all.
+
+- **Ids and refusals.** Every catch-up request now carries 16 random bytes that its reply echoes, and a reply can be a refusal:
+  - `notServed` and `unpublishedRange` mean never.
+  - `notYet` and `unavailable` mean later.
+  
+  Before this, a pool that would not answer could only stay silent, and a wallet waited out 30 s per attempt without learning why. The id is drawn fresh for each request, so it links nothing the coordinator does not already know from the sender's peer id. The one requirement it touches, "a reply carries no asker", now allows exactly that echo.
+- **A round by number.** This is a fourth catch-up kind, answered with the head's body (the two share one codec). A payer needs its round after later rounds are mined. The choice of round is the wallet's own, though, which is what the published-range rule exists to prevent: it is harmless for the round the same peer submitted into, and a link between identities or a receipt of payment otherwise. So it is the recovery path.
+- **The mined-round notice.** This is the primary path. A pool sends a peer its round, unasked, when the round that took in that peer's accepted submissions is mined, naming those submission ids. It tells no one anything new, and saves the wallet a request that would. It carries the round's and witness's txids and the witness's place in its block, but no transactions. The first version carried both, as a head does. libcloak's review prompted the sums: 2.6 MB a notice at production, one per submitter per round, is up to 650 MB a round. A wallet that needs the transactions asks for its round by number, from the identity it submitted with.
+- **Leaves without a ledger.** The wallet offered two routes: the coordinator sends round N's leaves and nullifiers, or the library reads them from the round's transactions. The second already existed inside `ShieldedLedger.apply`, whose reading of the statement, bundles, receipts and withdrawals needs no state; only the tip checks do. It is now a static `_read` that both `apply` and the new `readLeaves` call, so they cannot drift. Sending leaves would have cost 16 KB a reply at production and overflowed `maxCatchUp`'s 8 KB slack.
+- **Answers at the last mined round.** A coordinator publishes round N+1 before it is mined, so a head and a frontier answered from its ledger could stand at different rounds. `ShieldedLedger.frontierAt(n)` gives the frontier of any applied round (its nodes are complete left subtrees, which later rounds never change). `PoolCatchUpResponder` pins every answer to `CatchUpSource.minedTip`. The responder is shared: a coordinator backs it with its ledger, store and chain, and `PoolTestChain.responder()` backs it with the fixture, so a wallet's fake pool answers as the real one does.
+
+Everything moved to format version 3. The id changes the request layout, and one kind byte must not mean two layouts. Nothing is deployed on version 2, and both dependents build against this library by path. The constructors stay source-compatible (the id is optional), so libcloak and cloak-cli compile unchanged and only their bytes move.
+
+Measured on the test chain (`test/pool_catch_up_test.dart`):
+
+| What | Size or result |
+|---|---|
+| Round reply | 792,262 B, the head proof's size, since it is the same body |
+| Mined-round notice | 141 B; under 1 KB with a 20-deep branch (it was 792,214 B carrying both transactions) |
+| Id | 16 B a message |
+| 10,000 single-byte mutations of the new messages | 2,599 refused, the rest decoded, none threw unnamed |
+| `readLeaves` on rounds 1 and 2 | matches the ledger's block root, positions, nullifiers and header exactly |
+
+`dart analyze lib test`: 0 errors, and nothing in the files this change touched. `dart test`: **842 passed, 8 skipped, 0 failed** (14 new, in `test/pool_catch_up_test.dart`). The three version 2 catch-up tests that poked bytes at version 2 offsets were moved to version 3's.

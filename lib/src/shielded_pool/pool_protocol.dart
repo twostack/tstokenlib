@@ -41,7 +41,7 @@ class ProtocolRefusal implements Exception {
   String toString() => 'message refused ($field): $reason';
 }
 
-/// The six messages a wallet and a coordinator exchange. Each carries its
+/// The seven messages a wallet and a coordinator exchange. Each carries its
 /// kind in its second byte, so one inbox can hold any of them.
 enum PoolMessageKind {
   submission(1),
@@ -49,7 +49,8 @@ enum PoolMessageKind {
   descriptor(3),
   announcement(4),
   catchUpRequest(5),
-  catchUpReply(6);
+  catchUpReply(6),
+  roundMined(7);
 
   final int number;
   const PoolMessageKind(this.number);
@@ -154,7 +155,13 @@ abstract class PoolMessage {
   /// announcement, and the two catch-up messages. A version 1 message is
   /// refused rather than read: every field version 2 added is one a wallet
   /// needs in order to act without looking anything up.
-  static const formatVersion = 2;
+  ///
+  /// Version 3 (2026-09-24) added a random id to every catch-up request,
+  /// echoed by its reply, a refusal form of the reply, a request for a
+  /// mined round by number, and the mined-round notice a pool sends its
+  /// submitters. A version 2 catch-up request has no id to answer to, so
+  /// version 2 is refused rather than read.
+  static const formatVersion = 3;
 
   /// The largest submission a decoder reads: a transfer (at most 100 KB) and
   /// a deposit transaction (at most [maxDepositTx]), with room to spare.
@@ -185,7 +192,7 @@ abstract class PoolMessage {
   /// part of a head proof.
   static const maxTx = 10 * 1024 * 1024;
 
-  /// The largest catch-up reply a decoder reads: a head proof's two
+  /// The largest catch-up reply a decoder reads: a mined round's two
   /// transactions and its merkle branch.
   static const maxCatchUp = 2 * maxTx + 8 * 1024;
 
@@ -226,6 +233,8 @@ abstract class PoolMessage {
         return PoolCatchUpRequest.decode(bytes);
       case PoolMessageKind.catchUpReply:
         return PoolCatchUpReply.decode(bytes);
+      case PoolMessageKind.roundMined:
+        return PoolRoundMined.decode(bytes);
       case null:
         // let the reader name the version or the kind
         _Reader.open(bytes, PoolMessageKind.submission, maxSubmission);
@@ -833,27 +842,63 @@ class PoolAnnouncement extends PoolMessage {
   }
 }
 
-/// What a catch-up request asks for. None of the three is trusted: a block
-/// root is checked by folding it and matching the round's `cmRoot`, a
-/// frontier by computing the tree's root from it and matching a proven
-/// `cmRoot`, and a head proof by `PoolEvidence` and the wallet's own
-/// headers. A pool is a convenient server for them and never an authority;
-/// a wallet that obtains any of the three elsewhere reaches the same
-/// verdict.
+/// What a catch-up request asks for. None of them is trusted: a block root
+/// is checked by folding it and matching the round's `cmRoot`, a frontier
+/// by computing the tree's root from it and matching a proven `cmRoot`, and
+/// a head or a round by `PoolEvidence` and the wallet's own headers. A pool
+/// is a convenient server for them and never an authority; a wallet that
+/// obtains any of them elsewhere reaches the same verdict.
 enum CatchUpKind {
   /// Block roots over a run of rounds, 32 bytes each.
   blockRoots(1),
 
-  /// The current frontier: what a follower must hold to fold from here on.
+  /// The frontier at the last mined round: what a follower must hold to
+  /// fold from there on.
   frontier(2),
 
-  /// The tip round, its witness, and the witness's place in a block.
-  head(3);
+  /// The last mined round, its witness, and the witness's place in a block.
+  head(3),
+
+  /// A mined round by its number, as a head carries it. Which round a
+  /// wallet asks for follows from what it did, so the request tells the
+  /// pool that this peer cares about that round: harmless for the round the
+  /// same peer submitted into, which the pool already knows, and a link
+  /// between identities or a receipt of payment otherwise. A submitter is
+  /// sent its round unasked ([PoolRoundMined]); this is for recovery.
+  round(4);
 
   final int number;
   const CatchUpKind(this.number);
 
   static CatchUpKind? of(int number) {
+    for (final k in values) {
+      if (k.number == number) return k;
+    }
+    return null;
+  }
+}
+
+/// Why a pool did not answer a catch-up request. A wallet told this stops
+/// waiting at once, and can tell a request the pool will never serve from
+/// one to ask again later. The numbers are fixed for the protocol's life.
+enum CatchUpRefusal {
+  /// A kind this pool does not serve.
+  notServed(1),
+
+  /// A block-root range the descriptor does not publish.
+  unpublishedRange(2),
+
+  /// Nothing mined yet to answer from, or a round not mined yet: ask again
+  /// after the next round.
+  notYet(3),
+
+  /// The pool cannot answer now (its chain access failed): ask again later.
+  unavailable(4);
+
+  final int number;
+  const CatchUpRefusal(this.number);
+
+  static CatchUpRefusal? of(int number) {
     for (final k in values) {
       if (k.number == number) return k;
     }
@@ -868,29 +913,51 @@ enum CatchUpKind {
 /// its note's round onward, because a frontier alone cannot bring a
 /// particular leaf's siblings up to date.
 ///
-/// The request carries nothing about the asker. A range is one of the
-/// aligned runs the descriptor publishes, never a round derived from what
-/// the wallet holds: across repeated catch-ups, a range of the wallet's own
+/// The request carries nothing about the asker. Its [id] is a fresh random
+/// value per request, which the reply echoes so a wallet can route replies
+/// the way it routes submission replies; it is chosen for the request and
+/// derived from nothing the wallet holds. A range is one of the aligned
+/// runs the descriptor publishes, never a round derived from what the
+/// wallet holds: across repeated catch-ups, a range of the wallet's own
 /// choosing is a fingerprint.
 class PoolCatchUpRequest extends PoolMessage {
+  final Uint8List id;
   final CatchUpKind what;
 
   /// The first round asked for, and how many, for [CatchUpKind.blockRoots];
-  /// both zero otherwise.
+  /// the round, and zero, for [CatchUpKind.round]; both zero otherwise.
   final int from, count;
 
-  PoolCatchUpRequest._(this.what, this.from, this.count);
+  PoolCatchUpRequest._(List<int> id, this.what, this.from, this.count) : id = Uint8List.fromList(id) {
+    if (id.length != PoolMessage.idSize) throw ArgumentError('an id is ${PoolMessage.idSize} bytes');
+  }
+
+  static List<int> _fresh(List<int>? id) {
+    if (id != null) return id;
+    final r = Random.secure();
+    return List.generate(PoolMessage.idSize, (_) => r.nextInt(256));
+  }
 
   /// Block roots for rounds [from] to `from + count - 1`. The pool serves
   /// only the runs its descriptor publishes ([PoolDescriptor.requireRange]).
-  factory PoolCatchUpRequest.blockRoots({required int from, required int count}) {
+  factory PoolCatchUpRequest.blockRoots({required int from, required int count, List<int>? id}) {
     if (from < 1 || from > 0xffffffff) throw ArgumentError('the first round is 1 or more');
     if (count < 1 || count > PoolMessage.maxBlockRoots) throw ArgumentError('1 to ${PoolMessage.maxBlockRoots} roots');
-    return PoolCatchUpRequest._(CatchUpKind.blockRoots, from, count);
+    return PoolCatchUpRequest._(_fresh(id), CatchUpKind.blockRoots, from, count);
   }
 
-  factory PoolCatchUpRequest.frontier() => PoolCatchUpRequest._(CatchUpKind.frontier, 0, 0);
-  factory PoolCatchUpRequest.head() => PoolCatchUpRequest._(CatchUpKind.head, 0, 0);
+  factory PoolCatchUpRequest.frontier({List<int>? id}) => PoolCatchUpRequest._(_fresh(id), CatchUpKind.frontier, 0, 0);
+  factory PoolCatchUpRequest.head({List<int>? id}) => PoolCatchUpRequest._(_fresh(id), CatchUpKind.head, 0, 0);
+
+  /// Mined round [round], by number. See [CatchUpKind.round] for what the
+  /// choice of round tells the pool.
+  factory PoolCatchUpRequest.round(int round, {List<int>? id}) {
+    if (round < 1 || round > 0xffffffff) throw ArgumentError('a round is 1 or more');
+    return PoolCatchUpRequest._(_fresh(id), CatchUpKind.round, round, 0);
+  }
+
+  /// The round a [CatchUpKind.round] request names.
+  int get round => what == CatchUpKind.round ? from : throw StateError('only a round request names a round');
 
   @override
   PoolMessageKind get kind => PoolMessageKind.catchUpRequest;
@@ -898,13 +965,16 @@ class PoolCatchUpRequest extends PoolMessage {
   // ---- wire format ----
   //
   //   version, kind    1 + 1
+  //   id               16
   //   what             1
-  //   from, count      4 + 4 (zero unless block roots)
+  //   from, count      4 + 4 (block roots: the run; round: the round and 0;
+  //                    zero otherwise)
 
   @override
   Uint8List encode() => (BytesBuilder(copy: false)
         ..addByte(PoolMessage.formatVersion)
         ..addByte(kind.number)
+        ..add(id)
         ..addByte(what.number)
         ..add(PoolMessage.u32(from))
         ..add(PoolMessage.u32(count)))
@@ -913,98 +983,50 @@ class PoolCatchUpRequest extends PoolMessage {
   static PoolCatchUpRequest decode(List<int> bytes) {
     final r = _Reader.open(bytes, PoolMessageKind.catchUpRequest, PoolMessage.maxOther);
     return r.guard(() {
+      final id = r.take('id', PoolMessage.idSize);
       final w = r.byte('what');
       final what = CatchUpKind.of(w);
       if (what == null) throw ProtocolRefusal('what', 'unknown catch-up kind $w');
       final from = r.u32('from');
       final count = r.u32('count');
       r.end();
-      if (what != CatchUpKind.blockRoots) {
-        if (from != 0 || count != 0) throw ProtocolRefusal('from', 'a ${what.name} request names no rounds');
-        return PoolCatchUpRequest._(what, 0, 0);
+      switch (what) {
+        case CatchUpKind.blockRoots:
+          if (from < 1) throw ProtocolRefusal('from', 'the first round is 1 or more, not $from');
+          if (count < 1 || count > PoolMessage.maxBlockRoots) {
+            throw ProtocolRefusal('count', 'declares $count roots, 1 to ${PoolMessage.maxBlockRoots}');
+          }
+          return PoolCatchUpRequest.blockRoots(from: from, count: count, id: id);
+        case CatchUpKind.round:
+          if (from < 1) throw ProtocolRefusal('from', 'a round request names round 1 or more, not $from');
+          if (count != 0) throw ProtocolRefusal('count', 'a round request names one round');
+          return PoolCatchUpRequest.round(from, id: id);
+        case CatchUpKind.frontier:
+        case CatchUpKind.head:
+          if (from != 0 || count != 0) throw ProtocolRefusal('from', 'a ${what.name} request names no rounds');
+          return PoolCatchUpRequest._(id, what, 0, 0);
       }
-      if (from < 1) throw ProtocolRefusal('from', 'the first round is 1 or more, not $from');
-      if (count < 1 || count > PoolMessage.maxBlockRoots) {
-        throw ProtocolRefusal('count', 'declares $count roots, 1 to ${PoolMessage.maxBlockRoots}');
-      }
-      return PoolCatchUpRequest.blockRoots(from: from, count: count);
     });
   }
 }
 
-/// What a pool answers a catch-up request with. Nothing in it is derived
-/// from who asked: no id, no address, and no round beyond the run served.
-///
-/// A block-root reply names the run it serves and carries the roots in
-/// round order; a pool serves fewer than asked when the run reaches past
-/// its tip. A frontier reply carries the round it stands at, that round's
-/// block root, and the complete left subtrees a follower needs above the
-/// block level, in level order; together they rebuild a follower exactly
-/// ([BlockFold.at]). A head reply carries the tip round and its witness
-/// whole, because a txid is the hash of the whole serialised transaction,
-/// with the block the witness is in and its merkle branch.
-class PoolCatchUpReply extends PoolMessage {
-  final CatchUpKind what;
-
-  /// Block roots: the first round served and the roots, in round order.
-  final int from;
-  final List<Uint8List> roots;
-
-  /// Frontier: the round it stands at, that round's block root, and the
-  /// left siblings above the block level in level order.
+/// A mined round and the witness's place in its block, as a head reply, a
+/// round reply and a [PoolRoundMined] all carry it: the round and its
+/// witness whole, because a txid is the hash of the whole serialised
+/// transaction, the block holding the witness, the witness's index there
+/// and its merkle branch.
+class _Proven {
   final int round;
-  final Uint8List? blockRoot;
-  final List<Uint8List> left;
-
-  /// Head: the tip round and its witness, the block the witness is in, the
-  /// witness's index in that block and its merkle branch.
-  final Uint8List? roundTx, witnessTx, blockHash;
+  final Uint8List roundTx, witnessTx, blockHash;
   final int txIndex;
   final List<Uint8List> branch;
 
-  PoolCatchUpReply._(this.what,
-      {this.from = 0,
-      this.roots = const [],
-      this.round = 0,
-      this.blockRoot,
-      this.left = const [],
-      this.roundTx,
-      this.witnessTx,
-      this.blockHash,
-      this.txIndex = 0,
-      this.branch = const []});
-
-  /// Block roots for rounds [from] onward, in round order.
-  factory PoolCatchUpReply.blockRoots({required int from, required List<List<int>> roots}) {
-    if (from < 1 || from > 0xffffffff) throw ArgumentError('the first round is 1 or more');
-    if (roots.length > PoolMessage.maxBlockRoots) throw ArgumentError('at most ${PoolMessage.maxBlockRoots} roots');
-    if (roots.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a block root is ${PoolMessage.hashSize} bytes');
-    return PoolCatchUpReply._(CatchUpKind.blockRoots, from: from, roots: [for (final x in roots) Uint8List.fromList(x)]);
-  }
-
-  /// The frontier at [round]: that round's block root and the left
-  /// siblings above the block level, in level order.
-  factory PoolCatchUpReply.frontier({required int round, required List<int> blockRoot, required List<List<int>> left}) {
-    if (round < 1 || round > 0xffffffff) throw ArgumentError('a frontier stands at round 1 or more');
-    if (blockRoot.length != PoolMessage.hashSize) throw ArgumentError('a block root is ${PoolMessage.hashSize} bytes');
-    if (left.length > NoteCommitmentTree.depth) throw ArgumentError('at most ${NoteCommitmentTree.depth} nodes');
-    if (left.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a node is ${PoolMessage.hashSize} bytes');
-    return PoolCatchUpReply._(CatchUpKind.frontier,
-        round: round,
-        blockRoot: Uint8List.fromList(blockRoot),
-        left: [for (final x in left) Uint8List.fromList(x)]);
-  }
-
-  /// The head: the tip round at [round], its witness, and the witness's
-  /// place in the block [blockHash].
-  factory PoolCatchUpReply.head(
-      {required int round,
-      required List<int> roundTx,
-      required List<int> witnessTx,
-      required List<int> blockHash,
-      required int txIndex,
-      required List<List<int>> branch}) {
-    if (round < 1 || round > 0xffffffff) throw ArgumentError('a head stands at round 1 or more');
+  _Proven(this.round, List<int> roundTx, List<int> witnessTx, List<int> blockHash, this.txIndex, List<List<int>> branch)
+      : roundTx = Uint8List.fromList(roundTx),
+        witnessTx = Uint8List.fromList(witnessTx),
+        blockHash = Uint8List.fromList(blockHash),
+        branch = [for (final x in branch) Uint8List.fromList(x)] {
+    if (round < 1 || round > 0xffffffff) throw ArgumentError('a mined round is round 1 or more');
     for (final (b, name) in [(roundTx, 'the round'), (witnessTx, 'the witness')]) {
       if (b.isEmpty || b.length > PoolMessage.maxTx) throw ArgumentError('$name is 1 to ${PoolMessage.maxTx} bytes');
     }
@@ -1012,25 +1034,45 @@ class PoolCatchUpReply extends PoolMessage {
     if (txIndex < 0 || txIndex > 0xffffffff) throw ArgumentError('a transaction index fits 32 bits');
     if (branch.length > PoolMessage.maxBranch) throw ArgumentError('a branch is at most ${PoolMessage.maxBranch} deep');
     if (branch.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a branch node is ${PoolMessage.hashSize} bytes');
-    return PoolCatchUpReply._(CatchUpKind.head,
-        round: round,
-        roundTx: Uint8List.fromList(roundTx),
-        witnessTx: Uint8List.fromList(witnessTx),
-        blockHash: Uint8List.fromList(blockHash),
-        txIndex: txIndex,
-        branch: [for (final x in branch) Uint8List.fromList(x)]);
   }
 
-  @override
-  PoolMessageKind get kind => PoolMessageKind.catchUpReply;
+  //   round 4, round length 4, round, witness length 4, witness,
+  //   block hash 32, index 4, count 1, branch 32 each
+  void write(BytesBuilder out) {
+    out
+      ..add(PoolMessage.u32(round))
+      ..add(PoolMessage.u32(roundTx.length))
+      ..add(roundTx)
+      ..add(PoolMessage.u32(witnessTx.length))
+      ..add(witnessTx)
+      ..add(blockHash)
+      ..add(PoolMessage.u32(txIndex))
+      ..addByte(branch.length);
+    for (final x in branch) {
+      out.add(x);
+    }
+  }
 
-  /// The merkle root the head's branch computes for its witness, in the
-  /// display order a block header prints it. The caller checks it against
-  /// the header of [blockHash] in its own chain: this reply says where the
-  /// witness is, and only the wallet's headers say whether that is true.
-  List<int> computedMerkleRoot() {
-    if (what != CatchUpKind.head) throw StateError('only a head reply carries a merkle branch');
-    var cur = hex.decode(ShieldedLedger.parse(witnessTx!).id).reversed.toList();
+  static _Proven read(_Reader r) {
+    final round = r.u32('round');
+    if (round < 1) throw ProtocolRefusal('round', 'a mined round is round 1 or more, not $round');
+    final rl = r.u32('roundTx');
+    if (rl < 1 || rl > PoolMessage.maxTx) throw ProtocolRefusal('roundTx', 'declares $rl bytes, 1 to ${PoolMessage.maxTx}');
+    final roundTx = r.take('roundTx', rl);
+    final wl = r.u32('witnessTx');
+    if (wl < 1 || wl > PoolMessage.maxTx) throw ProtocolRefusal('witnessTx', 'declares $wl bytes, 1 to ${PoolMessage.maxTx}');
+    final witnessTx = r.take('witnessTx', wl);
+    final blockHash = r.take('blockHash', PoolMessage.hashSize);
+    final txIndex = r.u32('txIndex');
+    final n = r.byte('branch');
+    if (n > PoolMessage.maxBranch) throw ProtocolRefusal('branch', 'declares $n nodes, at most ${PoolMessage.maxBranch}');
+    return _Proven(round, roundTx, witnessTx, blockHash, txIndex, [for (int i = 0; i < n; i++) r.take('branch $i', PoolMessage.hashSize)]);
+  }
+
+  /// The merkle root the branch computes for the witness, in the display
+  /// order a block header prints it.
+  List<int> merkleRoot() {
+    var cur = hex.decode(ShieldedLedger.parse(witnessTx).id).reversed.toList();
     var index = txIndex;
     for (final sib in branch) {
       final other = sib.reversed.toList();
@@ -1040,14 +1082,140 @@ class PoolCatchUpReply extends PoolMessage {
     }
     return cur.reversed.toList();
   }
+}
+
+/// What a pool answers a catch-up request with: the request's [id] echoed,
+/// then either the answer or a refusal naming why ([refusal]). Nothing in
+/// it is derived from who asked: the id is the request's own random value,
+/// and no round appears beyond what was asked for.
+///
+/// A block-root reply names the run it serves and carries the roots in
+/// round order; a pool serves fewer than asked when the run reaches past
+/// its last mined round. A frontier reply carries the round it stands at,
+/// that round's block root, and the complete left subtrees a follower
+/// needs above the block level, in level order; together they rebuild a
+/// follower exactly ([BlockFold.at]). A head or round reply carries a
+/// mined round and its witness whole, with the block the witness is in and
+/// its merkle branch.
+class PoolCatchUpReply extends PoolMessage {
+  /// The request's id, or zeros for a reply built without one.
+  final Uint8List id;
+  final CatchUpKind what;
+
+  /// Why the request was not answered, or null for an answer.
+  final CatchUpRefusal? refusal;
+  final String? sentence;
+
+  /// Block roots: the first round served and the roots, in round order.
+  final int from;
+  final List<Uint8List> roots;
+
+  /// Frontier: the round it stands at, that round's block root, and the
+  /// left siblings above the block level in level order.
+  final int _frontierRound;
+  final Uint8List? blockRoot;
+  final List<Uint8List> left;
+
+  final _Proven? _proven;
+
+  PoolCatchUpReply._(List<int>? id, this.what,
+      {this.refusal,
+      this.sentence,
+      this.from = 0,
+      this.roots = const [],
+      int round = 0,
+      this.blockRoot,
+      this.left = const [],
+      _Proven? proven})
+      : id = Uint8List.fromList(id ?? List.filled(PoolMessage.idSize, 0)),
+        _frontierRound = round,
+        _proven = proven {
+    if (this.id.length != PoolMessage.idSize) throw ArgumentError('an id is ${PoolMessage.idSize} bytes');
+  }
+
+  /// Block roots for rounds [from] onward, in round order.
+  factory PoolCatchUpReply.blockRoots({required int from, required List<List<int>> roots, List<int>? id}) {
+    if (from < 1 || from > 0xffffffff) throw ArgumentError('the first round is 1 or more');
+    if (roots.length > PoolMessage.maxBlockRoots) throw ArgumentError('at most ${PoolMessage.maxBlockRoots} roots');
+    if (roots.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a block root is ${PoolMessage.hashSize} bytes');
+    return PoolCatchUpReply._(id, CatchUpKind.blockRoots, from: from, roots: [for (final x in roots) Uint8List.fromList(x)]);
+  }
+
+  /// The frontier at [round]: that round's block root and the left
+  /// siblings above the block level, in level order.
+  factory PoolCatchUpReply.frontier(
+      {required int round, required List<int> blockRoot, required List<List<int>> left, List<int>? id}) {
+    if (round < 1 || round > 0xffffffff) throw ArgumentError('a frontier stands at round 1 or more');
+    if (blockRoot.length != PoolMessage.hashSize) throw ArgumentError('a block root is ${PoolMessage.hashSize} bytes');
+    if (left.length > NoteCommitmentTree.depth) throw ArgumentError('at most ${NoteCommitmentTree.depth} nodes');
+    if (left.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a node is ${PoolMessage.hashSize} bytes');
+    return PoolCatchUpReply._(id, CatchUpKind.frontier,
+        round: round, blockRoot: Uint8List.fromList(blockRoot), left: [for (final x in left) Uint8List.fromList(x)]);
+  }
+
+  /// The head: the last mined round at [round], its witness, and the
+  /// witness's place in the block [blockHash].
+  factory PoolCatchUpReply.head(
+          {required int round,
+          required List<int> roundTx,
+          required List<int> witnessTx,
+          required List<int> blockHash,
+          required int txIndex,
+          required List<List<int>> branch,
+          List<int>? id}) =>
+      PoolCatchUpReply._(id, CatchUpKind.head, proven: _Proven(round, roundTx, witnessTx, blockHash, txIndex, branch));
+
+  /// Mined round [round] by number, carried as a head is.
+  factory PoolCatchUpReply.round(
+          {required int round,
+          required List<int> roundTx,
+          required List<int> witnessTx,
+          required List<int> blockHash,
+          required int txIndex,
+          required List<List<int>> branch,
+          List<int>? id}) =>
+      PoolCatchUpReply._(id, CatchUpKind.round, proven: _Proven(round, roundTx, witnessTx, blockHash, txIndex, branch));
+
+  /// The request of kind [what] refused, for [reason], with a sentence for
+  /// a person.
+  factory PoolCatchUpReply.refused(CatchUpKind what, CatchUpRefusal reason, String sentence, {List<int>? id}) {
+    if (utf8.encode(sentence).length > PoolMessage.maxSentence) {
+      throw ArgumentError('a sentence is at most ${PoolMessage.maxSentence} bytes');
+    }
+    return PoolCatchUpReply._(id, what, refusal: reason, sentence: sentence);
+  }
+
+  bool get isRefused => refusal != null;
+
+  _Proven get _p => _proven ?? (throw StateError('only a head or round answer carries a mined round'));
+
+  /// The round a frontier stands at, or a head or round answer carries.
+  int get round => _proven?.round ?? _frontierRound;
+  Uint8List? get roundTx => _proven?.roundTx;
+  Uint8List? get witnessTx => _proven?.witnessTx;
+  Uint8List? get blockHash => _proven?.blockHash;
+  int get txIndex => _proven?.txIndex ?? 0;
+  List<Uint8List> get branch => _proven?.branch ?? const [];
+
+  @override
+  PoolMessageKind get kind => PoolMessageKind.catchUpReply;
+
+  /// The merkle root the branch computes for the witness, in the display
+  /// order a block header prints it. The caller checks it against the
+  /// header of [blockHash] in its own chain: this reply says where the
+  /// witness is, and only the wallet's headers say whether that is true.
+  List<int> computedMerkleRoot() => _p.merkleRoot();
 
   // ---- wire format ----
   //
   //   version, kind    1 + 1
+  //   id               16
   //   what             1
+  //   status           1: 0 answered, 1 refused
+  //   refused:         reason 2, sentence length 2, sentence (UTF-8)
   //   block roots:     from 4, count 4, roots 32 each
   //   frontier:        round 4, block root 32, count 1, nodes 32 each
-  //   head:            round 4, round length 4, round, witness length 4,
+  //   head, round:     round 4, round length 4, round, witness length 4,
   //                    witness, block hash 32, index 4, count 1, branch
 
   @override
@@ -1055,7 +1223,17 @@ class PoolCatchUpReply extends PoolMessage {
     final out = BytesBuilder(copy: false)
       ..addByte(PoolMessage.formatVersion)
       ..addByte(kind.number)
-      ..addByte(what.number);
+      ..add(id)
+      ..addByte(what.number)
+      ..addByte(isRefused ? 1 : 0);
+    if (isRefused) {
+      final s = utf8.encode(sentence!);
+      out
+        ..add(PoolMessage.u16(refusal!.number))
+        ..add(PoolMessage.u16(s.length))
+        ..add(s);
+      return out.toBytes();
+    }
     switch (what) {
       case CatchUpKind.blockRoots:
         out
@@ -1066,25 +1244,15 @@ class PoolCatchUpReply extends PoolMessage {
         }
       case CatchUpKind.frontier:
         out
-          ..add(PoolMessage.u32(round))
+          ..add(PoolMessage.u32(_frontierRound))
           ..add(blockRoot!)
           ..addByte(left.length);
         for (final x in left) {
           out.add(x);
         }
       case CatchUpKind.head:
-        out
-          ..add(PoolMessage.u32(round))
-          ..add(PoolMessage.u32(roundTx!.length))
-          ..add(roundTx!)
-          ..add(PoolMessage.u32(witnessTx!.length))
-          ..add(witnessTx!)
-          ..add(blockHash!)
-          ..add(PoolMessage.u32(txIndex))
-          ..addByte(branch.length);
-        for (final x in branch) {
-          out.add(x);
-        }
+      case CatchUpKind.round:
+        _p.write(out);
     }
     return out.toBytes();
   }
@@ -1092,55 +1260,185 @@ class PoolCatchUpReply extends PoolMessage {
   static PoolCatchUpReply decode(List<int> bytes) {
     final r = _Reader.open(bytes, PoolMessageKind.catchUpReply, PoolMessage.maxCatchUp);
     return r.guard(() {
+      final id = r.take('id', PoolMessage.idSize);
       final w = r.byte('what');
       final what = CatchUpKind.of(w);
       if (what == null) throw ProtocolRefusal('what', 'unknown catch-up kind $w');
+      final status = r.byte('status');
+      if (status > 1) throw ProtocolRefusal('status', 'unknown status $status');
       final PoolCatchUpReply reply;
-      switch (what) {
-        case CatchUpKind.blockRoots:
-          final from = r.u32('from');
-          if (from < 1) throw ProtocolRefusal('from', 'the first round is 1 or more, not $from');
-          final n = r.u32('roots');
-          if (n > PoolMessage.maxBlockRoots) {
-            throw ProtocolRefusal('roots', 'declares $n roots, at most ${PoolMessage.maxBlockRoots}');
-          }
-          reply = PoolCatchUpReply.blockRoots(
-              from: from, roots: [for (int i = 0; i < n; i++) r.take('root $i', PoolMessage.hashSize)]);
-        case CatchUpKind.frontier:
-          final round = r.u32('round');
-          if (round < 1) throw ProtocolRefusal('round', 'a frontier stands at round 1 or more, not $round');
-          final blockRoot = r.take('blockRoot', PoolMessage.hashSize);
-          final n = r.byte('left');
-          if (n > NoteCommitmentTree.depth) {
-            throw ProtocolRefusal('left', 'declares $n nodes, at most ${NoteCommitmentTree.depth}');
-          }
-          reply = PoolCatchUpReply.frontier(
-              round: round,
-              blockRoot: blockRoot,
-              left: [for (int i = 0; i < n; i++) r.take('node $i', PoolMessage.hashSize)]);
-        case CatchUpKind.head:
-          final round = r.u32('round');
-          if (round < 1) throw ProtocolRefusal('round', 'a head stands at round 1 or more, not $round');
-          final rl = r.u32('roundTx');
-          if (rl < 1 || rl > PoolMessage.maxTx) throw ProtocolRefusal('roundTx', 'declares $rl bytes, 1 to ${PoolMessage.maxTx}');
-          final roundTx = r.take('roundTx', rl);
-          final wl = r.u32('witnessTx');
-          if (wl < 1 || wl > PoolMessage.maxTx) throw ProtocolRefusal('witnessTx', 'declares $wl bytes, 1 to ${PoolMessage.maxTx}');
-          final witnessTx = r.take('witnessTx', wl);
-          final blockHash = r.take('blockHash', PoolMessage.hashSize);
-          final txIndex = r.u32('txIndex');
-          final n = r.byte('branch');
-          if (n > PoolMessage.maxBranch) throw ProtocolRefusal('branch', 'declares $n nodes, at most ${PoolMessage.maxBranch}');
-          reply = PoolCatchUpReply.head(
-              round: round,
-              roundTx: roundTx,
-              witnessTx: witnessTx,
-              blockHash: blockHash,
-              txIndex: txIndex,
-              branch: [for (int i = 0; i < n; i++) r.take('branch $i', PoolMessage.hashSize)]);
+      if (status == 1) {
+        final n = r.u16('reason');
+        final reason = CatchUpRefusal.of(n);
+        if (reason == null) throw ProtocolRefusal('reason', 'unknown reason $n');
+        reply = PoolCatchUpReply.refused(what, reason, r.sentence('sentence'), id: id);
+      } else {
+        switch (what) {
+          case CatchUpKind.blockRoots:
+            final from = r.u32('from');
+            if (from < 1) throw ProtocolRefusal('from', 'the first round is 1 or more, not $from');
+            final n = r.u32('roots');
+            if (n > PoolMessage.maxBlockRoots) {
+              throw ProtocolRefusal('roots', 'declares $n roots, at most ${PoolMessage.maxBlockRoots}');
+            }
+            reply = PoolCatchUpReply.blockRoots(
+                from: from, roots: [for (int i = 0; i < n; i++) r.take('root $i', PoolMessage.hashSize)], id: id);
+          case CatchUpKind.frontier:
+            final round = r.u32('round');
+            if (round < 1) throw ProtocolRefusal('round', 'a frontier stands at round 1 or more, not $round');
+            final blockRoot = r.take('blockRoot', PoolMessage.hashSize);
+            final n = r.byte('left');
+            if (n > NoteCommitmentTree.depth) {
+              throw ProtocolRefusal('left', 'declares $n nodes, at most ${NoteCommitmentTree.depth}');
+            }
+            reply = PoolCatchUpReply.frontier(
+                round: round,
+                blockRoot: blockRoot,
+                left: [for (int i = 0; i < n; i++) r.take('node $i', PoolMessage.hashSize)],
+                id: id);
+          case CatchUpKind.head:
+          case CatchUpKind.round:
+            reply = PoolCatchUpReply._(id, what, proven: _Proven.read(r));
+        }
       }
       r.end();
       return reply;
+    });
+  }
+}
+
+/// A mined round sent to a wallet that submitted into it, unasked: the
+/// ids of that wallet's accepted submissions the round took in, the
+/// round's and witness's txids, and where the witness sits in its block.
+///
+/// It carries no transactions. At production a round and its witness are
+/// about 2.6 MB, and a pool sends one notice per submitter per round, so
+/// carrying them would move hundreds of megabytes a round through the
+/// transport. A wallet that needs the transactions asks for the round by
+/// number ([CatchUpKind.round]) from the same identity it submitted from,
+/// which tells the pool nothing it does not already know.
+///
+/// It goes only to the peer that submitted the ids it names, in the peer's
+/// notices folder rather than its replies folder, since nobody asked for
+/// it. Nothing in it is trusted: [computedMerkleRoot] is checked against
+/// the wallet's own header for [blockHash], and the txids against the
+/// round's announcement.
+class PoolRoundMined extends PoolMessage {
+  /// The most submission ids one notice names: a round's transfers, at the
+  /// largest plan.
+  static const maxIds = 256;
+
+  /// The largest notice a decoder reads: every field at its bound.
+  static const maxNotice = 2 + 2 + maxIds * PoolMessage.idSize + 4 + 3 * PoolMessage.hashSize + 4 + 1 + PoolMessage.maxBranch * PoolMessage.hashSize;
+
+  final List<Uint8List> ids;
+  final int round;
+
+  /// The round's and the witness's txids, in the display order a txid is
+  /// printed in.
+  final Uint8List roundTxId, witnessTxId;
+
+  /// The block holding the witness, the witness's index there and its
+  /// merkle branch, as a head carries them.
+  final Uint8List blockHash;
+  final int txIndex;
+  final List<Uint8List> branch;
+
+  PoolRoundMined._(List<List<int>> ids, this.round, List<int> roundTxId, List<int> witnessTxId, List<int> blockHash, this.txIndex,
+      List<List<int>> branch)
+      : ids = [for (final x in ids) Uint8List.fromList(x)],
+        roundTxId = Uint8List.fromList(roundTxId),
+        witnessTxId = Uint8List.fromList(witnessTxId),
+        blockHash = Uint8List.fromList(blockHash),
+        branch = [for (final x in branch) Uint8List.fromList(x)] {
+    if (ids.isEmpty || ids.length > maxIds) throw ArgumentError('1 to $maxIds submission ids');
+    if (ids.any((x) => x.length != PoolMessage.idSize)) throw ArgumentError('an id is ${PoolMessage.idSize} bytes');
+    if (round < 1 || round > 0xffffffff) throw ArgumentError('a mined round is round 1 or more');
+    for (final (b, name) in [(roundTxId, 'a round txid'), (witnessTxId, 'a witness txid'), (blockHash, 'a block hash')]) {
+      if (b.length != PoolMessage.hashSize) throw ArgumentError('$name is ${PoolMessage.hashSize} bytes');
+    }
+    if (txIndex < 0 || txIndex > 0xffffffff) throw ArgumentError('a transaction index fits 32 bits');
+    if (branch.length > PoolMessage.maxBranch) throw ArgumentError('a branch is at most ${PoolMessage.maxBranch} deep');
+    if (branch.any((x) => x.length != PoolMessage.hashSize)) throw ArgumentError('a branch node is ${PoolMessage.hashSize} bytes');
+  }
+
+  factory PoolRoundMined(
+          {required List<List<int>> ids,
+          required int round,
+          required List<int> roundTxId,
+          required List<int> witnessTxId,
+          required List<int> blockHash,
+          required int txIndex,
+          required List<List<int>> branch}) =>
+      PoolRoundMined._(ids, round, roundTxId, witnessTxId, blockHash, txIndex, branch);
+
+  /// The merkle root the branch computes for the witness, in the display
+  /// order a block header prints it, as [PoolCatchUpReply.computedMerkleRoot].
+  List<int> computedMerkleRoot() {
+    var cur = witnessTxId.reversed.toList();
+    var index = txIndex;
+    for (final sib in branch) {
+      final other = sib.reversed.toList();
+      final pair = index.isEven ? [...cur, ...other] : [...other, ...cur];
+      cur = crypto.sha256.convert(crypto.sha256.convert(pair).bytes).bytes;
+      index >>= 1;
+    }
+    return cur.reversed.toList();
+  }
+
+  @override
+  PoolMessageKind get kind => PoolMessageKind.roundMined;
+
+  // ---- wire format ----
+  //
+  //   version, kind    1 + 1
+  //   ids              count 2, 16 each
+  //   round            4
+  //   round txid       32 (display order)
+  //   witness txid     32 (display order)
+  //   block hash       32
+  //   index            4
+  //   branch           count 1, 32 each
+
+  @override
+  Uint8List encode() {
+    final out = BytesBuilder(copy: false)
+      ..addByte(PoolMessage.formatVersion)
+      ..addByte(kind.number)
+      ..add(PoolMessage.u16(ids.length));
+    for (final x in ids) {
+      out.add(x);
+    }
+    out
+      ..add(PoolMessage.u32(round))
+      ..add(roundTxId)
+      ..add(witnessTxId)
+      ..add(blockHash)
+      ..add(PoolMessage.u32(txIndex))
+      ..addByte(branch.length);
+    for (final x in branch) {
+      out.add(x);
+    }
+    return out.toBytes();
+  }
+
+  static PoolRoundMined decode(List<int> bytes) {
+    final r = _Reader.open(bytes, PoolMessageKind.roundMined, maxNotice);
+    return r.guard(() {
+      final n = r.u16('ids');
+      if (n < 1 || n > maxIds) throw ProtocolRefusal('ids', 'declares $n ids, 1 to $maxIds');
+      final ids = [for (int i = 0; i < n; i++) r.take('id $i', PoolMessage.idSize)];
+      final round = r.u32('round');
+      if (round < 1) throw ProtocolRefusal('round', 'a mined round is round 1 or more, not $round');
+      final roundTxId = r.take('roundTxId', PoolMessage.hashSize);
+      final witnessTxId = r.take('witnessTxId', PoolMessage.hashSize);
+      final blockHash = r.take('blockHash', PoolMessage.hashSize);
+      final txIndex = r.u32('txIndex');
+      final b = r.byte('branch');
+      if (b > PoolMessage.maxBranch) throw ProtocolRefusal('branch', 'declares $b nodes, at most ${PoolMessage.maxBranch}');
+      final branch = [for (int i = 0; i < b; i++) r.take('branch $i', PoolMessage.hashSize)];
+      r.end();
+      return PoolRoundMined._(ids, round, roundTxId, witnessTxId, blockHash, txIndex, branch);
     });
   }
 }

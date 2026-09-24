@@ -177,6 +177,31 @@ class ShieldedRound {
   List<bool> get padding => [for (final t in transfers) t.isPadding];
 }
 
+/// A round's leaves as its round transaction and witness give them, with
+/// no ledger ([ShieldedLedger.readLeaves]).
+class RoundLeaves {
+  /// The header the round carries.
+  final PoolHeader header;
+
+  /// The leaves the round appends, in tree order, as the tree holds them
+  /// (lanes). A round appends a whole block, so there are as many as the
+  /// plan's leaves per round, padding included.
+  final List<List<int>> leaves;
+
+  /// Each transfer's two outputs, as offsets into [leaves]; the leaf's
+  /// position in the tree is `(round - 1) * leaves.length` plus the offset.
+  final List<(int, int)> positions;
+
+  /// The nullifiers the round spent, in transfer order (lanes).
+  final List<List<int>> nullifiers;
+
+  /// The root of [leaves]: the round's block root, which its announcement
+  /// carries and a fold consumes.
+  final List<int> blockRoot;
+
+  RoundLeaves._({required this.header, required this.leaves, required this.positions, required this.nullifiers, required this.blockRoot});
+}
+
 /// The TSL1_SP pool's state as a coordinator or a wallet holds it: the
 /// current header, the note commitment tree, the nullifier tree, and the
 /// tip the next round must spend (Y_N, round N and witness N).
@@ -230,11 +255,21 @@ class ShieldedLedger {
   /// wallet has proved off the chain.
   ({int round, List<int> blockRoot, List<List<int>> left}) frontier() {
     if (_number == 0) throw StateError('the genesis appends no leaves, so there is no frontier before round 1');
-    final m = _number - 1;
+    return frontierAt(_number);
+  }
+
+  /// [frontier] as it stood at round [n], for any round the ledger has
+  /// applied. A pool answers a wallet at its last mined round, which can
+  /// be behind the round it has published; the nodes a frontier names are
+  /// complete left subtrees, which later rounds never change, so the
+  /// frontier of any past round is still in the tree.
+  ({int round, List<int> blockRoot, List<List<int>> left}) frontierAt(int n) {
+    if (n < 1 || n > _number) throw RangeError.range(n, 1, _number, 'round');
+    final m = n - 1;
     final level = layout.blockLevel;
     return (
-      round: _number,
-      blockRoot: blockRoot,
+      round: n,
+      blockRoot: blockRootOf(n),
       left: [
         for (int l = 0; l < NoteCommitmentTree.depth - level; l++)
           if ((m >> l) & 1 == 1) SlotScript.lanesBytes(_tree.nodeAt(level + l, (m >> l) ^ 1))
@@ -316,70 +351,7 @@ class ShieldedLedger {
     _need(_names(round, nextHash), 'tip', 'the round\'s PP3 does not name the slot given as Y_${_number + 1}');
     _need(_spends(round, 4, nextSlotId, 1), 'tip', 'the round does not spend Y_${_number + 1}\'s anchor at input 4');
 
-    // the header the round carries
-    final h = _pp1Header(round);
-
-    // the transfers' lanes, from the statement at the bottom of V's unlock
-    final lanes = L.readStatement(_unlock(round, 2));
-    final reduced = [for (int t = 0; t < n; t++) L.transferLanes(lanes, t)];
-    final List<PoolPublicInputs> stated;
-    try {
-      stated = [for (final r in reduced) PoolPublicInputs.fromReducedLanes(r)];
-    } on ArgumentError catch (e) {
-      throw LedgerRefusal('statement', 'a transfer\'s lanes do not decode (${e.message})');
-    }
-
-    // the round's output tail: receipts, then withdrawals
-    final receipts = <PoolReceipt>[], withdrawals = <PoolWithdrawal>[];
-    for (int k = 5; k < round.outputs.length; k++) {
-      final o = round.outputs[k], s = o.script.buffer;
-      if (s.length == 44 && s[0] == 0x00 && s[1] == 0x6a && s[2] == 0x20 && s[35] == 0x08) {
-        _need(withdrawals.isEmpty, 'outputs', 'a receipt after a withdrawal');
-        _need(o.satoshis == BigInt.zero, 'outputs', 'a receipt holding money');
-        final v = ByteData.sublistView(Uint8List.fromList(s), 36).getUint64(0, Endian.little);
-        _need(v >= 0, 'outputs', 'a receipt value out of range');
-        receipts.add(PoolReceipt(s.sublist(3, 35), BigInt.from(v)));
-      } else if (s.length == 25 && s[0] == 0x76 && s[1] == 0xa9 && s[2] == 0x14 && s[23] == 0x88 && s[24] == 0xac) {
-        withdrawals.add(PoolWithdrawal(s.sublist(3, 23), o.satoshis));
-      } else {
-        throw LedgerRefusal('outputs', 'output $k is neither a receipt nor a withdrawal');
-      }
-    }
-
-    // the bundles the witness carries, against outHash
-    final List<Uint8List> bundles;
-    try {
-      final pushes = PP1SpUnlockBuilder.readRound(_unlock(witness, 1));
-      bundles = [for (final b in PoolOutHash.decodeBundles(pushes['bundles']!)) Uint8List.fromList(b)];
-    } on FormatException catch (e) {
-      throw LedgerRefusal('bundles', 'the witness\'s bundles do not parse (${e.message})');
-    }
-    _need(bundles.length == n, 'bundles', 'the witness carries ${bundles.length} bundles for $n transfers');
-    final bundleHashes = [for (final b in bundles) PoolOutHash.bundleHash(b)];
-    final why = PoolOutHash.check(
-        transfers: [for (final p in stated) p.toLanes()],
-        withdrawals: withdrawals,
-        bundleHashes: bundleHashes,
-        headerOutHash: h.outHash);
-    if (why != null) throw LedgerRefusal('outHash', why);
-
-    // the commitments, from the bundles or the padding note
-    final full = <PoolPublicInputs>[];
-    for (int t = 0; t < n; t++) {
-      final List<List<int>> cms;
-      if (bundles[t].isEmpty) {
-        _need(stated[t].isPadding, 'commitments', 'transfer $t is not padding and its bundle is empty, so its commitments are unknown');
-        cms = [ShieldedTransfer.paddingCm, ShieldedTransfer.paddingCm];
-      } else {
-        try {
-          cms = [for (final b in ShieldedTransfer.parseBundle(bundles[t])) b.cm];
-        } on TransferRefusal catch (e) {
-          throw LedgerRefusal('commitments', 'transfer $t\'s bundle ${e.reason}');
-        }
-      }
-      if (cms.any((c) => c.any((l) => l >= M31.p))) throw LedgerRefusal('commitments', 'transfer $t names a commitment outside the field');
-      full.add(PoolPublicInputs.fromReducedLanes(reduced[t], cm1: cms[0], cm2: cms[1]));
-    }
+    final (h, lanes, full, bundles, receipts, withdrawals) = _read(L, round, witness);
     final tree = _tree.copy();
     final before = tree.size;
     final fullLanes = [for (final p in full) p.toLanes()];
@@ -455,6 +427,126 @@ class ShieldedLedger {
     _number++;
     return ShieldedRound._(_number, h, full, bundles, positions, inserted, withdrawals, receipts, blockRoot);
   }
+
+  /// What [round] and its [witness] say, checked against each other and
+  /// needing no ledger state: the header the round carries, the statement's
+  /// lanes, every transfer's public inputs with its two commitments, the
+  /// bundles, receipts and withdrawals. [apply] checks these against the
+  /// tip; [readLeaves] gives a wallet what they place in the tree.
+  static (PoolHeader, List<int>, List<PoolPublicInputs>, List<Uint8List>, List<PoolReceipt>, List<PoolWithdrawal>) _read(
+      ShieldedPoolLayout L, Transaction round, Transaction witness) {
+    final n = L.transfers;
+    // the header the round carries
+    final h = _pp1Header(round);
+
+    // the transfers' lanes, from the statement at the bottom of V's unlock
+    final lanes = L.readStatement(_unlock(round, 2));
+    final reduced = [for (int t = 0; t < n; t++) L.transferLanes(lanes, t)];
+    final List<PoolPublicInputs> stated;
+    try {
+      stated = [for (final r in reduced) PoolPublicInputs.fromReducedLanes(r)];
+    } on ArgumentError catch (e) {
+      throw LedgerRefusal('statement', 'a transfer\'s lanes do not decode (${e.message})');
+    }
+
+    // the round's output tail: receipts, then withdrawals
+    final receipts = <PoolReceipt>[], withdrawals = <PoolWithdrawal>[];
+    for (int k = 5; k < round.outputs.length; k++) {
+      final o = round.outputs[k], s = o.script.buffer;
+      if (s.length == 44 && s[0] == 0x00 && s[1] == 0x6a && s[2] == 0x20 && s[35] == 0x08) {
+        _need(withdrawals.isEmpty, 'outputs', 'a receipt after a withdrawal');
+        _need(o.satoshis == BigInt.zero, 'outputs', 'a receipt holding money');
+        final v = ByteData.sublistView(Uint8List.fromList(s), 36).getUint64(0, Endian.little);
+        _need(v >= 0, 'outputs', 'a receipt value out of range');
+        receipts.add(PoolReceipt(s.sublist(3, 35), BigInt.from(v)));
+      } else if (s.length == 25 && s[0] == 0x76 && s[1] == 0xa9 && s[2] == 0x14 && s[23] == 0x88 && s[24] == 0xac) {
+        withdrawals.add(PoolWithdrawal(s.sublist(3, 23), o.satoshis));
+      } else {
+        throw LedgerRefusal('outputs', 'output $k is neither a receipt nor a withdrawal');
+      }
+    }
+
+    // the bundles the witness carries, against outHash
+    final List<Uint8List> bundles;
+    try {
+      final pushes = PP1SpUnlockBuilder.readRound(_unlock(witness, 1));
+      bundles = [for (final b in PoolOutHash.decodeBundles(pushes['bundles']!)) Uint8List.fromList(b)];
+    } on FormatException catch (e) {
+      throw LedgerRefusal('bundles', 'the witness\'s bundles do not parse (${e.message})');
+    }
+    _need(bundles.length == n, 'bundles', 'the witness carries ${bundles.length} bundles for $n transfers');
+    final bundleHashes = [for (final b in bundles) PoolOutHash.bundleHash(b)];
+    final why = PoolOutHash.check(
+        transfers: [for (final p in stated) p.toLanes()],
+        withdrawals: withdrawals,
+        bundleHashes: bundleHashes,
+        headerOutHash: h.outHash);
+    if (why != null) throw LedgerRefusal('outHash', why);
+
+    // the commitments, from the bundles or the padding note
+    final full = <PoolPublicInputs>[];
+    for (int t = 0; t < n; t++) {
+      final List<List<int>> cms;
+      if (bundles[t].isEmpty) {
+        _need(stated[t].isPadding, 'commitments', 'transfer $t is not padding and its bundle is empty, so its commitments are unknown');
+        cms = [ShieldedTransfer.paddingCm, ShieldedTransfer.paddingCm];
+      } else {
+        try {
+          cms = [for (final b in ShieldedTransfer.parseBundle(bundles[t])) b.cm];
+        } on TransferRefusal catch (e) {
+          throw LedgerRefusal('commitments', 'transfer $t\'s bundle ${e.reason}');
+        }
+      }
+      if (cms.any((c) => c.any((l) => l >= M31.p))) throw LedgerRefusal('commitments', 'transfer $t names a commitment outside the field');
+      full.add(PoolPublicInputs.fromReducedLanes(reduced[t], cm1: cms[0], cm2: cms[1]));
+    }
+    return (h, lanes, full, bundles, receipts, withdrawals);
+  }
+
+  /// Round [round]'s leaves, its transfers' leaf positions within them, the
+  /// nullifiers it spent and its block root, from its round transaction and
+  /// [witness] alone, as a wallet holding a fold rather than a ledger needs
+  /// them to find and path a note of its own.
+  ///
+  /// The leaves are exactly the ones [apply] appends, read the same way, so
+  /// they cannot disagree. Nothing here is trusted: the wallet checks
+  /// [RoundLeaves.blockRoot] against the round's announced block root and
+  /// its folded root against the round's proven `cmRoot`. Refuses a pair
+  /// that does not read, naming the check.
+  static RoundLeaves readLeaves(ShieldedPoolLayout layout, Transaction round, Transaction witness) =>
+      _guard('malformed', () {
+        _need(witness.inputs.length >= 3 && _spends(witness, 1, round.id, 1) && _spends(witness, 2, round.id, 2), 'tip',
+            'the witness does not spend the round\'s PP1 and PP2');
+        final (h, _, full, _, _, _) = _read(layout, round, witness);
+        final block = NoteCommitmentTree();
+        final fullLanes = [for (final p in full) p.toLanes()];
+        final leaves = <List<int>>[];
+        for (int s = 0; s < layout.tree.subtrees; s++) {
+          final sub = [for (final l in layout.tree.subtreeLeavesOf(fullLanes, s)) l ?? MerkleFrontier.emptyLeaf];
+          block.appendSubtree(sub);
+          leaves.addAll(sub);
+        }
+        final taken = <int>{};
+        int find(List<int> cm) {
+          for (int k = 0; k < leaves.length; k++) {
+            if (!taken.contains(k) && _eq(leaves[k], cm)) {
+              taken.add(k);
+              return k;
+            }
+          }
+          throw StateError('a placed commitment is missing from the round\'s leaves');
+        }
+
+        return RoundLeaves._(
+          header: h,
+          leaves: leaves,
+          positions: [for (final p in full) (find(p.cmOut1), find(p.cmOut2))],
+          nullifiers: [
+            for (final p in full) ...[if (p.real1) p.nf1, if (p.real2) p.nf2]
+          ],
+          blockRoot: SlotScript.lanesBytes(block.nodeAt(layout.blockLevel, 0)),
+        );
+      });
 
   // ---- spending from the ledger ----
 

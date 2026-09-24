@@ -34,4 +34,4 @@
 library;
 
 export 'src/testing/pool_chain_fixture.dart' show PoolChainFixture, PoolTestParams;
-export 'src/testing/pool_test_chain.dart' show PoolTestChain, PoolTestKeys;
+export 'src/testing/pool_test_chain.dart' show PoolTestChain, PoolTestKeys, TestPlacement;

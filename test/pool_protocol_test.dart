@@ -245,11 +245,12 @@ void main() {
         expect(back.encode(), bytes);
         expect(PoolMessage.decode(bytes), q);
       }
-      final bad = requests.first.encode()..[2] = 9;
+      // version 3: version, kind, a 16-byte id, then the kind byte at 18
+      final bad = requests.first.encode()..[18] = 9;
       expect(() => PoolMessage.decode(bad),
           throwsA(isA<ProtocolRefusal>().having((r) => r.reason, 'reason', contains('kind 9'))));
       // a frontier or head request names no rounds
-      final noisy = requests[1].encode()..[3] = 7;
+      final noisy = requests[1].encode()..[19] = 7;
       expect(() => PoolMessage.decode(noisy), throwsA(isA<ProtocolRefusal>()));
     });
 
@@ -362,10 +363,11 @@ void main() {
       // anything is allocated
       final tooMany = PoolCatchUpReply.blockRoots(from: 1, roots: [block1]).encode();
       final over = [...tooMany];
-      over[7] = 0xff;
-      over[8] = 0xff;
-      over[9] = 0xff;
-      over[10] = 0x7f;
+      // version, kind, id 16, what, status, from 4: the count is at 24
+      over[24] = 0xff;
+      over[25] = 0xff;
+      over[26] = 0xff;
+      over[27] = 0x7f;
       expect(
           () => PoolCatchUpReply.decode(over),
           throwsA(isA<ProtocolRefusal>()
@@ -429,9 +431,9 @@ void main() {
     });
 
     test('another version, older or newer, is refused as unknown', () {
-      expect(PoolMessage.formatVersion, 2);
+      expect(PoolMessage.formatVersion, 3);
       for (final m in every()) {
-        for (final v in [1, 3]) {
+        for (final v in [2, 4]) {
           final bytes = m.encode()..[0] = v;
           expect(() => PoolMessage.decode(bytes), throwsA(isA<ProtocolRefusal>().having((r) => r.field, 'field', 'version')),
               reason: '${m.kind.name} at version $v');
