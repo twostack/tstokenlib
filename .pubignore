@@ -1,3 +1,23 @@
+# What does NOT go to pub.dev.
+#
+# A .pubignore REPLACES .gitignore for publishing: when this file exists, pub
+# stops honouring .gitignore entirely. So everything that must stay out of the
+# archive has to be named here, including things git already ignores. Anything
+# hidden only by .git/info/exclude is invisible to pub twice over, because that
+# file is machine-local and is not in the repository at all.
+
 .idea
+*.iml
+.dart_tool/
+.claude/
 pubspec_overrides.yaml
+
+# Rust build artifacts. 116 MB on disk, 41 MB compressed, and useless to a
+# consumer: they are objects for the machine that built them. The crate's
+# source stays, so anyone can build the accelerator themselves.
+native/stark_kernels/target/
+
+# Development-only: planning artifacts, design notes, one-off probes.
 docs/
+openspec/
+tool/
