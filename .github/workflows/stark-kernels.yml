@@ -1,0 +1,171 @@
+# Prebuilt native STARK kernels for hook/build.dart.
+#
+# The kernels are released by source, not by package version: the release
+# tag is stark-kernels-<first 16 hex of the crate's source hash>, and a crate
+# that has not changed is not rebuilt. On main (or when run by hand) this
+# builds every target, publishes the libraries and the manifest under that
+# tag, and opens a pull request that puts the manifest in hook/prebuilt.json.
+# A pull request that touches the crate builds every target and publishes
+# nothing, so a change that breaks one platform is caught before it merges.
+#
+# Each target is built by tool/kernels/build_kernels.dart, which takes its triple,
+# features and flags from hook/kernel_source.dart: a prebuilt library is built
+# the way the hook would build it from source. macos_arm64 carries the Metal
+# backend.
+#
+# The pull request needs "Allow GitHub Actions to create and approve pull
+# requests" in the repository's Actions settings. Without it the release is
+# still made and its prebuilt.json asset can be committed by hand.
+
+name: stark kernels
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild and replace the release even if it exists
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - native/stark_kernels/**
+      - hook/kernel_source.dart
+      - tool/kernels/**
+      - .github/workflows/stark-kernels.yml
+  pull_request:
+    paths:
+      - native/stark_kernels/**
+      - hook/kernel_source.dart
+      - tool/kernels/**
+      - .github/workflows/stark-kernels.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stark-kernels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+      tag: ${{ steps.hash.outputs.tag }}
+      build: ${{ steps.released.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get -C tool/kernels
+      - id: hash
+        run: |
+          hash=$(dart tool/kernels/source_hash.dart)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          echo "tag=stark-kernels-${hash:0:16}" >> "$GITHUB_OUTPUT"
+          echo "crate source $hash"
+      - id: released
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.hash.outputs.tag }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$REBUILD" != true ] \
+              && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "$TAG is already released; nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: source
+    if: needs.source.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: macos_arm64, runner: macos-latest, target: aarch64-apple-darwin }
+          - { key: macos_x64, runner: macos-latest, target: x86_64-apple-darwin }
+          - { key: ios_arm64, runner: macos-latest, target: aarch64-apple-ios }
+          - { key: ios_arm64_simulator, runner: macos-latest, target: aarch64-apple-ios-sim }
+          - { key: ios_x64, runner: macos-latest, target: x86_64-apple-ios }
+          - { key: linux_x64, runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, zig: true }
+          - { key: linux_arm64, runner: ubuntu-latest, target: aarch64-unknown-linux-gnu, zig: true }
+          - { key: android_arm64, runner: ubuntu-latest, target: aarch64-linux-android }
+          - { key: android_arm, runner: ubuntu-latest, target: armv7-linux-androideabi }
+          - { key: android_x64, runner: ubuntu-latest, target: x86_64-linux-android }
+          - { key: windows_x64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { key: windows_arm64, runner: windows-latest, target: aarch64-pc-windows-msvc }
+    name: build ${{ matrix.key }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/stark_kernels
+          key: ${{ matrix.target }}
+      - if: matrix.zig
+        run: pip install cargo-zigbuild
+      - run: dart pub get -C tool/kernels
+      - run: dart tool/kernels/build_kernels.dart ${{ matrix.key }} dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernels-${{ matrix.key }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [source, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.source.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub get -C tool/kernels
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kernels-*
+          path: dist
+          merge-multiple: true
+      - name: Write the manifest
+        run: |
+          dart tool/kernels/prebuilt_manifest.dart dist \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" > hook/prebuilt.json
+          cat hook/prebuilt.json
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Release the libraries
+        run: |
+          notes="Native STARK kernels built from native/stark_kernels at ${GITHUB_SHA::12}, crate source ${{ needs.source.outputs.hash }}. hook/build.dart downloads these; nothing here needs installing by hand. macos_arm64 includes the Metal backend (enable with STARK_KERNELS_GPU=1)."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* hook/prebuilt.json --clobber
+          else
+            gh release create "$TAG" dist/* hook/prebuilt.json \
+              --target "$GITHUB_SHA" --title "$TAG" --notes "$notes" --latest=false
+          fi
+      - name: Propose the manifest
+        run: |
+          if git diff --quiet hook/prebuilt.json; then
+            echo "hook/prebuilt.json already lists $TAG"
+            exit 0
+          fi
+          branch="prebuilt/$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add hook/prebuilt.json
+          git commit -m "List the prebuilt kernels released as $TAG"
+          git push --force origin "$branch"
+          gh pr view "$branch" > /dev/null 2>&1 || gh pr create --head "$branch" --base "${GITHUB_REF_NAME}" \
+            --title "List the prebuilt kernels released as $TAG" \
+            --body "hook/prebuilt.json for the kernels built from $GITHUB_SHA and released as $TAG. The hook uses them only while the crate's source hash is still ${{ needs.source.outputs.hash }}."
