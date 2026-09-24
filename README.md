@@ -73,10 +73,42 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  tstokenlib:
-    git:
-      url: https://github.com/twostack/tstokenlib
+  tstokenlib: ^2.1.0
 ```
+
+It needs Dart 3.10 or later, where build hooks are stable.
+
+## The native kernels
+
+The shielded pool's prover leans on a Rust crate, `native/stark_kernels`: the
+circle FFT, the Merkle commitments, the DEEP quotients and FRI folds, and
+ML-KEM-768 for note encryption. Proving is only practical with it, and ML-KEM
+has no Dart version at all, so it is not left for you to build.
+
+A build hook (`hook/build.dart`) puts the library into every program that
+depends on tstokenlib, whether it runs under `dart run`, `dart test`,
+`dart build` or Flutter. For macOS, iOS, Linux, Android and Windows it
+downloads the library CI built from the crate's exact source and checks its
+SHA-256 against `hook/prebuilt.json`. If there is no prebuilt library for the
+target, or the crate has been edited, it builds the crate with cargo. If it can
+do neither, the build fails and says so, rather than shipping a prover that is
+quietly far slower.
+
+The macOS arm64 library includes an experimental Metal backend, which stays off
+until `STARK_KERNELS_GPU=1` is set.
+
+An application can choose how in its own pubspec:
+
+```yaml
+hooks:
+  user_defines:
+    tstokenlib:
+      stark_kernels: auto     # prebuilt if listed, else cargo (the default)
+      # stark_kernels: source # always build with cargo; never download
+      # stark_kernels: skip   # no kernels; proving runs in Dart
+```
+
+`STARK_KERNELS_LIB` still overrides all of this with a library path of your own.
 
 ## The dartsv dependency
 
@@ -719,10 +751,9 @@ it.
 
 A pool runs at one parameter set for its life, published in its descriptor. At
 production parameters a 256-transfer round was measured at **356 s** on one machine,
-and a transfer is about **67 KB**. An optional Rust kernel crate
-(`native/stark_kernels`, with an experimental Metal backend) accelerates proving;
-**a pure-Dart fallback is used when it is absent**, so nothing here needs a Rust
-toolchain. Point `STARK_KERNELS_LIB` at a built library to use it.
+and a transfer is about **67 KB**. Those figures
+are with the native kernels, which the build hook provides; see
+[The native kernels](#the-native-kernels).
 
 ARC caps a scriptSig at 1,636,802 bytes and a production-parameter witness is larger,
 so production witnesses do not pass through ARC. Testnet runs at test parameters.

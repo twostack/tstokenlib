@@ -27,10 +27,14 @@ side), and the composition, DEEP-quotient and opening steps read them
 there (`sk_store_get`/`sk_store_read`); the Dart side releases them when
 the proof is done (`sk_store_free`). ABI version 6.
 
-`StarkKernels.tryLoad()` finds `target/release/libstark_kernels.{dylib,so}` /
-`stark_kernels.dll` under the working directory or its parents, or the path
-in `$STARK_KERNELS_LIB`. When it is missing the prover silently falls back
-to Dart (`DartKernels`). `test/stark_kernels_test.dart` checks every kernel
+A consumer never builds this by hand: `hook/build.dart` bundles the library,
+either downloaded from the `stark-kernels-<source hash>` release CI makes
+(`.github/workflows/stark-kernels.yml`) or built with cargo when the source has
+changed since. `StarkKernels.tryLoad()` looks in `$STARK_KERNELS_LIB`, then the
+bundled copy, then beside the executable, then
+`target/release/libstark_kernels.{dylib,so}` / `stark_kernels.dll` under the
+working directory or its parents. When all of those are missing the prover
+falls back to Dart (`DartKernels`). `test/stark_kernels_test.dart` checks every kernel
 against the Dart implementation and compares whole proofs.
 
 ## The experimental GPU backend

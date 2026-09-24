@@ -1,3 +1,24 @@
+## 2.1.0
+
+- **The native kernels come with the package.** A build hook
+  (`hook/build.dart`) bundles `libstark_kernels` into every program that
+  depends on tstokenlib. For macOS (arm64, x64), iOS (device and simulator),
+  Linux (x64, arm64, glibc 2.17 and later), Android (arm64, arm, x64) and
+  Windows (x64, arm64) it downloads the library CI built from the crate's exact
+  source and checks its SHA-256. Anywhere else, or when the crate has been
+  edited, it builds with cargo. If it can do neither, the build fails with a
+  message naming the options rather than proving in Dart without saying so.
+  Before this release a consumer from pub.dev had no kernels unless they built
+  them and set `STARK_KERNELS_LIB`, and `NoteKem` refused outright.
+- **The `stark_kernels` user-define** chooses how: `auto` (the default),
+  `source` (always cargo, never download) or `skip`.
+- **Metal on Apple Silicon.** The macOS arm64 library, prebuilt or built by the
+  hook, includes the Metal backend. It stays off until `STARK_KERNELS_GPU=1`.
+- **`StarkKernels.tryLoad` finds the bundled copy** after `STARK_KERNELS_LIB`
+  and before the other places it already searched. `STARK_KERNELS_LIB` still
+  wins.
+- **Requires Dart 3.10**, the first release where build hooks are stable.
+
 ## 2.0.1
 
 - **The native kernels are found beside an installed program.** `StarkKernels.tryLoad` now also looks in the running executable's directory and in `../lib` from it, after `STARK_KERNELS_LIB` and before the source-tree search. A program compiled with `dart compile exe` has no source tree to search, so a package or tarball that ships `libstark_kernels` next to its binary (or in a `lib/` beside its `bin/`) now loads it with no environment variable. `STARK_KERNELS_LIB` still wins.
