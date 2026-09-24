@@ -168,8 +168,10 @@ Future<File> _cargoBuild({
     if (code.targetOS == OS.macOS) 'MACOSX_DEPLOYMENT_TARGET': '${code.macOS.targetVersion}',
     if (code.targetOS == OS.iOS) 'IPHONEOS_DEPLOYMENT_TARGET': '${code.iOS.targetVersion}',
     if (code.targetOS == OS.android && code.cCompiler != null)
-      'CARGO_TARGET_${triple.toUpperCase().replaceAll('-', '_')}_LINKER': code.cCompiler!.linker.toFilePath(),
+      cargoTargetEnv(triple, 'LINKER'): code.cCompiler!.linker.toFilePath(),
+    if (rustFlags(triple).isNotEmpty) cargoTargetEnv(triple, 'RUSTFLAGS'): rustFlags(triple).join(' '),
   };
+  final features = cargoFeatures(triple);
   final ProcessResult result;
   try {
     result = await Process.run(
@@ -183,6 +185,7 @@ Future<File> _cargoBuild({
         triple,
         '--target-dir',
         targetDir.path,
+        if (features.isNotEmpty) ...['--features', features.join(',')],
       ],
       environment: environment,
     );

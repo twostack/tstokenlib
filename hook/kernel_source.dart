@@ -82,6 +82,30 @@ String? rustTriple(String os, String arch, {bool iosSimulator = false}) => switc
       _ => null,
     };
 
+/// The cargo features [triple] is built with. Apple Silicon gets the Metal
+/// backend, which stays off until `STARK_KERNELS_GPU` asks for it, so
+/// building it in costs nothing on a machine that never does. Intel Macs do
+/// not: the backend is written for Apple Silicon's unified memory.
+List<String> cargoFeatures(String triple) => triple == 'aarch64-apple-darwin' ? const ['metal'] : const [];
+
+/// The rustc flags [triple] is built with, prebuilt or from source alike: an
+/// `@rpath` install name on Apple platforms, where rustc would otherwise
+/// record the path it was built at and every app bundling it would carry that
+/// path; the C runtime linked statically on Windows, so the library needs no
+/// Visual C++ redistributable; and 16 KB page alignment on 64-bit Android,
+/// which Android 15 devices with 16 KB pages require of every native library.
+List<String> rustFlags(String triple) => [
+      if (triple.contains('-apple-')) ...['-C', 'link-arg=-Wl,-install_name,@rpath/libstark_kernels.dylib'],
+      if (triple.endsWith('-windows-msvc')) ...['-C', 'target-feature=+crt-static'],
+      if (triple == 'aarch64-linux-android' || triple == 'x86_64-linux-android')
+        ...['-C', 'link-arg=-Wl,-z,max-page-size=16384'],
+    ];
+
+/// The name of cargo's per-target environment variable [what] for [triple],
+/// e.g. `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS`.
+String cargoTargetEnv(String triple, String what) =>
+    'CARGO_TARGET_${triple.toUpperCase().replaceAll('-', '_')}_$what';
+
 /// The key a target is listed under in the manifest, e.g. `macos_arm64`.
 String targetKey(String os, String arch, {bool iosSimulator = false}) =>
     '${os}_$arch${iosSimulator ? '_simulator' : ''}';

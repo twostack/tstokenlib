@@ -21,3 +21,6 @@ native/stark_kernels/target/
 docs/
 openspec/
 tool/
+
+# Kernel libraries built for a release, which ship from GitHub, not pub.dev.
+dist/

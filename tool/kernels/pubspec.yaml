@@ -1,0 +1,11 @@
+# The release tooling for the native kernels, kept out of tstokenlib's own
+# package so running it does not run tstokenlib's build hook first (which
+# would build the kernels for the host before building them for the target).
+name: kernel_tools
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  crypto: ^3.0.6
