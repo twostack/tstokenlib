@@ -28,6 +28,12 @@ Fungible types additionally support splitting and merging. Restricted types add 
 enforcement and redemption. Appendable tokens support issuer-controlled stamping. State machine
 tokens model complex multi-party workflows with state transition rules.
 
+There is a seventh, the TSL1_SP shielded pool, whose API is the `ShieldedPool*`
+types rather than a `*Tool`. If you are reading, building or serving a pool, read
+`docs/developer-guides/INTEGRATING_TSTOKENLIB_SP.md` first: it collects the rules
+where a plausible-looking integration is insecure, starting with why a PP1 must
+never be read by offset.
+
 Code contributions are welcome and encouraged.
 
 ## Transaction Sizes and Fees
