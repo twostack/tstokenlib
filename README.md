@@ -89,7 +89,7 @@ A build hook (`hook/build.dart`) puts the library into every program that
 depends on tstokenlib, whether it runs under `dart run`, `dart test`,
 `dart build` or Flutter. For macOS, iOS, Linux, Android and Windows it
 downloads the library CI built from the crate's exact source and checks its
-SHA-256 against `hook/prebuilt.json`. If there is no prebuilt library for the
+SHA-256 against `native/prebuilt.json`. If there is no prebuilt library for the
 target, or the crate has been edited, it builds the crate with cargo. If it can
 do neither, the build fails and says so, rather than shipping a prover that is
 quietly far slower.

@@ -44,7 +44,7 @@ import 'package:code_assets/code_assets.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:hooks/hooks.dart';
 
-import 'kernel_source.dart';
+import 'package:tstokenlib/src/native/kernel_source.dart';
 
 void main(List<String> args) async {
   await build(args, (input, output) async {
@@ -62,7 +62,7 @@ void main(List<String> args) async {
     final key = targetKey(os, arch, iosSimulator: simulator);
 
     final crateRoot = Directory.fromUri(input.packageRoot.resolve('$crateDir/'));
-    final manifestUri = input.packageRoot.resolve('hook/prebuilt.json');
+    final manifestUri = input.packageRoot.resolve('native/prebuilt.json');
     output.dependencies
       ..add(manifestUri)
       ..addAll([for (final f in crateFiles(crateRoot)) crateRoot.uri.resolve(f)]);

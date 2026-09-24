@@ -5,14 +5,14 @@
 ///
 /// `<key>` is a manifest key such as `macos_arm64` or `ios_arm64_simulator`.
 /// This is what `.github/workflows/stark-kernels.yml` runs on each runner,
-/// and it takes its triple, features and flags from `hook/kernel_source.dart`,
+/// and it takes its triple, features and flags from `lib/src/native/kernel_source.dart`,
 /// so a prebuilt library is built exactly as the hook would build it from
 /// source. Two things only CI does: Linux is built with `cargo zigbuild`
 /// against glibc 2.17, so one library loads on every distribution still in
 /// support, and Android links with the NDK in `$ANDROID_NDK_LATEST_HOME`.
 import 'dart:io';
 
-import '../../hook/kernel_source.dart';
+import '../../lib/src/native/kernel_source.dart';
 
 const _glibc = '2.17';
 const _androidApi = 21;

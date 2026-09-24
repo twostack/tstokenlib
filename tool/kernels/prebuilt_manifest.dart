@@ -1,4 +1,4 @@
-/// Writes `hook/prebuilt.json` for a directory of released kernel libraries.
+/// Writes `native/prebuilt.json` for a directory of released kernel libraries.
 ///
 ///     dart tool/kernels/prebuilt_manifest.dart <dist-dir> <base-url>
 ///
@@ -11,7 +11,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart' as crypto;
 
-import '../../hook/kernel_source.dart';
+import '../../lib/src/native/kernel_source.dart';
 
 void main(List<String> args) {
   if (args.length != 2) {

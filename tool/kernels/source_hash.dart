@@ -2,6 +2,6 @@
 /// computes it. Run from the package root.
 import 'dart:io';
 
-import '../../hook/kernel_source.dart';
+import '../../lib/src/native/kernel_source.dart';
 
 void main() => print(sourceHash(Directory('$crateDir/')));

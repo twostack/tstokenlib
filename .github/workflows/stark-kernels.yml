@@ -4,12 +4,12 @@
 # tag is stark-kernels-<first 16 hex of the crate's source hash>, and a crate
 # that has not changed is not rebuilt. On main (or when run by hand) this
 # builds every target, publishes the libraries and the manifest under that
-# tag, and opens a pull request that puts the manifest in hook/prebuilt.json.
+# tag, and opens a pull request that puts the manifest in native/prebuilt.json.
 # A pull request that touches the crate builds every target and publishes
 # nothing, so a change that breaks one platform is caught before it merges.
 #
 # Each target is built by tool/kernels/build_kernels.dart, which takes its triple,
-# features and flags from hook/kernel_source.dart: a prebuilt library is built
+# features and flags from lib/src/native/kernel_source.dart: a prebuilt library is built
 # the way the hook would build it from source. macos_arm64 carries the Metal
 # backend.
 #
@@ -30,13 +30,13 @@ on:
     branches: [main]
     paths:
       - native/stark_kernels/**
-      - hook/kernel_source.dart
+      - lib/src/native/kernel_source.dart
       - tool/kernels/**
       - .github/workflows/stark-kernels.yml
   pull_request:
     paths:
       - native/stark_kernels/**
-      - hook/kernel_source.dart
+      - lib/src/native/kernel_source.dart
       - tool/kernels/**
       - .github/workflows/stark-kernels.yml
 
@@ -141,31 +141,31 @@ jobs:
       - name: Write the manifest
         run: |
           dart tool/kernels/prebuilt_manifest.dart dist \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" > hook/prebuilt.json
-          cat hook/prebuilt.json
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/" > native/prebuilt.json
+          cat native/prebuilt.json
           (cd dist && sha256sum * > SHA256SUMS)
       - name: Release the libraries
         run: |
           notes="Native STARK kernels built from native/stark_kernels at ${GITHUB_SHA::12}, crate source ${{ needs.source.outputs.hash }}. hook/build.dart downloads these; nothing here needs installing by hand. macos_arm64 includes the Metal backend (enable with STARK_KERNELS_GPU=1)."
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" dist/* hook/prebuilt.json --clobber
+            gh release upload "$TAG" dist/* native/prebuilt.json --clobber
           else
-            gh release create "$TAG" dist/* hook/prebuilt.json \
+            gh release create "$TAG" dist/* native/prebuilt.json \
               --target "$GITHUB_SHA" --title "$TAG" --notes "$notes" --latest=false
           fi
       - name: Propose the manifest
         run: |
-          if git diff --quiet hook/prebuilt.json; then
-            echo "hook/prebuilt.json already lists $TAG"
+          if git diff --quiet native/prebuilt.json; then
+            echo "native/prebuilt.json already lists $TAG"
             exit 0
           fi
           branch="prebuilt/$TAG"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add hook/prebuilt.json
+          git add native/prebuilt.json
           git commit -m "List the prebuilt kernels released as $TAG"
           git push --force origin "$branch"
           gh pr view "$branch" > /dev/null 2>&1 || gh pr create --head "$branch" --base "${GITHUB_REF_NAME}" \
             --title "List the prebuilt kernels released as $TAG" \
-            --body "hook/prebuilt.json for the kernels built from $GITHUB_SHA and released as $TAG. The hook uses them only while the crate's source hash is still ${{ needs.source.outputs.hash }}."
+            --body "native/prebuilt.json for the kernels built from $GITHUB_SHA and released as $TAG. The hook uses them only while the crate's source hash is still ${{ needs.source.outputs.hash }}."
