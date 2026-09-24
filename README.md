@@ -12,7 +12,7 @@ The TSL1 Token Protocol allows for the creation of P2P tokens on Bitcoin (BSV) t
 
 [Download a copy of the whitepaper for a full technical explanation](https://github.com/twostack/tsl1)
 
-The library supports six token archetypes:
+The library supports seven token archetypes:
 
 | Type | API Class | Use Case |
 |------|-----------|----------|
@@ -22,17 +22,15 @@ The library supports six token archetypes:
 | **Restricted Fungible** | `RestrictedFungibleTokenTool` | Fungible token with transfer policy restrictions |
 | **Appendable** | `AppendableTokenTool` | Stamp-accumulating token with threshold redemption (e.g., loyalty cards) |
 | **State Machine** | `StateMachineTool` | Multi-party workflows with explicit state transitions and checkpoints |
+| **Shielded Pool** | `ShieldedCoordinator`, `ShieldedLedger` | Private payments: notes in a commitment tree, spends proved by a STARK verified on chain |
 
-All token types support the full lifecycle: minting, witness creation, transfers, and burns.
+The first six support the same lifecycle: minting, witness creation, transfers, and burns.
 Fungible types additionally support splitting and merging. Restricted types add transfer policy
 enforcement and redemption. Appendable tokens support issuer-controlled stamping. State machine
 tokens model complex multi-party workflows with state transition rules.
 
-There is a seventh, the TSL1_SP shielded pool, whose API is the `ShieldedPool*`
-types rather than a `*Tool`. If you are reading, building or serving a pool, read
-`docs/developer-guides/INTEGRATING_TSTOKENLIB_SP.md` first: it collects the rules
-where a plausible-looking integration is insecure, starting with why a PP1 must
-never be read by offset.
+The shielded pool is shaped differently, and is described in
+[Shielded Pool Tokens](#shielded-pool-tokens-tsl1_sp) below.
 
 Code contributions are welcome and encouraged.
 
@@ -561,6 +559,179 @@ var timeoutWitnessTx = tool.createWitnessTxn(
     StateMachineAction.TIMEOUT,
 );
 ```
+
+## Shielded Pool Tokens (TSL1_SP)
+
+The shielded pool is TSL1's privacy archetype. Value lives as **notes** in a Merkle
+commitment tree rather than as one output per holder, a spend is proved by a
+Circle-STARK **verified in Bitcoin Script**, and a **round** aggregates many
+transfers into a single on-chain proof. Amounts, senders and recipients are hidden;
+only the fact that a round happened is public.
+
+It is shaped differently from the other six, and the difference matters before you
+write any code:
+
+- **There is no single `*Tool` you drive end to end.** A pool has two sides. A
+  **coordinator** collects transfers, proves a round and publishes it; **wallets**
+  build transfers and follow the pool. The library gives you both sides and the
+  wire protocol between them.
+- **Nobody is asked to be trusted.** Every answer a pool gives is checked against
+  something the reader proved from the chain itself. A wallet handed the same bytes
+  by a stranger reaches the same verdict.
+- **Money crossing the edge is public.** A deposit names an amount and a transparent
+  source; a withdrawal names an amount and a transparent destination. Only what
+  happens inside the pool is private.
+
+> **Read [`docs/developer-guides/INTEGRATING_TSTOKENLIB_SP.md`](docs/developer-guides/INTEGRATING_TSTOKENLIB_SP.md)
+> before integrating.** It collects the rules where a plausible-looking integration is
+> insecure, starting with why a PP1 must never be read by offset: a lookalike carrying
+> a real pool's `tokenId` was mined on regtest for the price of two ordinary
+> transactions, and an offset-parsing reader accepted it as genuine.
+
+### Reading a pool from the chain
+
+`ShieldedLedger` rebuilds pool state from the transactions alone. It opens at the
+issuance and takes one round at a time, refusing anything the previous round did not
+produce:
+
+```dart
+var layout = ShieldedPoolLayout.forArities(arities,
+    nullifierLevel: nullifierLevel, receiptSlots: receiptSlots);
+
+var ledger = ShieldedLedger.open(layout, issuanceTx, witness0Tx, slot0Tx,
+    tokenId: tokenId, genesisHeader: genesisHeader);
+
+ShieldedRound round = ledger.apply(roundTx, witnessTx, nextSlotTx);
+// round.positions  — each transfer's two leaf positions
+// round.receipts   — deposits this round took in
+// round.blockRoot  — the 32 bytes a follower folds
+```
+
+A wallet that keeps a fold rather than a whole ledger can read the same facts from
+the two transactions with no state at all:
+
+```dart
+var got = ShieldedLedger.readLeaves(layout, roundTx, witnessTx);
+// got.leaves, got.positions, got.nullifiers, got.blockRoot
+```
+
+### Checking a round really is this pool's
+
+Never read a PP1 by slicing offsets. `PoolEvidence` reads the fields, **regenerates
+the script from them and compares bytes**, so a script carrying a PP1's fields but
+not its body is refused:
+
+```dart
+var (proven, why) = PoolEvidence.provenRound(
+    round: roundTx, witness: witnessTx,
+    tokenId: tokenId, genesisHeader: genesisHeader);
+
+if (proven == null) throw StateError('not this pool: $why');
+```
+
+You must establish that `witnessTx` is mined in a block you accept **before** calling
+this. Without that, every check is about bytes a stranger chose.
+
+### Finding your own notes
+
+```dart
+var keys = PoolWalletKeys(sk);
+var scanner = ShieldedNoteScanner.forWallet(keys, [address.d]);
+
+await scanner.scan(round);          // one round at a time, in order
+var spendable = scanner.unspent;
+```
+
+Scanning here means trial-decrypting the note bundles a round carries, not querying
+anything. The library makes no request that names an address, an outpoint or a txid.
+
+### Running a coordinator
+
+`ShieldedCoordinator` takes transfers in, closes a round on a deadline, proves it and
+publishes an announcement. You supply funding, a store and a way to publish:
+
+```dart
+var coordinator = ShieldedCoordinator(
+    config: config, tool: tool, ledger: ledger,
+    funding: funding, store: store, publish: publish,
+    owner: ownerSigner, ownerPub: ownerPubKey);
+
+PoolReply reply = coordinator.submit(submission);
+PoolAnnouncement? announced = await coordinator.closeRound();
+```
+
+**Check every transfer at intake before verifying its proof.**
+`ShieldedTransfer.refusal()` uses only hashing and parsing, so a malformed transfer
+costs nothing:
+
+```dart
+var why = transfer.refusal();
+if (why != null) return PoolReply.refused(id, RefusalReason.malformed, '$why');
+```
+
+This is not optional. A transfer's output commitments are **not** in the proof's
+statement; readers take them from the witness bundles. A transfer whose bundle names
+other commitments passes verification and breaks every reader, and `refusal()` is
+what catches it.
+
+### The wallet protocol
+
+Plain versioned bytes, with no transport of its own, so any channel will carry them.
+Every message is bounded before it is read and refuses by name rather than throwing:
+
+| Message | Direction |
+|---------|-----------|
+| `PoolDescriptor` | pool → everyone, first on the feed |
+| `PoolSubmission` / `PoolReply` | wallet ↔ pool |
+| `PoolAnnouncement` | pool → everyone, one per round |
+| `PoolCatchUpRequest` / `PoolCatchUpReply` | wallet ↔ pool |
+| `PoolRoundMined` | pool → a submitter, unasked |
+
+```dart
+var frame = PoolSubmission.of(transfer, spendP, depositTx: covenant).encode();
+var msg = PoolMessage.decode(replyBytes);   // never throws; refuses by name
+```
+
+### Deposits and withdrawals
+
+Money enters behind a covenant that names the live pool's PP3, so it can only be
+taken in by the next round, and refunds to the depositor at a block height they chose
+if no round takes it:
+
+```dart
+var covenant = tool.createDepositTxn(
+    fundingTx: fundingTx, fundingVout: 0, fundingSigner: signer,
+    fundingPubKey: pubKey, changeAddress: changeAddress,
+    commitment: noteCommitment,
+    satoshis: amount,
+    pp3Outpoint: tool.getOutpoint(roundTx.hash, outputIndex: 3),
+    refundPKH: myPKH, refundAfter: refundHeight);
+
+// and back out, as a P2PKH the round pays
+var withdrawal = PoolWithdrawal(payToPKH, satoshis);
+```
+
+A deposit transfer must spend **two dummy notes**. A real note beside a public deposit
+would name the depositor as the owner of an earlier note, and the root proof refuses
+it.
+
+### Parameters and cost
+
+A pool runs at one parameter set for its life, published in its descriptor. At
+production parameters a 256-transfer round was measured at **356 s** on one machine,
+and a transfer is about **67 KB**. An optional Rust kernel crate
+(`native/stark_kernels`, with an experimental Metal backend) accelerates proving;
+**a pure-Dart fallback is used when it is absent**, so nothing here needs a Rust
+toolchain. Point `STARK_KERNELS_LIB` at a built library to use it.
+
+ARC caps a scriptSig at 1,636,802 bytes and a production-parameter witness is larger,
+so production witnesses do not pass through ARC. Testnet runs at test parameters.
+
+### Building a wallet
+
+[libcloak](https://github.com/twostack/libcloak) is the wallet library for this pool:
+keys, notes, invoices, payments, payment proofs and a journal, with the chain and the
+transport as ports a host supplies. It is the reference consumer of everything above.
 
 ## On-Chain Identity Anchoring (Rabin Signatures)
 
