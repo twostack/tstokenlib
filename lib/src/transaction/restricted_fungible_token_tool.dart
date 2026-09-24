@@ -24,13 +24,11 @@ import 'package:tstokenlib/src/builder/mod_p2pkh_builder.dart';
 import '../builder/map_lockbuilder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp1_rft_lock_builder.dart';
-import '../script_gen/pp1_rft_script_gen.dart';
 import '../builder/pp1_rft_unlock_builder.dart';
 import '../builder/pp2_ft_lock_builder.dart';
 import '../builder/pp2_ft_unlock_builder.dart';
 import '../builder/partial_witness_ft_lock_builder.dart';
 import '../builder/partial_witness_ft_unlock_builder.dart';
-import '../crypto/rabin.dart';
 import 'utils.dart';
 
 /// High-level API for creating Restricted Fungible Token (RFT) transactions.
@@ -106,7 +104,7 @@ class RestrictedFungibleTokenTool {
     if (identityTxId != null && issuerWand != null) {
       var identityTxIdHex = hex.encode(identityTxId);
       var signature = await issuerWand.sign(identityTxId);
-      SimplePublicKey pubkey = (await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey);
+      await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey;
       var b64Sig = base64Encode(signature.bytes);
       var mapData = <String, String>{
         'identityTxId': identityTxIdHex,

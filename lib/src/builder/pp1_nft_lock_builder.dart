@@ -71,31 +71,29 @@ class PP1NftLockBuilder extends LockingScriptBuilder{
 
   @override
   void parse(SVScript script) {
-    if (script != null && script.buffer != null) {
-      var chunkList = script.chunks;
+    var chunkList = script.chunks;
 
-      // Hand-optimized script: chunks[0]=ownerPKH, [1]=tokenId, [2]=rabinPubKeyHash
-      if (chunkList.length < 3) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for PP1 ScriptPubkey");
-      }
-
-      if (chunkList[0].len != 20) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient Address has invalid length. Maybe not a PP1 script ? ");
-      }
-
-      if (chunkList[1].len != 32) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "TokenId has invalid length. Maybe not a PP1 script ? ");
-      }
-
-      if (chunkList[2].len != 20) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin pubkey hash has invalid length. Maybe not a PP1 script ? ");
-      }
-
-      _tokenId = chunkList[1].buf;
-      _rabinPubKeyHash = chunkList[2].buf;
-      var addressBuf = chunkList[0].buf ?? [];
-      _recipientPKH = Address.fromPubkeyHash(hex.encode(addressBuf), networkType ?? NetworkType.TEST );
+    // Hand-optimized script: chunks[0]=ownerPKH, [1]=tokenId, [2]=rabinPubKeyHash
+    if (chunkList.length < 3) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for PP1 ScriptPubkey");
     }
+
+    if (chunkList[0].len != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Recipient Address has invalid length. Maybe not a PP1 script ? ");
+    }
+
+    if (chunkList[1].len != 32) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "TokenId has invalid length. Maybe not a PP1 script ? ");
+    }
+
+    if (chunkList[2].len != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Rabin pubkey hash has invalid length. Maybe not a PP1 script ? ");
+    }
+
+    _tokenId = chunkList[1].buf;
+    _rabinPubKeyHash = chunkList[2].buf;
+    var addressBuf = chunkList[0].buf ?? [];
+    _recipientPKH = Address.fromPubkeyHash(hex.encode(addressBuf), networkType ?? NetworkType.TEST );
   }
 
  /// The 32-byte unique token identifier.

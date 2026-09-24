@@ -55,7 +55,7 @@ class MapLockBuilder extends LockingScriptBuilder {
   @override
   void parse(SVScript script) {
 
-      if (script == null || script.chunks.length < 4) {
+      if (script.chunks.length < 4) {
         throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Not a valid MAP protocol script");
       }
 

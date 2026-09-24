@@ -191,7 +191,7 @@ class TokenTool {
       // Sign the identity txid with the issuer's ED25519 key
       var identityTxIdHex = hex.encode(identityTxId);
       var signature = await issuerWand.sign(identityTxId);
-      SimplePublicKey pubkey = (await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey);
+      await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey;
       var b64Sig = base64Encode(signature.bytes);
 
       var mapData = <String, String>{
@@ -339,36 +339,5 @@ class TokenTool {
     return burnTx;
   }
 
-  /// Returns the subscript after the Nth OP_CODESEPARATOR opcode (0-indexed).
-  /// Walks raw script bytes following Bitcoin script encoding to skip pushdata.
-  SVScript _subscriptAfterCodeSep(SVScript script, int occurrenceIndex) {
-    var bytes = script.buffer;
-    int i = 0;
-    int count = 0;
-    while (i < bytes.length) {
-      int opcode = bytes[i];
-      if (opcode == 0xab) {
-        if (count == occurrenceIndex) {
-          return SVScript.fromBuffer(Uint8List.fromList(bytes.sublist(i + 1)));
-        }
-        count++;
-        i++;
-      } else if (opcode > 0 && opcode <= 75) {
-        i += 1 + opcode; // direct push: 1 byte opcode + N bytes data
-      } else if (opcode == 76) { // OP_PUSHDATA1
-        if (i + 1 < bytes.length) i += 2 + bytes[i + 1];
-        else i++;
-      } else if (opcode == 77) { // OP_PUSHDATA2
-        if (i + 2 < bytes.length) i += 3 + (bytes[i + 1] | (bytes[i + 2] << 8));
-        else i++;
-      } else if (opcode == 78) { // OP_PUSHDATA4
-        if (i + 4 < bytes.length) i += 5 + (bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16) | (bytes[i + 4] << 24));
-        else i++;
-      } else {
-        i++; // regular opcode (1 byte)
-      }
-    }
-    return script;
-  }
 
 }

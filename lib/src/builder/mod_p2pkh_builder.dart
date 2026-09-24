@@ -92,28 +92,26 @@ class ModP2PKHLockBuilder extends LockingScriptBuilder {
 
   @override
   void parse(SVScript script) {
-    if (script != null && script.buffer != null) {
-      var chunkList = script.chunks;
+    var chunkList = script.chunks;
 
-      if (chunkList.length != 6) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for P2PKH ScriptPubkey");
-      }
-
-      if (chunkList[3].len != 20) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Signature and Public Key values are malformed");
-      }
-
-      if (!(chunkList[0].opcodenum == OpCodes.OP_SWAP &&
-          chunkList[1].opcodenum == OpCodes.OP_DUP &&
-          chunkList[2].opcodenum == OpCodes.OP_HASH160 &&
-          chunkList[4].opcodenum == OpCodes.OP_EQUALVERIFY &&
-          chunkList[5].opcodenum == OpCodes.OP_CHECKSIG)) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Malformed P2PKH ScriptPubkey script. Mismatched OP_CODES.");
-      }
-
-      pubkeyHash = chunkList[3].buf;
-      address = Address.fromPubkeyHash(hex.encode(pubkeyHash ?? []), networkType ?? NetworkType.MAIN);
+    if (chunkList.length != 6) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for P2PKH ScriptPubkey");
     }
+
+    if (chunkList[3].len != 20) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Signature and Public Key values are malformed");
+    }
+
+    if (!(chunkList[0].opcodenum == OpCodes.OP_SWAP &&
+        chunkList[1].opcodenum == OpCodes.OP_DUP &&
+        chunkList[2].opcodenum == OpCodes.OP_HASH160 &&
+        chunkList[4].opcodenum == OpCodes.OP_EQUALVERIFY &&
+        chunkList[5].opcodenum == OpCodes.OP_CHECKSIG)) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Malformed P2PKH ScriptPubkey script. Mismatched OP_CODES.");
+    }
+
+    pubkeyHash = chunkList[3].buf;
+    address = Address.fromPubkeyHash(hex.encode(pubkeyHash ?? []), networkType ?? NetworkType.MAIN);
   }
 
 }
@@ -135,7 +133,7 @@ class ModP2PKHUnlockBuilder extends UnlockingScriptBuilder {
 
   @override
   SVScript getScriptSig() {
-    if (signatures == null || signatures.isEmpty || signerPubkey == null) return SVScript();
+    if (signatures.isEmpty || signerPubkey == null) return SVScript();
 
     var signature = signatures[0];
     var sigBuffer = Uint8List.fromList(hex.decode(signature.toTxFormat()));
@@ -149,25 +147,21 @@ class ModP2PKHUnlockBuilder extends UnlockingScriptBuilder {
 
   @override
   void parse(SVScript script) {
-    if (script != null && script.buffer != null) {
-      var chunkList = script.chunks;
+    var chunkList = script.chunks;
 
-      if (chunkList.length != 2) {
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for P2PKH ScriptSig");
-      }
-
-      var sig = chunkList[1].buf;
-      var pubKey = chunkList[0].buf;
-
-      if (sig == null || pubKey == null){
-        throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Either one of Signature of Pubkey was not provided (null value)");
-      }
-
-      signerPubkey = SVPublicKey.fromHex(hex.encode(pubKey));
-      signatures.add(SVSignature.fromTxFormat(hex.encode(sig)));
-    } else {
-      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Invalid Script or Malformed Script.");
+    if (chunkList.length != 2) {
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Wrong number of data elements for P2PKH ScriptSig");
     }
+
+    var sig = chunkList[1].buf;
+    var pubKey = chunkList[0].buf;
+
+    if (sig == null || pubKey == null){
+      throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Either one of Signature of Pubkey was not provided (null value)");
+    }
+
+    signerPubkey = SVPublicKey.fromHex(hex.encode(pubKey));
+    signatures.add(SVSignature.fromTxFormat(hex.encode(sig)));
   }
 
   /// Convenience getter that delegates to [getScriptSig].

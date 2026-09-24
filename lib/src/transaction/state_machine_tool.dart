@@ -27,8 +27,6 @@ import '../builder/pp1_sm_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
-import '../crypto/rabin.dart';
-import '../script_gen/pp1_sm_script_gen.dart';
 import 'utils.dart';
 
 /// High-level API for creating State Machine Token (PP1_SM) transactions.

@@ -37,7 +37,7 @@ class HodlLockBuilder extends LockingScriptBuilder{
         var lockheightBuf = script.chunks[6].buf;
         _lockHeight = castToBigInt(lockheightBuf!, true);
       }
-    }on Exception catch(ex){
+    }on Exception {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Failed to parse locking script");
     }
   }

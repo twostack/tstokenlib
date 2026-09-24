@@ -28,8 +28,6 @@ import '../builder/pp2_ft_lock_builder.dart';
 import '../builder/pp2_ft_unlock_builder.dart';
 import '../builder/partial_witness_ft_lock_builder.dart';
 import '../builder/partial_witness_ft_unlock_builder.dart';
-import '../crypto/rabin.dart';
-import '../script_gen/pp1_ft_script_gen.dart';
 import 'utils.dart';
 
 /// High-level API for creating fungible token transactions using the TSL1-FT protocol.

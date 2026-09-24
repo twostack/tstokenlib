@@ -65,7 +65,7 @@ class BLockBuilder extends LockingScriptBuilder {
   void parse(SVScript script) {
 
     //full length is 7, without the filename it's 6
-    if (script == null || script.chunks.length < 6) {
+    if (script.chunks.length < 6) {
       throw ScriptException(ScriptError.SCRIPT_ERR_UNKNOWN_ERROR, "Not a valid B protocol script");
     }
 

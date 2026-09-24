@@ -74,20 +74,15 @@ class SignerAdapter extends TransactionSigner {
     var hashBytes = Uint8List.fromList(HEX.decode(hash).reversed.toList());
 
     // Delegate signing to the callback, passing the locking script
-    var scriptBytes = Uint8List.fromList(utxo.script.buffer?.toList() ?? []);
+    var scriptBytes = Uint8List.fromList(utxo.script.buffer.toList());
     var derBytes = _onSign(hashBytes, inputIndex, scriptBytes);
 
     var sig = SVSignature.fromDER(HEX.encode(derBytes));
     sig.nhashtype = sigHashType;
 
     TransactionInput input = unsignedTxn.inputs[inputIndex];
-    if (input != null) {
-      UnlockingScriptBuilder scriptBuilder = input.scriptBuilder!;
-      scriptBuilder.signatures.add(sig);
-    } else {
-      throw TransactionException(
-          "Trying to sign a Transaction Input that is missing a SignedUnlockBuilder");
-    }
+    UnlockingScriptBuilder scriptBuilder = input.scriptBuilder!;
+    scriptBuilder.signatures.add(sig);
 
     return unsignedTxn;
   }

@@ -185,7 +185,7 @@ class RestrictedTokenTool {
       // Sign the identity txid with the issuer's ED25519 key
       var identityTxIdHex = hex.encode(identityTxId);
       var signature = await issuerWand.sign(identityTxId);
-      SimplePublicKey pubkey = (await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey);
+      await issuerWand.extractPublicKeyUsedForSignatures() as SimplePublicKey;
       var b64Sig = base64Encode(signature.bytes);
 
       var mapData = <String, String>{

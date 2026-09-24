@@ -27,7 +27,6 @@ import '../builder/pp1_at_unlock_builder.dart';
 import '../builder/metadata_lock_builder.dart';
 import '../builder/pp2_lock_builder.dart';
 import '../builder/pp2_unlock_builder.dart';
-import '../crypto/rabin.dart';
 import 'utils.dart';
 
 /// High-level API for creating Appendable Token (PP1_AT) transactions.
