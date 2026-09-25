@@ -1,3 +1,8 @@
+## 2.0.2
+
+- **Deposits admitted before their round.** `ShieldedCoordinator` takes an optional `admitDeposit` hook, and has asynchronous entry points `receiveBytes`, `receive` and `admit`. A deposit that passes every check, the proof last, holds its place in the pending round while the caller admits it (for instance by broadcasting the covenant and waiting for the network to see it). It is accepted once admitted and refused, naming the caller's reason, otherwise. A round closed meanwhile waits for the admission and builds without a refused deposit. Without the hook nothing changes.
+- **Fix: a round whose transfers all expired stayed in flight.** Every later deposit was then refused as targeting a round being built. Such a round now leaves the in-flight list, and a closed round that drops entries rebuilds its nullifier, covenant and withdrawal shadow from the entries it keeps.
+
 ## 2.0.1
 
 - **The native kernels are found beside an installed program.** `StarkKernels.tryLoad` now also looks in the running executable's directory and in `../lib` from it, after `STARK_KERNELS_LIB` and before the source-tree search. A program compiled with `dart compile exe` has no source tree to search, so a package or tarball that ships `libstark_kernels` next to its binary (or in a `lib/` beside its `bin/`) now loads it with no environment variable. `STARK_KERNELS_LIB` still wins.

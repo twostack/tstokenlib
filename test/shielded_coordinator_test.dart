@@ -62,6 +62,7 @@ void main() {
     List<PoolReply>? replies,
     TransactionSigner? owner,
     SVPublicKey? ownerPub,
+    DepositAdmission? admitDeposit,
   }) {
     final l = log ?? _Log();
     return ShieldedCoordinator(
@@ -75,6 +76,7 @@ void main() {
       ownerPub: ownerPub ?? opPub,
       clock: clock ?? FakeClock(),
       notify: (r) => replies?.add(r),
+      admitDeposit: admitDeposit,
       rng: Random(7),
     );
   }
@@ -265,6 +267,186 @@ void main() {
       expect(submit(co, other).reason, RefusalReason.nullifierPending);
       expect(co.status.balance, BigInt.from(501));
     });
+  });
+
+  group('deposit admission', () {
+    /// A covenant for the fixture's receipt from a stranger's coins, against
+    /// [pp3] (PP3_0 by default), with the refund at [refundAfter]; [salt]
+    /// makes each one a different transaction.
+    Transaction covenant({int salt = 0x31, int refundAfter = 1000, List<int>? pp3}) {
+      final depositor = strangerKey.publicKey.toAddress(NetworkType.TEST);
+      final coins = Transaction()
+        ..addInputs([TransactionInput(hex.encode(List.filled(32, salt)), 0, 0xffffffff)])
+        ..addOutputs([TransactionOutput(BigInt.from(10000), P2PKHLockBuilder.fromAddress(depositor).getScriptPubkey())]);
+      return c.svc.createDepositTxn(
+          fundingTx: coins,
+          fundingVout: 0,
+          fundingSigner: DefaultTransactionSigner(0x41, strangerKey),
+          fundingPubKey: strangerKey.publicKey,
+          changeAddress: depositor,
+          commitment: c.f.receipt.commitment,
+          satoshis: c.f.receipt.satoshis,
+          pp3Outpoint: pp3 ?? c.svc.getOutpoint(c.r0.hash, outputIndex: 3),
+          refundPKH: hex.decode(depositor.pubkeyHash160),
+          refundAfter: refundAfter);
+    }
+
+    /// The fixture's deposit transfer, backed by [tx]'s covenant.
+    ShieldedTransfer backing(Transaction tx, {StarkProof? proof}) {
+      final d = c.f.transfers1[0];
+      return ShieldedTransfer(d.publics, proof ?? d.proof, d.bundle,
+          depositOutpoint: c.svc.getOutpoint(tx.hash, outputIndex: ShieldedPoolTool.depositVout));
+    }
+
+    /// A hook the test answers: each call is recorded with a completer.
+    (DepositAdmission, List<(Transaction, Completer<String?>)>) gate() {
+      final calls = <(Transaction, Completer<String?>)>[];
+      return ((tx) {
+        final done = Completer<String?>();
+        calls.add((tx, done));
+        return done.future;
+      }, calls);
+    }
+
+    test('no admitting caller: a deposit is accepted at once, exactly as intake takes it', () async {
+      final co = make();
+      final r = await co.admit(newId(), deposit(), depositTx: c.depositTx);
+      expect(r.isAccepted, isTrue, reason: '$r');
+      expect(r.round, 1);
+      expect(co.pending, 1);
+      final bytes = PoolSubmission.of(deposit(), c.f.agg.spendP, depositTx: c.depositTx, rng: rng).encode();
+      expect((await co.receiveBytes(bytes))!.reason, RefusalReason.depositPending);
+    });
+
+    test('held while admitted: the place, the receipt slot and the covenant are taken before the answer', () async {
+      final (hook, calls) = gate();
+      final co = make(admitDeposit: hook);
+      final first = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      expect(co.pending, 1, reason: 'held while the caller admits it');
+      expect(calls.single.$1.id, c.depositTx.id);
+      // the same covenant again is a pending deposit, and is never admitted
+      expect((await co.admit(newId(), deposit(), depositTx: c.depositTx)).reason, RefusalReason.depositPending);
+      final other = covenant(salt: 0x32);
+      final second = co.admit(newId(), backing(other), depositTx: other);
+      expect(calls, hasLength(2));
+      // the test layout has two receipt slots, both held
+      final third = covenant(salt: 0x33);
+      final r = await co.admit(newId(), backing(third), depositTx: third);
+      expect(r.reason, RefusalReason.receiptSlots);
+      expect(calls, hasLength(2), reason: 'no slot, no admission');
+      calls[0].$2.complete(null);
+      calls[1].$2.complete(null);
+      expect((await first).round, 1);
+      expect((await second).round, 1);
+      expect(co.pending, 2);
+    });
+
+    test('admission refused: the reply names the reason, nothing is pending, and the deposit can come again', () async {
+      final (hook, calls) = gate();
+      final clock = FakeClock();
+      final co = make(admitDeposit: hook, clock: clock);
+      final r = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      expect(co.status.deadline, isNotNull);
+      calls.single.$2.complete('ARC refused it: bad-txns-inputs-missingorspent');
+      final refused = await r;
+      expect(refused.reason, RefusalReason.depositCovenant);
+      expect(refused.sentence, contains('bad-txns-inputs-missingorspent'));
+      expect(co.pending, 0);
+      expect(co.status.deadline, isNull, reason: 'an empty pending round has no deadline');
+      final again = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      calls.last.$2.complete(null);
+      expect((await again).isAccepted, isTrue);
+      // a hook that throws is a refusal naming the error
+      final throwing = make(admitDeposit: (_) async => throw StateError('no route to ARC'));
+      final thrown = await throwing.admit(newId(), deposit(), depositTx: c.depositTx);
+      expect(thrown.reason, RefusalReason.depositCovenant);
+      expect(thrown.sentence, contains('no route to ARC'));
+      expect(throwing.pending, 0);
+    });
+
+    test('a failing check is never admitted: bad proof, another PP3, a refund too soon, no slot', () async {
+      var asked = 0;
+      final co = make(admitDeposit: (_) async {
+        asked++;
+        return null;
+      });
+      final bad = await co.admit(newId(), backing(c.depositTx, proof: c.f.transfers1[1].proof), depositTx: c.depositTx);
+      expect(bad.reason, RefusalReason.proof);
+      final elsewhere = covenant(salt: 0x34, pp3: List.filled(36, 9));
+      expect((await co.admit(newId(), backing(elsewhere), depositTx: elsewhere)).reason, RefusalReason.depositTarget);
+      final soon = covenant(salt: 0x35, refundAfter: 1000);
+      co.chainHeight = 950;
+      expect((await co.admit(newId(), backing(soon), depositTx: soon)).reason, RefusalReason.depositCovenant);
+      co.chainHeight = 0;
+      expect(asked, 0, reason: 'no refused submission reached the caller');
+      for (final salt in [0x36, 0x37]) {
+        final tx = covenant(salt: salt);
+        expect((await co.admit(newId(), backing(tx), depositTx: tx)).isAccepted, isTrue);
+      }
+      final full = covenant(salt: 0x38);
+      expect((await co.admit(newId(), backing(full), depositTx: full)).reason, RefusalReason.receiptSlots);
+      expect(asked, 2);
+    });
+
+    test('a round of only a refused deposit builds nothing and is not left in flight', () async {
+      final (hook, calls) = gate();
+      final clock = FakeClock();
+      final co = make(admitDeposit: hook, clock: clock, deadline: const Duration(minutes: 3));
+      final r = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      clock.advance(const Duration(minutes: 3));
+      expect(co.building, isNotNull, reason: 'the deadline closed the round with the deposit being admitted');
+      calls.single.$2.complete('not seen');
+      expect((await r).reason, RefusalReason.depositCovenant);
+      expect(await co.building, isNull);
+      expect(co.inFlight, 0);
+      // the next deposit targets round 1 again, not a round still counted as being built
+      final again = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      calls.last.$2.complete(null);
+      final a = await again;
+      expect(a.isAccepted, isTrue, reason: '$a');
+      expect(a.round, 1);
+    });
+
+    test('the deadline during an admission: built with the deposit once admitted', () async {
+      final (hook, calls) = gate();
+      final clock = FakeClock();
+      final log = _Log();
+      final co = make(admitDeposit: hook, clock: clock, deadline: const Duration(minutes: 3), store: _Store(log), log: log);
+      final r = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      clock.advance(const Duration(minutes: 3));
+      final building = co.building!;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(log.events, isEmpty, reason: 'nothing is built while the deposit is being admitted');
+      calls.single.$2.complete(null);
+      expect((await r).round, 1);
+      final a = await building;
+      expect(a, isNotNull, reason: '${co.lastFailure}');
+      final round = co.ledger.tipRound;
+      expect(round.inputs[5].prevTxnId, c.depositTx.id);
+      expect(round.outputs[5].script.buffer, c.f.receipt.lockingScript.buffer);
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('the deadline during an admission: built with padding in its place once refused', () async {
+      final (hook, calls) = gate();
+      final clock = FakeClock();
+      final log = _Log();
+      final store = _Store(log);
+      final co = make(admitDeposit: hook, clock: clock, deadline: const Duration(minutes: 3), store: store, log: log);
+      final r = co.admit(newId(), deposit(), depositTx: c.depositTx);
+      expect(submit(co, c.f.transfers1[1]).isAccepted, isTrue);
+      clock.advance(const Duration(minutes: 3));
+      final building = co.building!;
+      calls.single.$2.complete('not seen');
+      expect((await r).reason, RefusalReason.depositCovenant);
+      final a = await building;
+      expect(a, isNotNull, reason: '${co.lastFailure}');
+      final round = co.ledger.tipRound;
+      expect(round.inputs.map((i) => i.prevTxnId), isNot(contains(c.depositTx.id)));
+      expect(round.outputs.map((o) => hex.encode(o.script.buffer)), isNot(contains(hex.encode(c.f.receipt.lockingScript.buffer))));
+      // the transfer and three padding transfers: the deposit's place is padding
+      final reader = ShieldedChainReader.open(layout, c.r0, c.w0, c.y0.tx, tokenId: c.tokenId, genesisHeader: c.genesisHeader);
+      expect(reader.read([tripleOf(store, 1)]).single.padding.where((p) => p), hasLength(greaterThanOrEqualTo(3)));
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('rounds', () {
