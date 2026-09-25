@@ -1,3 +1,8 @@
+## 2.2.0
+
+- **Deposits admitted before their round.** `ShieldedCoordinator` takes an optional `admitDeposit` hook, and has asynchronous entry points `receiveBytes`, `receive` and `admit`. A deposit that passes every check, the proof last, holds its place in the pending round while the caller admits it (for instance by broadcasting the covenant and waiting for the network to see it). It is accepted once admitted and refused, naming the caller's reason, otherwise. A round closed meanwhile waits for the admission and builds without a refused deposit. Without the hook nothing changes. (Also in 2.0.2, for the 2.0.x line.)
+- **Fix: a round whose transfers all expired stayed in flight.** Every later deposit was then refused as targeting a round being built. Such a round now leaves the in-flight list, and a closed round that drops entries rebuilds its nullifier, covenant and withdrawal shadow from the entries it keeps.
+
 ## 2.1.0
 
 - **The native kernels come with the package.** A build hook

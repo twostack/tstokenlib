@@ -8,4 +8,5 @@
 ## 2. Record and release
 
 - [x] 2.1 Append a dated section to docs/ZK_SHIELDED_POOL_TSL1_DESIGN.md: the hook, the reservation, why the library holds the place, and the coordinator change it serves. Verify that `dart analyze lib test` is clean and that the coordinator and protocol suites pass.
-- [ ] 2.2 Back-port to a 2.0.x branch from the v2.0.1 tag as 2.0.2, and run the pool-coordinator suite against it through a path override. Publish 2.0.2 and the main line's next minor only with the user's go-ahead.
+- [x] 2.2 Back-port to a 2.0.x branch from the v2.0.1 tag as 2.0.2, and run the pool-coordinator suite against it through a path override. Publish 2.0.2 with the user's go-ahead. (Done 2026-09-26: branch `release/2.0`, tag v2.0.2, on pub.dev. The coordinator suite passed but for the stage-table pin, which is the coordinator's task 4.6.)
+- [x] 2.3 Publish the main line's next minor (2.2.0), when the user asks for it. (Asked and done 2026-09-26.)
