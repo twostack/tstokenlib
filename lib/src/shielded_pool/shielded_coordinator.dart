@@ -268,9 +268,21 @@ class _Entry {
   final Uint8List id;
   final ShieldedTransfer transfer;
   final Transaction? depositTx;
+
+  /// While the caller is admitting this entry's deposit, what it will say:
+  /// null for admitted, else why not. Null here for an entry that needed no
+  /// admission.
+  Future<String?>? admission;
   _Entry(this.id, this.transfer, this.depositTx);
   bool get isDeposit => transfer.depositOutpoint != null;
 }
+
+/// How a caller admits a deposit before its round is built, typically by
+/// broadcasting the covenant [covenant] and waiting for the network to see
+/// it: null when admitted, a sentence saying why not otherwise. A throw is
+/// a refusal naming the error. The caller must bound it, since a round
+/// closed with the deposit in it waits for the answer.
+typedef DepositAdmission = Future<String?> Function(Transaction covenant);
 
 /// The transfers gathered for one round, with the shadow state acceptance
 /// is checked against: the nullifiers this round already claims, the
@@ -296,6 +308,18 @@ class _PendingRound {
     if (e.isDeposit) deposits.add(hex.encode(e.transfer.depositOutpoint!));
     final p = e.transfer.publics;
     if (e.transfer.isBsv && p.publicOut > 0) withdrawn += BigInt.from(p.publicOut);
+  }
+
+  /// Keeps only [kept], with the shadow state rebuilt from them, for a
+  /// closed round that drops transfers before it is built.
+  void retain(List<_Entry> kept) {
+    entries.clear();
+    nullifiers.clear();
+    deposits.clear();
+    withdrawn = BigInt.zero;
+    for (final e in kept) {
+      add(e);
+    }
   }
 
   static List<String> _keysOf(ShieldedTransfer t) => [
@@ -360,6 +384,11 @@ class ShieldedCoordinator {
   /// submitter.
   final void Function(PoolReply reply) notify;
 
+  /// How a deposit is admitted before its round is built, for the
+  /// asynchronous entry points ([receiveBytes], [receive], [admit]). Null
+  /// means a deposit that passes intake is taken at once, as [intake] does.
+  final DepositAdmission? admitDeposit;
+
   /// The key that owns the pool: it signs V, the anchor, the previous
   /// witness's output and each witness's PP1.
   final TransactionSigner owner;
@@ -400,6 +429,7 @@ class ShieldedCoordinator {
     required this.ownerPub,
     this.clock = const SystemClock(),
     void Function(PoolReply reply)? notify,
+    this.admitDeposit,
     Random? rng,
   })  : notify = notify ?? _ignore,
         padding = ShieldedPaddingSupply(config.spendP, rng: rng),
@@ -422,6 +452,7 @@ class ShieldedCoordinator {
     required SVPublicKey ownerPub,
     CoordinatorClock clock = const SystemClock(),
     void Function(PoolReply reply)? notify,
+    DepositAdmission? admitDeposit,
     Random? rng,
   }) =>
       ShieldedCoordinator(
@@ -435,6 +466,7 @@ class ShieldedCoordinator {
           ownerPub: ownerPub,
           clock: clock,
           notify: notify,
+          admitDeposit: admitDeposit,
           rng: rng);
 
   static void _ignore(PoolReply _) {}
@@ -596,6 +628,90 @@ class ShieldedCoordinator {
     return PoolReply.accepted(id, number);
   }
 
+  /// [submitBytes], with a deposit admitted through [admitDeposit] before
+  /// it is accepted. Completes at once for anything else.
+  Future<PoolReply?> receiveBytes(List<int> bytes) {
+    final PoolSubmission s;
+    try {
+      s = PoolSubmission.decode(bytes);
+    } on ProtocolRefusal {
+      return Future.value(submitBytes(bytes));
+    }
+    return receive(s);
+  }
+
+  /// [submit], with a deposit admitted through [admitDeposit].
+  Future<PoolReply> receive(PoolSubmission s) {
+    final ShieldedTransfer t;
+    final Transaction? d;
+    try {
+      t = s.transfer(config.spendP);
+      d = s.depositTransaction();
+    } catch (_) {
+      return Future.value(submit(s)); // submit names the refusal
+    }
+    return admit(s.id, t, depositTx: d);
+  }
+
+  /// [intake], except that a deposit passing every check is held in the
+  /// pending round while [admitDeposit] admits it, and accepted only once
+  /// it has. Holding it as a pending entry is what keeps the round from
+  /// building without it: the entry counts toward capacity, the receipt
+  /// slots, its covenant and its nullifiers, and closing a round waits for
+  /// the admissions in it. A refused admission releases the place.
+  Future<PoolReply> admit(List<int> id, ShieldedTransfer t, {Transaction? depositTx}) {
+    final hook = admitDeposit;
+    if (hook == null || depositTx == null || t.depositOutpoint == null) {
+      return Future.value(intake(id, t, depositTx: depositTx));
+    }
+    final (RefusalReason, String)? why;
+    try {
+      why = _check(t, depositTx);
+    } catch (e) {
+      return Future.value(PoolReply.refused(id, RefusalReason.malformed, 'the submission could not be checked ($e)'));
+    }
+    if (why != null) return Future.value(PoolReply.refused(id, why.$1, why.$2));
+    final entry = _Entry(Uint8List.fromList(id), t, depositTx);
+    Future<String?> ask() async {
+      try {
+        return await hook(depositTx);
+      } catch (e) {
+        return 'the covenant could not be admitted ($e)';
+      }
+    }
+
+    final admission = ask();
+    entry.admission = admission;
+    if (_pending.isEmpty) {
+      _pending.openedAt = clock.now;
+      _alarm = clock.after(config.roundDeadline, _onDeadline);
+    }
+    _pending.add(entry);
+    final number = ledger.round + _inFlight.length + 1;
+    if (_pending.length >= capacity) closeRound();
+    return admission.then((refused) {
+      if (refused == null) return PoolReply.accepted(id, number);
+      _release(entry);
+      return PoolReply.refused(id, RefusalReason.depositCovenant, refused);
+    });
+  }
+
+  /// Takes a refused deposit out of the pending round, if it is still
+  /// there; a round already closed drops it when it builds.
+  void _release(_Entry entry) {
+    if (!_pending.entries.contains(entry)) return;
+    final rest = _PendingRound()..openedAt = _pending.openedAt;
+    for (final e in _pending.entries) {
+      if (!identical(e, entry)) rest.add(e);
+    }
+    _pending = rest;
+    if (rest.isEmpty) {
+      rest.openedAt = null;
+      _alarm?.cancel();
+      _alarm = null;
+    }
+  }
+
   (RefusalReason, String)? _check(ShieldedTransfer t, Transaction? depositTx) {
     final p = t.publics;
     // the transfer against itself: outHash, withdrawal, bundle, deposit shape
@@ -703,10 +819,26 @@ class ShieldedCoordinator {
   }
 
   Future<PoolAnnouncement?> _buildAndPublish(_PendingRound round) async {
-    var stage = 'expiry';
+    var stage = 'admission';
     List<ShieldedTransfer> pad = const [];
     final timing = _lastTiming = RoundTiming();
     try {
+      // deposits still being admitted: the round waits for them, and builds
+      // without the refused ones, whose refusal went back through [admit]
+      final admitted = <_Entry>[];
+      for (final e in round.entries) {
+        final a = e.admission;
+        if (a == null || await a == null) admitted.add(e);
+        e.admission = null;
+      }
+      if (admitted.length != round.entries.length) round.retain(admitted);
+      if (admitted.isEmpty) {
+        _inFlight.remove(round);
+        return null;
+      }
+      timing.lap(stage);
+
+      stage = 'expiry';
       // a transfer whose anchor rotated out, or whose note a round published
       // meanwhile spent, would fail at aggregation minutes in: drop it now
       final live = <_Entry>[];
@@ -718,10 +850,13 @@ class ShieldedCoordinator {
           notify(PoolReply.expired(e.id, why));
         }
       }
-      if (live.isEmpty) return null;
-      round.entries
-        ..clear()
-        ..addAll(live);
+      if (live.isEmpty) {
+        // nothing left to build: the round is no longer in flight, or every
+        // later deposit would be refused as targeting it
+        _inFlight.remove(round);
+        return null;
+      }
+      round.retain(live);
       timing.lap(stage);
 
       // funding for Y, before anything is proved: a coordinator with no

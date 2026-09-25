@@ -1093,3 +1093,28 @@ Measured on the test chain (`test/pool_catch_up_test.dart`):
 | `readLeaves` on rounds 1 and 2 | matches the ledger's block root, positions, nullifiers and header exactly |
 
 `dart analyze lib test`: 0 errors, and nothing in the files this change touched. `dart test`: **842 passed, 8 skipped, 0 failed** (14 new, in `test/pool_catch_up_test.dart`). The three version 2 catch-up tests that poked bytes at version 2 offsets were moved to version 3's.
+
+## 19. Deposits admitted before their round (2026-09-25)
+
+The coordinator server is moving deposits off the block wait (its change `deposit-on-seen`, this repo's `deposit-admission`). Until now the depositor broadcast the covenant, waited for a block, and only then submitted, and the server refused anything unmined. That cost about 11 minutes on testnet the day it was measured. It also left a deposit exposed: its one target round could close while it waited, and the money then stays locked for a day. Now the depositor hands the covenant over, and the coordinator broadcasts it and admits it once the network has seen it. On BSV, with Teranode, a conflicting spend is dropped long before the next block, so seen is enough.
+
+**Why the library changes.** A broadcast takes 4 to 5 s, and intake closes rounds from inside itself: when one is full, and from its own deadline alarm. A server that broadcast first and called `intake` afterwards would leave a window in which the round builds without the deposit, and the covenant then names a spent PP3. Two alternatives were rejected. Doing it all in the server leaves that window open. Letting the caller defer closes is a larger API than the one needed.
+
+**The hook.** `ShieldedCoordinator` takes an optional `admitDeposit`, `Future<String?> Function(Transaction covenant)`, which answers null for admitted or a sentence for not. `receiveBytes`, `receive` and `admit` are the asynchronous counterparts of `submitBytes`, `submit` and `intake`:
+- a deposit that passes every check, the proof last, is added to the pending round as an ordinary entry carrying its admission future;
+- it then counts toward capacity, the receipt slots, its covenant key and its nullifiers with no special case;
+- a refusal takes it back out, and cancels the deadline if the round is left empty;
+- closing a round now starts with an `admission` stage that awaits the open admissions and keeps the admitted ones.
+
+With no hook, nothing changes. The whole existing suite passes unmodified.
+
+**A leak found on the way.** A closed round whose transfers had all expired returned null without leaving `_inFlight`. Every later deposit was then refused as targeting a round being built, and round numbers were off by one. A round whose only deposit is refused takes the same path, so it would have become common. Both paths now leave `_inFlight`, and a dropped entry's shadow state (nullifiers, covenants, withdrawal) is rebuilt from the entries kept.
+
+Verified in `test/shielded_coordinator_test.dart`, group "deposit admission" (7 tests):
+- held places and slots;
+- a refusal releasing the place and the deadline;
+- a throwing hook refused by name;
+- the deadline during an admission, built with the deposit once admitted, and with padding in its place once refused;
+- the in-flight leak.
+
+Mutation test: calling the hook before the checks makes "a failing check is never admitted" fail (asked 3 times, expected 0). The coordinator, public API and protocol suites pass: 56 tests.
