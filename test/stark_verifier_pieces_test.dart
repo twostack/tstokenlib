@@ -197,8 +197,8 @@ void main() {
       ref.absorb(root2);
       ref.absorbLimbs(vals);
       final lam = ref.squeezeQM31();
+      final pre = List<int>.of(ref.state);
       final nonce = ref.grind(2);
-      expect(ref.checkGrinding(nonce, 2), isTrue);
       final idx = ref.squeezeIndices(16, 17);
 
       SVScript lock() {
@@ -236,6 +236,14 @@ void main() {
 
       _run(unlock(nonce).build(), lock());
       expect(() => _run(unlock([1, 2, 3, 4]).build(), lock()), throwsA(isA<ScriptException>()));
+      // the next nonce that also grinds: the script squeezes other indices from it (SECURITY_CLAIM D1)
+      List<int>? nonce2;
+      for (int n = (nonce[0] | (nonce[1] << 8) | (nonce[2] << 16) | (nonce[3] << 24)) + 1; nonce2 == null; n++) {
+        final t = TranscriptRef()..state = List<int>.of(pre);
+        final c = [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
+        if (t.checkGrinding(c, 2)) nonce2 = c;
+      }
+      expect(() => _run(unlock(nonce2!).build(), lock()), throwsA(isA<ScriptException>()), reason: 'before D1 was fixed the script accepted this nonce');
 
       final size = _bytes((e) {
         FiatShamirScriptGen.emitInit(e);

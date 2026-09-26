@@ -134,7 +134,8 @@ class _ShaTranscript extends Transcript {
 ///   zero-padded 8-lane chunk; squeeze: s = P(s ‖ 0^8)[0..8], read lanes
 ///   0..3 (a QM31) or lane 0 (one query index per squeeze, masked to the
 ///   requested bits); grinding: P(s ‖ [nonce, 0..])[0] must have its low
-///   7·grindBytes bits zero (the state is not advanced).
+///   7·grindBytes bits zero, and that digest then becomes the state the
+///   query indices are squeezed from (SECURITY_CLAIM D1).
 class Poseidon2ProofHash implements ProofHash {
   const Poseidon2ProofHash();
 
@@ -238,8 +239,10 @@ class Poseidon2Transcript extends Transcript {
   bool checkGrinding(List<int> nonce, int grindBytes) {
     if (nonce.length != 1) throw ArgumentError('a Poseidon2 nonce is one lane');
     if (nonce[0] < 0 || nonce[0] >= M31.p) throw ArgumentError('nonce out of range');
-    final h = Poseidon2ProofHash.compress(state, [nonce[0], 0, 0, 0, 0, 0, 0, 0])[0];
-    return h & ((1 << grindBits(grindBytes)) - 1) == 0;
+    final d = Poseidon2ProofHash.compress(state, [nonce[0], 0, 0, 0, 0, 0, 0, 0]);
+    if (d[0] & ((1 << grindBits(grindBytes)) - 1) != 0) return false;
+    state = d;
+    return true;
   }
 
   /// A parallel search for the same nonce, installed by the native kernels
@@ -251,7 +254,10 @@ class Poseidon2Transcript extends Transcript {
     final fast = nativeGrind;
     if (fast != null) {
       final n = fast(state, grindBits(grindBytes));
-      if (n >= 0) return [n];
+      if (n >= 0) {
+        if (!checkGrinding([n], grindBytes)) throw StateError('the native grind returned a nonce that does not grind');
+        return [n];
+      }
     }
     for (int n = 0;; n++) {
       if (checkGrinding([n], grindBytes)) return [n];

@@ -73,7 +73,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  tstokenlib: ^2.1.0
+  tstokenlib: ^3.0.0
 ```
 
 It needs Dart 3.10 or later, where build hooks are stable.

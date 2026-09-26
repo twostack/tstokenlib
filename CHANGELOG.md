@@ -1,5 +1,6 @@
-## Unreleased
+## 3.0.0
 
+- **The grind digest is the transcript state.** A STARK verifier now squeezes its query indices from the hash of the transcript state and the grinding nonce, in both hash flavours, in the reference verifier, the generated Bitcoin script and the recursive verifier AIR. Before, the indices came from the state before the nonce, so any nonce meeting the target gave the same queries and the grind bought no soundness (`docs/SECURITY_CLAIM.md`, deviation D1). Every proof, exported template and mined chain made with an earlier version is invalid against this one, which is why this is a major version; the wire protocol is unchanged.
 - **Fix: `dart test` and `dart run` failed on macOS from a long path.** They rewrite the kernels library's install name to its absolute path under `.dart_tool/lib`, and the prebuilt macOS library had 56 bytes of header room, so a path past about 87 characters did not fit ("larger updated load commands do not fit"). Apple libraries are now linked with `-headerpad_max_install_names`. The kernels' source hash now also covers each target's features and flags, so a flag change retires the prebuilt libraries as an edit to the crate does; this one moves the hash, and the libraries are rebuilt.
 
 ## 2.2.2

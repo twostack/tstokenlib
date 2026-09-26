@@ -1,6 +1,6 @@
 name: tstokenlib
 description: An implementation of the TSL1 Token Protocol for the BSV blockchain.
-version: 2.2.2
+version: 3.0.0
 repository: https://github.com/twostack/tstokenlib
 
 environment:

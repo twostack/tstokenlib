@@ -512,8 +512,7 @@ class StarkProverRef {
     }
     final finalCoefs = coefs.sublist(0, P.finalDegree);
     ts.absorbLimbs([for (final v in finalCoefs) ...v.limbs]);
-    final nonce = ts.grind(P.grindBytes);
-    if (!ts.checkGrinding(nonce, P.grindBytes)) throw StateError('grind');
+    final nonce = ts.grind(P.grindBytes); // the grind digest is now the state
     final indices = ts.squeezeIndices(P.numQueries, a);
     for (int q = 0; q < indices.length; q++) {
       dbg['qi$q'] = indices[q];

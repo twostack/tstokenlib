@@ -63,11 +63,16 @@ class TranscriptRef {
   }
 
   /// Grinding: SHA256(state || nonce) must start with [zeroBytes] zero bytes.
+  /// On success that hash becomes the state, so the query indices squeezed
+  /// next depend on the nonce: nobody can learn the queries a state gives
+  /// before paying its grind (SECURITY_CLAIM D1). On failure the state is
+  /// left as it was.
   bool checkGrinding(List<int> nonce, int zeroBytes) {
     final h = _sha([...state, ...nonce]);
     for (int i = 0; i < zeroBytes; i++) {
       if (h[i] != 0) return false;
     }
+    state = h;
     return true;
   }
 
@@ -96,7 +101,11 @@ class TranscriptRef {
     final fast = nativeGrind;
     if (fast != null) {
       final n = fast(state, zeroBytes);
-      if (n >= 0) return [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
+      if (n >= 0) {
+        final nonce = [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
+        if (!checkGrinding(nonce, zeroBytes)) throw StateError('the native grind returned a nonce that does not grind');
+        return nonce;
+      }
     }
     for (int n = 0;; n++) {
       final nonce = [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff];
@@ -237,12 +246,15 @@ class FiatShamirScriptGen {
     M31Ops.qm31Mul(e, n('_ny'), hint, zy);
   }
 
-  /// Verify SHA256(ts || nonce) starts with [zeroBytes] zero bytes. Consumes [nonce].
+  /// ts = SHA256(ts || nonce), which must start with [zeroBytes] zero bytes.
+  /// Consumes [nonce]. The hash is kept as the transcript state, so the query
+  /// indices squeezed next depend on the nonce ([TranscriptRef.checkGrinding]).
   static void emitGrindingCheck(StackEmitter e, String nonce, int zeroBytes) {
-    e.pick('ts');
+    e.roll('ts');
     e.roll(nonce);
     e.raw(OpCodes.OP_CAT, pops: 2, pushes: 1);
-    e.raw(OpCodes.OP_SHA256, pops: 1, pushes: 1);
+    e.raw(OpCodes.OP_SHA256, pops: 1, pushes: 1, as: 'ts');
+    e.dup();
     e.pushConst(zeroBytes);
     e.raw(OpCodes.OP_SPLIT, pops: 2, pushes: 2);
     e.drop();
