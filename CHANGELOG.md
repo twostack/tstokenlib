@@ -1,3 +1,8 @@
+## 2.2.2
+
+- **The README says what the pool leaves public.** It said amounts, senders and recipients are hidden and only the fact of a round is public. A deposit's amount and the coins that paid it, and a withdrawal's amount and the address it pays, are on the chain, and a payer can disclose a payment with a proof it hands over. It also gives the round time as measured by the coordinator (254 s close to witness with a GPU, 245 s of it aggregation) in place of an older 356 s. Documentation only; no code changed.
+- **2.2.1 is retracted.** It was published from a development branch by mistake and is not compatible with 2.2.0. Use 2.2.2.
+
 ## 2.2.0
 
 - **Deposits admitted before their round.** `ShieldedCoordinator` takes an optional `admitDeposit` hook, and has asynchronous entry points `receiveBytes`, `receive` and `admit`. A deposit that passes every check, the proof last, holds its place in the pending round while the caller admits it (for instance by broadcasting the covenant and waiting for the network to see it). It is accepted once admitted and refused, naming the caller's reason, otherwise. A round closed meanwhile waits for the admission and builds without a refused deposit. Without the hook nothing changes. (Also in 2.0.2, for the 2.0.x line.)
