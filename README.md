@@ -597,8 +597,11 @@ var timeoutWitnessTx = tool.createWitnessTxn(
 The shielded pool is TSL1's privacy archetype. Value lives as **notes** in a Merkle
 commitment tree rather than as one output per holder, a spend is proved by a
 Circle-STARK **verified in Bitcoin Script**, and a **round** aggregates many
-transfers into a single on-chain proof. Amounts, senders and recipients are hidden;
-only the fact that a round happened is public.
+transfers into a single on-chain proof. Inside the pool, who paid whom and how much
+are hidden: the chain sees each round, not the transfers in it. The edges are public.
+A deposit's amount and the coins that paid it are on the chain, and so are a
+withdrawal's amount and the address it pays. A payer can show a particular payment to
+someone they choose, with a proof they hand over.
 
 It is shaped differently from the other six, and the difference matters before you
 write any code:
@@ -750,8 +753,10 @@ it.
 ### Parameters and cost
 
 A pool runs at one parameter set for its life, published in its descriptor. At
-production parameters a 256-transfer round was measured at **356 s** on one machine,
-and a transfer is about **67 KB**. Those figures
+production parameters a 256-transfer round was measured at **254 s** from close to
+witness built on one machine with a GPU (341 s without), of which the aggregation is
+245 s (332 s); a transfer is about **67 KB**. Figures and scripts are in
+`docs/ZK_SHIELDED_POOL_TSL1_DESIGN.md`, section 15. Those figures
 are with the native kernels, which the build hook provides; see
 [The native kernels](#the-native-kernels).
 
