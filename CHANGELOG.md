@@ -1,3 +1,7 @@
+## 3.0.0 (unreleased)
+
+- **The grind digest is the transcript state.** A STARK verifier now squeezes its query indices from the hash of the transcript state and the grinding nonce, in both hash flavours, in the reference verifier, the generated Bitcoin script and the recursive verifier AIR. Before, the indices came from the state before the nonce, so any nonce meeting the target gave the same queries and the grind bought no soundness (`docs/SECURITY_CLAIM.md`, deviation D1). Every proof, exported template and mined chain made with an earlier version is invalid against this one, which is why this is a major version; the wire protocol is unchanged.
+
 ## 2.2.0
 
 - **Deposits admitted before their round.** `ShieldedCoordinator` takes an optional `admitDeposit` hook, and has asynchronous entry points `receiveBytes`, `receive` and `admit`. A deposit that passes every check, the proof last, holds its place in the pending round while the caller admits it (for instance by broadcasting the covenant and waiting for the network to see it). It is accepted once admitted and refused, naming the caller's reason, otherwise. A round closed meanwhile waits for the admission and builds without a refused deposit. Without the hook nothing changes. (Also in 2.0.2, for the 2.0.x line.)

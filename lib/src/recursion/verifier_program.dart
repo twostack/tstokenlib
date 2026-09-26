@@ -1488,7 +1488,6 @@ class VerifierProgramBuilder {
     for (int k = 0; k < finalCoefs.length; k += 2) {
       _cur = _absorb(a: finalCoefs[k], b: k + 1 < finalCoefs.length ? finalCoefs[k + 1] : f.zero);
     }
-    final stateBeforeGrind = _cur!;
     final grind = _absorb(nonce: true, free: () => [pf().nonce[0], 0, 0, 0, 0, 0, 0, 0]);
     final grindLane = Wire(1, 'grind', () => [grind._digest![0]]);
     grind.digProd1 = grindLane;
@@ -1498,7 +1497,8 @@ class VerifierProgramBuilder {
       final gBits = [for (int k = G; k < 31; k++) bitHint('g$k', () => (grindLane.lanes[0] >> k) & 1)];
       assertEq(grindLane, _fromBits(gBits, shift: G));
     }
-    _cur = stateBeforeGrind;
+    // the grind digest is the state the indices come from (SECURITY_CLAIM D1)
+    _cur = grind;
     final indices = [for (int q = 0; q < P.numQueries; q++) squeeze1('idx$q')];
 
     // ---- queries ----

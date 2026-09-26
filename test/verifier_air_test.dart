@@ -172,4 +172,30 @@ void main() {
     expect(StarkVerifierRef(outer, vAir, hash: p2).verify(proof), isTrue);
     print('  outer verify ${sw.elapsedMilliseconds} ms');
   }, timeout: const Timeout(Duration(minutes: 15)));
+
+  test('an inner proof carrying the next nonce that also grinds has no witness (SECURITY_CLAIM D1)', () {
+    final v = StarkVerifierRef(inner, innerAir, hash: p2);
+    StarkProof? bad;
+    for (int n = innerProof.nonce[0] + 1; bad == null; n++) {
+      final cand = StarkProof(
+          traceRoot: innerProof.traceRoot, compRoot: innerProof.compRoot, auxRoot: innerProof.auxRoot,
+          preRoot: innerProof.preRoot, zHint: innerProof.zHint, traceAtZ: innerProof.traceAtZ,
+          traceAtZg: innerProof.traceAtZg, compAtZ: innerProof.compAtZ, friRoots: innerProof.friRoots,
+          finalCoefs: innerProof.finalCoefs, nonce: [n], queries: innerProof.queries);
+      try {
+        v.verify(cand);
+        fail('the reference verifier accepted a proof with another nonce');
+      } on VerificationFailure catch (f) {
+        if (f.what != 'grinding') {
+          expect(f.what, 'query 0 index');
+          bad = cand;
+        }
+      }
+    }
+    final rows = program.witness(bad);
+    final vAir = program.air(VerifierProgram.nodeDigestOf(innerAir, bad.preRoot));
+    final result = checkTrace(vAir, rows, [rq(), rq(), rq()]);
+    print('  other grinding nonce: $result');
+    expect(result, isNotNull, reason: 'before D1 was fixed this witness satisfied the program');
+  }, timeout: const Timeout(Duration(minutes: 10)));
 }

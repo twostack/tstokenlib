@@ -144,8 +144,9 @@ class PoolAggregation {
 
   // ---- the production plan, sized for prover throughput ----
 
-  /// Spend proofs for aggregation: blowup 256 with 11 queries (about 104
-  /// bits with the 16-bit grind), 5 s to prove in the wallet, 2,453 periods
+  /// Spend proofs for aggregation: blowup 256 with 11 queries (102 bits
+  /// conjectured with the 14-bit Poseidon2 grind, 58 proven; SECURITY_CLAIM
+  /// section 4), 5 s to prove in the wallet, 2,453 periods
   /// to verify in-circuit against 3,364 at the on-chain parameters.
   static const spendThroughputParams =
       StarkParams(logTrace: PoolSpendAir.logTrace, logBlowup: 8, logExpand: 3, logFinal: 13, numQueries: 11, grindBytes: 2, zkRandomizers: 128);
@@ -166,7 +167,7 @@ class PoolAggregation {
   /// by inheritance and paid for it in memory. A 2^20 trace at blowup 32
   /// commits on 2^25 and one node peaks at 22.4 GB; at blowup 16 it commits
   /// on 2^24 and peaks at 11.5 GB, proves in 13.5 s instead of 20.3 s and
-  /// is two bits sounder (92 + 16 against 90 + 16). What it costs is paid
+  /// is two bits sounder (92 + 14 against 90 + 14). What it costs is paid
   /// by the level above, which verifies 23 queries instead of 18: level 4
   /// needs 15,636 of its 16,384 periods and the root 11,576.
   ///

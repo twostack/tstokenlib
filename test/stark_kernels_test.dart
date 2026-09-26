@@ -95,31 +95,34 @@ void main() {
     // SHA256: two zero bytes is 2^16 expected tries, four blocks in
     final shaSaved = TranscriptRef.nativeGrind;
     expect(shaSaved, isNotNull, reason: 'the native kernels install a search when they load');
-    final ts = TranscriptRef()..absorb(List<int>.generate(32, (i) => i * 7 + 1));
-    final want = byHand(() => ts.grind(2), () => TranscriptRef.nativeGrind = null, () => TranscriptRef.nativeGrind = shaSaved);
+    // a grind advances the state (SECURITY_CLAIM D1), so each search starts from a copy
+    final pre = (TranscriptRef()..absorb(List<int>.generate(32, (i) => i * 7 + 1))).state;
+    TranscriptRef ts() => TranscriptRef()..state = List<int>.of(pre);
+    final want = byHand(() => ts().grind(2), () => TranscriptRef.nativeGrind = null, () => TranscriptRef.nativeGrind = shaSaved);
     final wantN = want[0] | (want[1] << 8) | (want[2] << 16) | (want[3] << 24);
     print('  sha256 grind: smallest nonce $wantN (${(wantN / block).floor()} blocks in)');
     expect(wantN, greaterThan(block), reason: 'the case worth testing is a nonce past the first block');
-    expect(ts.grind(2), want, reason: 'the kernel returns the smallest nonce, not the first hit');
-    expect(native!.grindSha(ts.state, 2), wantN);
+    expect(ts().grind(2), want, reason: 'the kernel returns the smallest nonce, not the first hit');
+    expect(native!.grindSha(pre, 2), wantN);
 
     // Poseidon2: 14 bits, and a state whose answer is far enough out
     final p2Saved = Poseidon2Transcript.nativeGrind;
     expect(p2Saved, isNotNull);
-    Poseidon2Transcript? far;
+    List<int>? far;
     List<int>? farWant;
     for (int seed = 1; seed < 40 && far == null; seed++) {
-      final t = Poseidon2Transcript()..absorb(List<int>.generate(8, (i) => seed * 1000 + i));
-      final w = byHand(() => t.grind(2), () => Poseidon2Transcript.nativeGrind = null, () => Poseidon2Transcript.nativeGrind = p2Saved);
+      final state = (Poseidon2Transcript()..absorb(List<int>.generate(8, (i) => seed * 1000 + i))).state;
+      final w = byHand(() => (Poseidon2Transcript()..state = List<int>.of(state)).grind(2), () => Poseidon2Transcript.nativeGrind = null,
+          () => Poseidon2Transcript.nativeGrind = p2Saved);
       if (w[0] > block) {
-        far = t;
+        far = state;
         farWant = w;
       }
     }
     expect(far, isNotNull, reason: 'a state whose smallest nonce is past the first block');
     print('  poseidon2 grind: smallest nonce ${farWant![0]} (${(farWant[0] / block).floor()} blocks in)');
-    expect(far!.grind(2), farWant, reason: 'the kernel returns the smallest nonce, not the first hit');
-    expect(native.grindP2(far.state, Poseidon2Transcript.grindBits(2)), farWant[0]);
+    expect((Poseidon2Transcript()..state = List<int>.of(far!)).grind(2), farWant, reason: 'the kernel returns the smallest nonce, not the first hit');
+    expect(native.grindP2(far, Poseidon2Transcript.grindBits(2)), farWant[0]);
   }, skip: skip);
 
   test('DEEP quotients, folds and pair trees match', () {
