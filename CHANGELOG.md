@@ -1,3 +1,7 @@
+## Unreleased
+
+- **Fix: `dart test` and `dart run` failed on macOS from a long path.** They rewrite the kernels library's install name to its absolute path under `.dart_tool/lib`, and the prebuilt macOS library had 56 bytes of header room, so a path past about 87 characters did not fit ("larger updated load commands do not fit"). Apple libraries are now linked with `-headerpad_max_install_names`. The kernels' source hash now also covers each target's features and flags, so a flag change retires the prebuilt libraries as an edit to the crate does; this one moves the hash, and the libraries are rebuilt.
+
 ## 2.2.2
 
 - **The README says what the pool leaves public.** It said amounts, senders and recipients are hidden and only the fact of a round is public. A deposit's amount and the coins that paid it, and a withdrawal's amount and the address it pays, are on the chain, and a payer can disclose a payment with a proof it hands over. It also gives the round time as measured by the coordinator (254 s close to witness with a GPU, 245 s of it aggregation) in place of an older 356 s. Documentation only; no code changed.
