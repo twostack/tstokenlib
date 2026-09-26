@@ -13,3 +13,7 @@ pubspec_overrides.yaml
 
 # Kernel libraries built by tool/kernels/build_kernels.dart for a release.
 dist/
+
+# TLA+ model checking (formal/tla): the tools jar is fetched by run.sh, states/ is TLC scratch
+formal/tla/tla2tools.jar
+formal/tla/states/

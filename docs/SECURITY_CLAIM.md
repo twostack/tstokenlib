@@ -200,7 +200,7 @@ OPEN O5 is the reviewer's reconstruction of this table from the emitted root scr
 
 ## 10. The covenant layer
 
-Argued in design §8 and attacked in design §9, §11.15, §16. Stated here as claims for the covenant reviewer (OPEN O9):
+Argued in design §8 and attacked in design §9, §11.15, §16. Since 2026-09-26 also MODEL-CHECKED at the level of what each script enforces: `formal/tla/PoolRounds.tla` holds four safety invariants over 240,933 states with every protection on, and reproduces the attacks of §11.15 vectors 1 and 5, §5.6, §5.4 and §16 when the matching protection is switched off (design §21, `formal/tla/README.md`). Bytes and parsing are below that model. Stated here as claims for the covenant reviewer (OPEN O9):
 
 - **C1, one chain per tokenId.** Every round's PP1 (executed in the witness) demands a parent chain that terminates at the funding outpoint whose txid is the tokenId, spent once. A header written into a fresh output can be mined but never advanced. TESTED: `test/pool_lineage_attack_test.dart` (a lookalike PP1 mined on localnet, refused by the proven-round check), `test/pool_evidence_test.dart` group "the forgery, against the ledger".
 - **C2, every mined round was verified before it was mined.** PP3_N is spendable only beside Y_N:0, whose script is V carrying header_N, certified by PP1_N in witness N, which must exist for PP3_N to be spendable. The base case is PP1_0's create branch certifying Y_0 (design §11.15 vector 5). TESTED: `test/sp_token_test.dart`, `test/pool_round_v_test.dart`.
@@ -227,7 +227,7 @@ Argued in design §8 and attacked in design §9, §11.15, §16. Stated here as c
 | O6 | Mutation fuzzing of V and the root script: every bit of a valid root proof, then structural mutations (swap siblings, reorder queries, replay a leaf, rebind the header) | testing | project |
 | O7 | Differential test of the emitted script against the reference verifier on a corpus of valid and invalid proofs; a range argument for the lazy M31/QM31 emitters (`StackEmitter.reduce`, `lib/src/script_gen/m31_script_gen.dart`) covering every input range they can meet | testing + analysis | project, then reviewer |
 | O8 | Cross-implementation verification against an independent Circle-STARK verifier (stwo adapted to this transcript and the Poseidon2 flavour) | testing | project |
-| O9 | Covenant-layer review of section 10 by a BSV script specialist, adding rows to design §9 | external | script reviewer |
+| O9 | Covenant-layer review of section 10 by a BSV script specialist, adding rows to design §9. The TLA+ model (design §21) is the starting point for the ordering half; the byte-level half (varints, yInput, fixed-size pushes) is not modelled | external | script reviewer |
 | O10 | Production-size rounds on mainnet under miners' actual policy, over weeks, including a reorg; validation time measured on miners' node software with a stated margin | deployment | project |
 | O11 | Confirm the current literature status of the proven and conjectured circle-FRI bounds, and write out the additive 1/|QM31| terms neglected in section 4 | analysis | reviewer |
 | O12 | Write the arguments that positional transcript separation and fixed-depth Merkle trees rule out the classic ambiguities (section 3, section 9) | analysis | project |
@@ -237,3 +237,4 @@ Argued in design §8 and attacked in design §9, §11.15, §16. Stated here as c
 
 - 2026-09-26: first draft. Found D1, D2 and D3 while writing sections 4 and 9.
 - 2026-09-26, later: D1 fixed (change `grind-binds-queries`); section 4 counts the grind, D3 narrowed to the proven-column decision, O1 closed.
+- 2026-09-26, later still: TLA+ model of the round state machine added (`formal/tla`), section 10 marked model-checked.
