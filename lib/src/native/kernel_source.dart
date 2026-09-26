@@ -47,7 +47,9 @@ List<String> crateFiles(Directory crateRoot) {
 
 /// The SHA-256 of the crate's source, over each file's relative path and its
 /// contents with line endings normalised, so a checkout that turned `\n` into
-/// `\r\n` still hashes the same.
+/// `\r\n` still hashes the same, and then over [buildRecipe]: a library built
+/// with other flags is another library, so changing a flag must retire the
+/// prebuilt ones as surely as editing the crate does.
 String sourceHash(Directory crateRoot) {
   final bytes = <int>[];
   for (final rel in crateFiles(crateRoot)) {
@@ -57,8 +59,30 @@ String sourceHash(Directory crateRoot) {
       ..addAll(content.codeUnits)
       ..add(0);
   }
+  bytes.addAll(buildRecipe().codeUnits);
   return crypto.sha256.convert(bytes).toString();
 }
+
+/// Every triple a library is built for, prebuilt or from source.
+const buildTriples = [
+  'aarch64-apple-darwin',
+  'x86_64-apple-darwin',
+  'x86_64-unknown-linux-gnu',
+  'aarch64-unknown-linux-gnu',
+  'x86_64-pc-windows-msvc',
+  'aarch64-pc-windows-msvc',
+  'aarch64-linux-android',
+  'armv7-linux-androideabi',
+  'x86_64-linux-android',
+  'aarch64-apple-ios',
+  'aarch64-apple-ios-sim',
+  'x86_64-apple-ios',
+];
+
+/// How each triple is built, one line each: its features and its rustc flags.
+String buildRecipe() => [
+      for (final t in buildTriples) '$t features=${cargoFeatures(t).join(',')} flags=${rustFlags(t).join(' ')}\n',
+    ].join();
 
 /// The release tag the prebuilt libraries for [hash] are published under.
 /// Named by source rather than by package version: the kernels change far
@@ -91,11 +115,19 @@ List<String> cargoFeatures(String triple) => triple == 'aarch64-apple-darwin' ? 
 /// The rustc flags [triple] is built with, prebuilt or from source alike: an
 /// `@rpath` install name on Apple platforms, where rustc would otherwise
 /// record the path it was built at and every app bundling it would carry that
-/// path; the C runtime linked statically on Windows, so the library needs no
+/// path, with the most header room the linker allows, since `dart test` and
+/// `dart run` rewrite that name to the library's absolute path under
+/// `.dart_tool/lib` and without it a path past about 87 characters does not
+/// fit; the C runtime linked statically on Windows, so the library needs no
 /// Visual C++ redistributable; and 16 KB page alignment on 64-bit Android,
 /// which Android 15 devices with 16 KB pages require of every native library.
 List<String> rustFlags(String triple) => [
-      if (triple.contains('-apple-')) ...['-C', 'link-arg=-Wl,-install_name,@rpath/libstark_kernels.dylib'],
+      if (triple.contains('-apple-')) ...[
+        '-C',
+        'link-arg=-Wl,-install_name,@rpath/libstark_kernels.dylib',
+        '-C',
+        'link-arg=-Wl,-headerpad_max_install_names',
+      ],
       if (triple.endsWith('-windows-msvc')) ...['-C', 'target-feature=+crt-static'],
       if (triple == 'aarch64-linux-android' || triple == 'x86_64-linux-android')
         ...['-C', 'link-arg=-Wl,-z,max-page-size=16384'],
