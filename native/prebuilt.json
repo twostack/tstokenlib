@@ -1,6 +1,6 @@
 {
-  "source_sha256": "f982d2a95acfcfb2954bcb9fd77e094ee5c0ea46c9ecaf2611e89afb4562e7a7",
-  "base_url": "https://github.com/twostack/tstokenlib/releases/download/stark-kernels-f982d2a95acfcfb2/",
+  "source_sha256": "c4f6a70ae9756d97dd98d22d777b3d4526888a4c8b68fe31074489dce9e5b89a",
+  "base_url": "https://github.com/twostack/tstokenlib/releases/download/stark-kernels-c4f6a70ae9756d97/",
   "assets": {
     "android_arm": {
       "file": "libstark_kernels-android_arm.so",
@@ -20,11 +20,11 @@
     },
     "ios_arm64_simulator": {
       "file": "libstark_kernels-ios_arm64_simulator.dylib",
-      "sha256": "7d32ac3ca72c367cc6340b1518b340e9d044e4eb8e61cd4ea41a393ebf0c0666"
+      "sha256": "f5389db43afd43c474c72c8a630a5d423152444292ce8befd948c8111f7122b2"
     },
     "ios_x64": {
       "file": "libstark_kernels-ios_x64.dylib",
-      "sha256": "cda8c3ba1bf7e03209aba3f0228ea8999d1d55c7d279449386a98fd71dabb0a6"
+      "sha256": "e445309c32a88a926082ebf06ed15fcdc6cfc06e186a3207566433c13c7a1363"
     },
     "linux_arm64": {
       "file": "libstark_kernels-linux_arm64.so",
@@ -36,19 +36,19 @@
     },
     "macos_arm64": {
       "file": "libstark_kernels-macos_arm64.dylib",
-      "sha256": "b28050266c7538ef64d697ac5d2241aa3be811bf633802ee07aafb9642a28fcf"
+      "sha256": "eacb8ae824ebf54636ea7d221f22819f74ae050ddb426d859b494019b7b58810"
     },
     "macos_x64": {
       "file": "libstark_kernels-macos_x64.dylib",
-      "sha256": "2ae98d933f2760203eafc737bf6bd480cb85f891a3d5ddb0ca5355f6072f1228"
+      "sha256": "e9939d4ea5549c8e08a4797a2efcecb3ce36ee33294b3c3f3235e9d0ca1338cd"
     },
     "windows_arm64": {
       "file": "stark_kernels-windows_arm64.dll",
-      "sha256": "ff40e9267df523bdf3cbb2e795faf065669cc9952df3d33269914894c4e0fa10"
+      "sha256": "d7edc1341c029ec00b056958c28bfddc31af38a58da91842c89fbfd53e61d710"
     },
     "windows_x64": {
       "file": "stark_kernels-windows_x64.dll",
-      "sha256": "57f61e6e8c30a3d537555fdbe36915a0aacf24024773e897078c3ba9c375b2ca"
+      "sha256": "cae0f8e388ea0e61731a0c59a27c0fbde58ac3d935ed7447a891dee0697400d3"
     }
   }
 }
