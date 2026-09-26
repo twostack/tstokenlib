@@ -42,7 +42,19 @@ Each protection the design added is a constant, so the attack it closed is one f
 | `AnchorRequired` | 4.1 | a round may pin a Y that was never mined |
 | `DepositorChecksLineage` | 5.4, 16 | a depositor pays into whatever names itself the pool |
 
-Invariants: `NoTheft` (nobody takes out more than they paid in), `DepositorNotesExist` (in a pool opened empty, the live header owes the depositor what they paid in and have not withdrawn), `OutsiderCannotFreeze` (a pinned, certified slot's verifier output is spent only by a round or the coordinator), `NoDepositStolen`.
+Safety invariants: `NoTheft` (nobody takes out more than they paid in), `DepositorNotesExist` (in a pool opened empty, the live header owes the depositor what they paid in and have not withdrawn), `OutsiderCannotFreeze` (a pinned, certified slot's verifier output is spent only by a round or the coordinator), `NoDepositStolen`.
+
+## Liveness
+
+TLA+ liveness under fairness cannot hold against an outsider who may act forever (an attacker re-mining decoy slots without end is a legal behaviour), so the claim "an honest coordinator can always advance" is checked as a possibility, which is a state property: `HonestCanAdvance` says that in every reachable state the pool is finished or `HonestStep` is enabled. `HonestStep` is what an honest coordinator does next: mine or re-mine the slot the next round needs (the pool's verifier, the header the round will write, its own key), issue on the empty tree, build a round that receives every open deposit and pays nobody, or witness the round it just built. Deposits the slot's header cannot fit are left to their refund. The check runs with `HonestCoordinator = TRUE`, which removes the coordinator's own freezing moves (decoy or stale slots, weak programs, spending V outside a round, burning) and leaves every outsider action in place.
+
+An unpinned slot may be replaced by another Y_n (design 11.15 vectors 2 and 3 are "delay only" for exactly this reason); without that, an outsider's decoy at index n would squat on the honest coordinator's next slot in the model, a limitation of indexing slots by round rather than by txid.
+
+| Configuration | Result | Counterexample |
+|---|---|---|
+| `Liveness_AsBuilt` | holds, 1,941 states | |
+| `Liveness_NoAnchor` | holds, 1,941 states | the honest step mines Y before pinning it, so the anchor's case (a pinned Y that never mines) is outside the model |
+| `Liveness_Attack_ProofCopy` (V without a signer) | `HonestCanAdvance` in 438 states | Y_0, issue, Y_1, the outsider spends V_0 with a copied proof, witness 0; then no honest step exists: PP3_0's pinned slot is gone |
 
 ## Results, 2026-09-26
 
@@ -66,6 +78,5 @@ Two things the run said that the design record had not: the decoy-genesis theft 
 ## Next
 
 - Two depositors and MaxRound 3, to look for cross-round interactions the one-deposit model cannot show.
-- A liveness property: with every protection on, an honest coordinator can always reach the next witnessed round. Today only safety is checked.
 - Time: refund lock heights against round assembly (design 7.1's `minRefundAfter`).
 - The chain reader as a second reader of the same model, so that "a forged round is never applied" can be stated beside "a forged round never advances".

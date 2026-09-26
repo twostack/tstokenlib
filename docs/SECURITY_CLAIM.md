@@ -200,7 +200,7 @@ OPEN O5 is the reviewer's reconstruction of this table from the emitted root scr
 
 ## 10. The covenant layer
 
-Argued in design §8 and attacked in design §9, §11.15, §16. Since 2026-09-26 also MODEL-CHECKED at the level of what each script enforces: `formal/tla/PoolRounds.tla` holds four safety invariants over 240,933 states with every protection on, and reproduces the attacks of §11.15 vectors 1 and 5, §5.6, §5.4 and §16 when the matching protection is switched off (design §21, `formal/tla/README.md`). Bytes and parsing are below that model. Stated here as claims for the covenant reviewer (OPEN O9):
+Argued in design §8 and attacked in design §9, §11.15, §16. Since 2026-09-26 also MODEL-CHECKED at the level of what each script enforces: `formal/tla/PoolRounds.tla` holds four safety invariants with every protection on, reproduces the attacks of §11.15 vectors 1 and 5, §5.6, §5.4 and §16 when the matching protection is switched off, and shows that an honest coordinator always has a next step (a possibility property checked as an invariant), which V without a signer breaks (design §21, `formal/tla/README.md`). Bytes and parsing are below that model. Stated here as claims for the covenant reviewer (OPEN O9):
 
 - **C1, one chain per tokenId.** Every round's PP1 (executed in the witness) demands a parent chain that terminates at the funding outpoint whose txid is the tokenId, spent once. A header written into a fresh output can be mined but never advanced. TESTED: `test/pool_lineage_attack_test.dart` (a lookalike PP1 mined on localnet, refused by the proven-round check), `test/pool_evidence_test.dart` group "the forgery, against the ledger".
 - **C2, every mined round was verified before it was mined.** PP3_N is spendable only beside Y_N:0, whose script is V carrying header_N, certified by PP1_N in witness N, which must exist for PP3_N to be spendable. The base case is PP1_0's create branch certifying Y_0 (design §11.15 vector 5). TESTED: `test/sp_token_test.dart`, `test/pool_round_v_test.dart`.
@@ -237,4 +237,4 @@ Argued in design §8 and attacked in design §9, §11.15, §16. Since 2026-09-26
 
 - 2026-09-26: first draft. Found D1, D2 and D3 while writing sections 4 and 9.
 - 2026-09-26, later: D1 fixed (change `grind-binds-queries`); section 4 counts the grind, D3 narrowed to the proven-column decision, O1 closed.
-- 2026-09-26, later still: TLA+ model of the round state machine added (`formal/tla`), section 10 marked model-checked.
+- 2026-09-26, later still: TLA+ model of the round state machine added (`formal/tla`), section 10 marked model-checked; liveness (honest coordinator can always advance) added as a possibility property.

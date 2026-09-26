@@ -31,7 +31,8 @@ CONSTANTS
   PP3ForwardCovenant,           \* PP3 requires its successor to run its own program (5.4)
   VPinsPrograms,                \* PP1's and PP3's programs are constants of V's body (5.5)
   AnchorRequired,               \* a round spends the anchor of the slot it pins (4.1)
-  DepositorChecksLineage        \* a depositor byte-checks PP1 and follows the chain (5.4, 16)
+  DepositorChecksLineage,       \* a depositor byte-checks PP1 and follows the chain (5.4, 16)
+  HonestCoordinator             \* the coordinator takes only the honest steps (for the liveness check)
 
 ASSUME MaxRound \in Nat /\ MaxDeposits \in Nat /\ MaxValue \in Nat \ {0}
 
@@ -99,6 +100,13 @@ SlotCertified(n) ==
   /\ slots[n].hdr = rounds[n].hdr
   /\ slots[n].signer = Coord
 
+(* The slot an honest coordinator pins: the pool's verifier carrying the     *)
+(* header the round will write, signed for by the coordinator, anchor unspent. *)
+HonestSlot(n, h) ==
+  /\ slots[n] # NoSlot
+  /\ slots[n].body = "Real" /\ slots[n].signer = Coord /\ slots[n].hdr = h
+  /\ ~slots[n].anchorSpent
+
 -----------------------------------------------------------------------------
 Init ==
   /\ slots = [n \in R |-> NoSlot]
@@ -112,8 +120,8 @@ Init ==
 (* Y_n (4.1): anyone mines it, with any header, signer and body. The       *)
 (* coordinator decides which one PP3 pins; here that is slot n.             *)
 MineSlot(n, h, s, b) ==
-  /\ slots[n] = NoSlot
-  /\ rounds[n] = NoRound /\ (IF n = 0 THEN TRUE ELSE Live(n-1))   \* just in time; earlier mining changes nothing
+  /\ rounds[n] = NoRound                    \* unpinned: another Y_n may replace it (11.15 vectors 2 and 3, delay only)
+  /\ IF n = 0 THEN TRUE ELSE Live(n-1)      \* just in time; earlier mining changes nothing
   /\ slots' = [slots EXCEPT ![n] = [hdr |-> h, signer |-> s, body |-> b, anchorSpent |-> FALSE]]
   /\ UNCHANGED <<vSpentBy, rounds, forged, deposits, withdrawn, depositedBy>>
 
@@ -124,6 +132,7 @@ Issue(h0, prog) ==
   /\ rounds[0] = NoRound
   /\ h0.bal = 0
   /\ AnchorRequired => (slots[0] # NoSlot /\ ~slots[0].anchorSpent)
+  /\ HonestCoordinator => (h0 = Empty /\ prog = "Canonical" /\ HonestSlot(0, Empty))
   /\ rounds' = [rounds EXCEPT ![0] = [hdr |-> h0, prog |-> prog, bal |-> 0, witnessed |-> FALSE, pp3Spent |-> FALSE]]
   /\ slots' = IF AnchorRequired THEN [slots EXCEPT ![0].anchorSpent = TRUE] ELSE slots
   /\ UNCHANGED <<vSpentBy, forged, deposits, withdrawn, depositedBy>>
@@ -164,6 +173,7 @@ MineRoundWith(n, h, prog, recv, w, bal) ==
   /\ bal + w.amount <= p.bal + SumAmt(recv)
   /\ VAccepts(v, h, prog, recv, w, bal)
   /\ PP3Accepts(p, prog)
+  /\ HonestCoordinator => (prog = "Canonical" /\ HonestSlot(n, h))
   /\ rounds' = [rounds EXCEPT ![n] = [hdr |-> h, prog |-> prog, bal |-> bal, witnessed |-> FALSE, pp3Spent |-> FALSE],
                               ![n-1].pp3Spent = TRUE]
   /\ vSpentBy' = [vSpentBy EXCEPT ![n-1] = "Round"]
@@ -209,12 +219,13 @@ Refund(d) ==
 SpendVOutsideRound(n, b) ==
   /\ Live(n) /\ slots[n] # NoSlot /\ vSpentBy[n] = "None"
   /\ slots[n].body = "Decoy" \/ ~VRequiresSigner \/ b = Coord
+  /\ b = Coord => ~HonestCoordinator
   /\ vSpentBy' = [vSpentBy EXCEPT ![n] = b]
   /\ UNCHANGED <<slots, rounds, forged, deposits, withdrawn, depositedBy>>
 
 (* PP3's burn branch (5.6): the owner's signature takes the balance.        *)
 Burn(n) ==
-  /\ PP3HasBurn
+  /\ PP3HasBurn /\ ~HonestCoordinator
   /\ Live(n) /\ ~rounds[n].pp3Spent
   /\ rounds' = [rounds EXCEPT ![n].pp3Spent = TRUE]
   /\ withdrawn' = [withdrawn EXCEPT ![Coord] = @ + rounds[n].bal]
@@ -263,6 +274,37 @@ Next ==
   \/ TakeForgedDeposits
 
 Spec == Init /\ [][Next]_vars
+
+-----------------------------------------------------------------------------
+(* Liveness, as a possibility. TLA+ liveness under fairness cannot hold      *)
+(* against an outsider who may act forever, so the claim is checked as a    *)
+(* state property instead: in every reachable state, an honest coordinator *)
+(* has an enabled step toward the next witnessed round, whatever anyone     *)
+(* else has done. The honest step re-mines a slot an outsider squatted on,  *)
+(* receives every open deposit and pays nobody; deposits it cannot fit are  *)
+(* left to their refund.                                                    *)
+
+NoWithdrawal == [payee |-> Dep, amount |-> 0]
+
+(* The header after receiving recv and paying nobody. *)
+Received(h, recv) == [bal |-> h.bal + SumAmt(recv), owed |-> [h.owed EXCEPT ![Dep] = @ + SumAmt(recv)]]
+
+PoolDone == Live(MaxRound) /\ rounds[MaxRound].witnessed
+
+HonestStep ==
+  \/ /\ ~Live(0)
+     /\ IF HonestSlot(0, Empty) THEN Issue(Empty, "Canonical") ELSE MineSlot(0, Empty, Coord, "Real")
+  \/ \E n \in R : Live(n) /\ ~rounds[n].witnessed /\ MineWitness(n)
+  \/ \E n \in 1..MaxRound :
+       /\ Live(n-1) /\ rounds[n-1].witnessed /\ ~rounds[n-1].pp3Spent /\ ~Live(n)
+       /\ \/ \E recv \in SUBSET OpenDeps(n-1) :
+               LET h == Received(rounds[n-1].hdr, recv) IN
+               HonestSlot(n, h) /\ MineRoundWith(n, h, "Canonical", recv, NoWithdrawal, h.bal)
+          \/ /\ ~\E recv \in SUBSET OpenDeps(n-1) : HonestSlot(n, Received(rounds[n-1].hdr, recv))
+             /\ MineSlot(n, Received(rounds[n-1].hdr, OpenDeps(n-1)), Coord, "Real")
+
+(* With an honest coordinator the pool is finished or can be advanced. *)
+HonestCanAdvance == HonestCoordinator => (PoolDone \/ ENABLED HonestStep)
 
 -----------------------------------------------------------------------------
 (* Safety. Section 8.3: a dishonest coordinator can freeze, never take.     *)
